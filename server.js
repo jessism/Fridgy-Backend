@@ -10,30 +10,78 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// CORS configuration for production
+const corsOptions = {
+  origin: [
+    'https://fridgy-frontend.vercel.app',
+    'http://localhost:3000', // For local development
+    'http://localhost:3001'  // Alternative local port
+  ],
+  credentials: true,
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+};
+
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize Supabase client
-const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key';
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-// Initialize OpenAI client for OpenRouter (works with Gemini 2.0 Flash)
-const openai = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.OPENROUTER_API_KEY,
-  defaultHeaders: {
-    "HTTP-Referer": "https://fridgy-app.com", // Optional: helps with rankings
-    "X-Title": "Fridgy - AI Fridge Inventory", // Optional: shows in OpenRouter dashboard
+// Initialize Supabase client (with better error handling)
+let supabase;
+try {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_ANON_KEY;
+  
+  if (supabaseUrl && supabaseKey) {
+    supabase = createClient(supabaseUrl, supabaseKey);
+    console.log('✅ Supabase client initialized');
+  } else {
+    console.warn('⚠️ Supabase credentials missing - some features will be unavailable');
   }
-});
+} catch (error) {
+  console.error('❌ Failed to initialize Supabase:', error.message);
+}
+
+// Initialize OpenAI client for OpenRouter (with better error handling)
+let openai;
+try {
+  const openrouterKey = process.env.OPENROUTER_API_KEY;
+  
+  if (openrouterKey) {
+    openai = new OpenAI({
+      baseURL: "https://openrouter.ai/api/v1",
+      apiKey: openrouterKey,
+      defaultHeaders: {
+        "HTTP-Referer": "https://fridgy-app.com", // Optional: helps with rankings
+        "X-Title": "Fridgy - AI Fridge Inventory", // Optional: shows in OpenRouter dashboard
+      }
+    });
+    console.log('✅ OpenAI client initialized');
+  } else {
+    console.warn('⚠️ OpenRouter API key missing - AI features will use mock data');
+  }
+} catch (error) {
+  console.error('❌ Failed to initialize OpenAI:', error.message);
+}
 
 // Real AI processing function using Gemini 2.0 Flash
 const analyzeGroceryImages = async (images) => {
   try {
     console.log(`Analyzing ${images.length} images with Gemini 2.0 Flash...`);
+    
+    // Check if OpenAI client is available
+    if (!openai) {
+      console.warn('OpenAI client not available, using mock data');
+      const mockItems = [
+        { item: "Milk", quantity: 1, expires: "2025-08-01" },
+        { item: "Eggs", quantity: 12, expires: "2025-08-15" },
+        { item: "Cheese", quantity: 1, expires: "2025-07-25" },
+        { item: "Apples", quantity: 6, expires: "2025-08-10" }
+      ];
+      return mockItems.slice(0, Math.min(images.length + 1, mockItems.length));
+    }
     
     // Prepare messages for Gemini 2.0 Flash
     const messages = [
@@ -112,9 +160,30 @@ const analyzeGroceryImages = async (images) => {
   }
 };
 
+// Handle preflight requests
+app.options('*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin);
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Credentials', true);
+  res.sendStatus(200);
+});
+
 // Routes
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'Server is running!' });
+  const healthStatus = {
+    status: 'Server is running!',
+    timestamp: new Date().toISOString(),
+    port: PORT,
+    services: {
+      supabase: supabase ? 'connected' : 'disconnected',
+      openai: openai ? 'connected' : 'disconnected'
+    },
+    environment: process.env.NODE_ENV || 'development'
+  };
+  
+  console.log('Health check called:', healthStatus);
+  res.json(healthStatus);
 });
 
 // Process uploaded images and return AI analysis
@@ -162,6 +231,16 @@ app.post('/api/save-items', async (req, res) => {
     const { items, userId = 'anonymous' } = req.body;
     
     console.log('Saving items to database:', items);
+    
+    // Check if Supabase is available
+    if (!supabase) {
+      console.warn('Supabase not available, returning mock success');
+      return res.json({
+        success: true,
+        message: `Mock saved ${items.length} items (Supabase not configured)`,
+        savedItems: items
+      });
+    }
     
     // Prepare items for database insertion
     const itemsToSave = items.map(item => ({

@@ -3,6 +3,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { createClient } = require('@supabase/supabase-js');
 const OpenAI = require('openai');
+const multer = require('multer');
 
 // Load environment variables
 dotenv.config();
@@ -10,83 +11,36 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Simple CORS configuration that works everywhere
-app.use(cors({
-  origin: true, // Allow all origins for now
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Access-Control-Allow-Origin']
-}));
-
-// Additional CORS headers middleware
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
+// Configure multer for file uploads
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
+
+// Middleware
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize Supabase client (with better error handling)
-let supabase;
-try {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (supabaseUrl && supabaseKey) {
-    supabase = createClient(supabaseUrl, supabaseKey);
-    console.log('✅ Supabase client initialized');
-  } else {
-    console.warn('⚠️ Supabase credentials missing - some features will be unavailable');
-  }
-} catch (error) {
-  console.error('❌ Failed to initialize Supabase:', error.message);
-}
+// Initialize Supabase client
+const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
+const supabaseKey = process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key';
+const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Initialize OpenAI client for OpenRouter (with better error handling)
-let openai;
-try {
-  const openrouterKey = process.env.OPENROUTER_API_KEY;
-  
-  if (openrouterKey) {
-    openai = new OpenAI({
-      baseURL: "https://openrouter.ai/api/v1",
-      apiKey: openrouterKey,
-      defaultHeaders: {
-        "HTTP-Referer": "https://fridgy-app.com", // Optional: helps with rankings
-        "X-Title": "Fridgy - AI Fridge Inventory", // Optional: shows in OpenRouter dashboard
-      }
-    });
-    console.log('✅ OpenAI client initialized');
-  } else {
-    console.warn('⚠️ OpenRouter API key missing - AI features will use mock data');
+// Initialize OpenAI client for OpenRouter (works with Gemini 2.0 Flash)
+const openai = new OpenAI({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: process.env.OPENROUTER_API_KEY,
+  defaultHeaders: {
+    "HTTP-Referer": "https://fridgy-app.com", // Optional: helps with rankings
+    "X-Title": "Fridgy - AI Fridge Inventory", // Optional: shows in OpenRouter dashboard
   }
-} catch (error) {
-  console.error('❌ Failed to initialize OpenAI:', error.message);
-}
+});
 
 // Real AI processing function using Gemini 2.0 Flash
 const analyzeGroceryImages = async (images) => {
   try {
     console.log(`Analyzing ${images.length} images with Gemini 2.0 Flash...`);
-    
-    // Check if OpenAI client is available
-    if (!openai) {
-      console.warn('OpenAI client not available, using mock data');
-      const mockItems = [
-        { item: "Milk", quantity: 1, expires: "2025-08-01" },
-        { item: "Eggs", quantity: 12, expires: "2025-08-15" },
-        { item: "Cheese", quantity: 1, expires: "2025-07-25" },
-        { item: "Apples", quantity: 6, expires: "2025-08-10" }
-      ];
-      return mockItems.slice(0, Math.min(images.length + 1, mockItems.length));
-    }
     
     // Prepare messages for Gemini 2.0 Flash
     const messages = [
@@ -97,19 +51,45 @@ const analyzeGroceryImages = async (images) => {
             type: "text",
             text: `Analyze these grocery/food images and identify each food item. For each item, provide:
             1. Item name (common grocery name)
-            2. Estimated quantity 
-            3. Estimated expiration date (be realistic based on typical shelf life)
+            2. Food category (see categories below)
+            3. Estimated quantity 
+            4. Estimated expiration date (see expiry logic below)
+            
+            TODAY'S DATE: ${new Date().toISOString().split('T')[0]}
+            
+            CATEGORIES - Choose the most appropriate category for each item:
+            - Dairy (milk, cheese, yogurt, butter, cream, etc.)
+            - Fruits (apples, bananas, dragon fruit, berries, citrus, etc.)
+            - Vegetables (lettuce, carrots, tomatoes, peppers, onions, etc.)
+            - Protein (meat, fish, eggs, beans, nuts, tofu, etc.)
+            - Fats and oils (cooking oil, olive oil, avocado oil, coconut oil, etc.)
+            - Grains (bread, rice, pasta, cereal, oats, quinoa, etc.)
+            - Other (for items that don't fit the above categories)
+            
+            EXPIRY DATE LOGIC:
+            1. First, look for printed expiration dates on packaging/labels
+            2. If NO printed date is visible, estimate based on:
+               - Current freshness/ripeness visible in the photo
+               - Typical shelf life for that food type
+               - Today's date as the starting point
+            3. Examples of realistic estimation from today (${new Date().toISOString().split('T')[0]}):
+               - Fresh ripe fruit: 3-7 days from today
+               - Fresh vegetables: 5-10 days from today  
+               - Packaged items: weeks to months from today
+               - Items that look very ripe/soft: 1-3 days from today
             
             Return ONLY a JSON array in this exact format:
             [
-              {"item": "Item Name", "quantity": number, "expires": "YYYY-MM-DD"},
-              {"item": "Item Name", "quantity": number, "expires": "YYYY-MM-DD"}
+              {"item": "Item Name", "category": "Fruits", "quantity": number, "expires": "YYYY-MM-DD"},
+              {"item": "Item Name", "category": "Vegetables", "quantity": number, "expires": "YYYY-MM-DD"}
             ]
             
             Guidelines:
             - Use common grocery names (e.g., "Milk" not "Dairy beverage")
+            - Be precise with categories (dragon fruit = "Fruits", not "Produce")
             - Quantity should be realistic (e.g., 1 for milk carton, 12 for egg carton, 6 for apple bag)
-            - Expiration dates should be realistic from today's date
+            - Expiry dates must be FUTURE dates from today (${new Date().toISOString().split('T')[0]})
+            - Consider visual ripeness/freshness when estimating expiry
             - If you can't clearly identify an item, skip it
             - Maximum 10 items per response`
           },
@@ -165,58 +145,72 @@ const analyzeGroceryImages = async (images) => {
   }
 };
 
+
+
 // Routes
 app.get('/api/health', (req, res) => {
-  const healthStatus = {
-    status: 'Server is running!',
-    timestamp: new Date().toISOString(),
-    port: PORT,
-    services: {
-      supabase: supabase ? 'connected' : 'disconnected',
-      openai: openai ? 'connected' : 'disconnected'
-    },
-    environment: process.env.NODE_ENV || 'development'
-  };
-  
-  console.log('Health check called:', healthStatus);
-  res.json(healthStatus);
+  res.json({ status: 'Server is running!' });
 });
 
-// Process uploaded images and return AI analysis
-app.post('/api/analyze-images', async (req, res) => {
+
+// Unified endpoint: Process batch images with real AI
+app.post('/api/process-images', upload.array('images', 10), async (req, res) => {
   try {
-    const { imageCount, images } = req.body;
-    
-    console.log(`Processing request with imageCount: ${imageCount}, images: ${images?.length || 0}`);
+    console.log(`Received ${req.files ? req.files.length : 0} images for processing`);
     
     let analysisResults;
     
-    if (images && images.length > 0) {
-      // Use real AI analysis with Gemini 2.0 Flash
+    if (req.files && req.files.length > 0) {
+      // Convert uploaded files to base64 for AI analysis
+      const base64Images = req.files.map(file => {
+        return `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+      });
+      
       console.log('Using Gemini 2.0 Flash for real AI analysis...');
-      analysisResults = await analyzeGroceryImages(images);
+      const aiResults = await analyzeGroceryImages(base64Images);
+      
+      // Transform AI results to work with BatchCamera
+      analysisResults = aiResults.map(aiItem => ({
+        // Core fields for database saving  
+        item: aiItem.item,
+        quantity: aiItem.quantity,
+        expires: aiItem.expires,
+        // Display fields for BatchCamera table (AI now provides category directly)
+        category: aiItem.category,
+        name: aiItem.item,
+        expiryDate: aiItem.expires
+      }));
+      
     } else {
-      // Fallback: Use mock data based on imageCount (for backward compatibility)
+      // Fallback: mock data for testing without files
       console.log('No images provided, using mock data...');
-      const mockItems = [
-        { item: "Milk", quantity: 1, expires: "2025-08-01" },
-        { item: "Eggs", quantity: 12, expires: "2025-08-15" },
-        { item: "Cheese", quantity: 1, expires: "2025-07-25" },
-        { item: "Apples", quantity: 6, expires: "2025-08-10" }
+      analysisResults = [
+        { 
+          // Core fields for database saving
+          item: "chicken breast", quantity: 2, expires: "2025-08-01",
+          // Display fields for BatchCamera table
+          category: "Protein", name: "chicken breast", expiryDate: "2025-08-01"
+        },
+        { 
+          // Core fields for database saving
+          item: "milk", quantity: 1, expires: "2025-07-10",
+          // Display fields for BatchCamera table
+          category: "Dairy", name: "milk", expiryDate: "2025-07-10"
+        }
       ];
-      analysisResults = mockItems.slice(0, Math.min(imageCount + 1, mockItems.length));
     }
     
     res.json({
       success: true,
       items: analysisResults,
-      aiUsed: images && images.length > 0 ? 'gemini-2.0-flash' : 'mock'
+      aiUsed: req.files && req.files.length > 0 ? 'gemini-2.0-flash' : 'mock'
     });
+    
   } catch (error) {
-    console.error('Error analyzing images:', error);
+    console.error('Error processing images:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to analyze images'
+      error: 'Failed to process images'
     });
   }
 });
@@ -227,16 +221,6 @@ app.post('/api/save-items', async (req, res) => {
     const { items, userId = 'anonymous' } = req.body;
     
     console.log('Saving items to database:', items);
-    
-    // Check if Supabase is available
-    if (!supabase) {
-      console.warn('Supabase not available, returning mock success');
-      return res.json({
-        success: true,
-        message: `Mock saved ${items.length} items (Supabase not configured)`,
-        savedItems: items
-      });
-    }
     
     // Prepare items for database insertion
     const itemsToSave = items.map(item => ({

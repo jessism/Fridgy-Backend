@@ -5,6 +5,9 @@ const { createClient } = require('@supabase/supabase-js');
 const OpenAI = require('openai');
 const multer = require('multer');
 
+// Import authentication routes
+const authRoutes = require('./routes/auth');
+
 // Load environment variables
 dotenv.config();
 
@@ -21,6 +24,9 @@ const upload = multer({
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Authentication routes
+app.use('/api/auth', authRoutes);
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
@@ -256,8 +262,19 @@ app.post('/api/save-items', async (req, res) => {
   }
 });
 
+// Test endpoint
+app.get('/api/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Backend is running!',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Health check available at: http://localhost:${PORT}/api/health`);
+  console.log(`Test endpoint available at: http://localhost:${PORT}/api/test`);
+  console.log(`Auth endpoints available at: http://localhost:${PORT}/api/auth/`);
 }); 

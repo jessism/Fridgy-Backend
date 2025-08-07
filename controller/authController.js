@@ -203,6 +203,40 @@ const authController = {
         error: 'Invalid token'
       });
     }
+  },
+
+  // Logout controller
+  async logout(req, res) {
+    try {
+      const token = req.headers.authorization?.replace('Bearer ', '');
+      
+      if (!token) {
+        return res.status(400).json({
+          success: false,
+          error: 'No token provided'
+        });
+      }
+
+      // For JWT tokens, we can't actually invalidate them server-side without 
+      // implementing a blacklist. For now, we'll just return success and let 
+      // the client handle clearing the token.
+      // In a production app, you might want to:
+      // 1. Add token to a blacklist table in database
+      // 2. Check blacklist in auth middleware
+      // 3. Or use shorter JWT expiration with refresh tokens
+
+      res.json({
+        success: true,
+        message: 'Logout successful'
+      });
+
+    } catch (error) {
+      console.error('Logout error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to logout'
+      });
+    }
   }
 };
 

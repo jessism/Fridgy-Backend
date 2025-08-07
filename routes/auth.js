@@ -12,4 +12,7 @@ router.post('/signin', authController.signin);
 // Get current user endpoint
 router.get('/me', authController.getCurrentUser);
 
+// Logout endpoint
+router.post('/logout', authController.logout);
+
 module.exports = router; 

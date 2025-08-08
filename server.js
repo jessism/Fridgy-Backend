@@ -5,8 +5,9 @@ const { createClient } = require('@supabase/supabase-js');
 const OpenAI = require('openai');
 const multer = require('multer');
 
-// Import authentication routes
+// Import routes
 const authRoutes = require('./routes/auth');
+const inventoryRoutes = require('./routes/inventory');
 
 // Load environment variables
 dotenv.config();
@@ -25,8 +26,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Authentication routes
+// Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/inventory', inventoryRoutes);
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
@@ -437,6 +439,7 @@ app.post('/api/save-items', async (req, res) => {
         item_name: item.item || item.name,  // Handle both field names
         quantity: parseInt(item.quantity) || 1,
         expiration_date: item.expires || item.expiryDate,  // Handle both field names
+        category: item.category || 'Other',  // Save category from AI analysis
         uploaded_at: new Date().toISOString(),
         created_at: new Date().toISOString()
       };

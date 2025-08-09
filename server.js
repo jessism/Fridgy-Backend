@@ -9,6 +9,7 @@ const multer = require('multer');
 const authRoutes = require('./routes/auth');
 const inventoryRoutes = require('./routes/inventory');
 const recipeRoutes = require('./routes/recipes');
+const userPreferencesRoutes = require('./routes/userPreferences');
 
 // Load environment variables
 dotenv.config();
@@ -31,6 +32,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/recipes', recipeRoutes);
+app.use('/api/user-preferences', userPreferencesRoutes);
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';

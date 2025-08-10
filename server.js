@@ -10,6 +10,7 @@ const authRoutes = require('./routes/auth');
 const inventoryRoutes = require('./routes/inventory');
 const recipeRoutes = require('./routes/recipes');
 const userPreferencesRoutes = require('./routes/userPreferences');
+const aiRecipeRoutes = require('./routes/aiRecipes');
 
 // Load environment variables
 dotenv.config();
@@ -33,6 +34,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/recipes', recipeRoutes);
 app.use('/api/user-preferences', userPreferencesRoutes);
+app.use('/api/ai-recipes', aiRecipeRoutes);
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
@@ -520,4 +522,5 @@ app.listen(PORT, () => {
   console.log(`   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   SUPABASE_URL: ${process.env.SUPABASE_URL ? '✅ Present' : '❌ Missing'}`);
   console.log(`   JWT_SECRET: ${process.env.JWT_SECRET ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   FIREWORKS_API_KEY: ${process.env.FIREWORKS_API_KEY ? '✅ Present' : '❌ Missing'}`);
 }); 

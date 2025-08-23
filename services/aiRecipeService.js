@@ -145,6 +145,7 @@ class AIRecipeService {
       const dietaryConsiderationsText = questionnaire.dietary_considerations?.length ? 
         questionnaire.dietary_considerations.join(', ') : 'None';
       const additionalNotesText = questionnaire.additional_notes || 'None';
+      const servingSizeText = questionnaire.serving_size || 2; // Default to 2 if not provided
 
       const recipePrompt = `You are a professional chef and recipe developer. Analyze the user's current fridge inventory and specific preferences to create exactly 3 unique, delicious recipes using ONLY the available ingredients.
 
@@ -160,6 +161,7 @@ USER DIETARY PREFERENCES:
 
 CURRENT COOKING CONTEXT:
 - Meal Type: ${mealTypeText}
+- Target Serving Size: ${servingSizeText} ${servingSizeText === 1 ? 'serving' : 'servings'}
 - Available Cooking Time: ${cookingTimeText}
 - Desired Vibe: ${vibeText}
 - Cuisine Preference: ${cuisinePreferenceText}
@@ -173,9 +175,17 @@ STRICT REQUIREMENTS:
 4. MUST match the specified meal type and cooking time constraints
 5. MUST reflect the desired vibe and cuisine preference
 6. Consider expiration dates - use items expiring sooner first
-7. Provide realistic portions based on available quantities
-8. Incorporate any additional notes and special considerations
-9. Each recipe should be practical, delicious, and contextually appropriate
+7. Scale ingredient amounts appropriately for the requested serving size (${servingSizeText} servings)
+8. Ensure portion sizes are realistic and practical for the target serving count
+9. Incorporate any additional notes and special considerations
+10. Each recipe should be practical, delicious, and contextually appropriate
+
+SERVING SIZE SCALING INSTRUCTIONS:
+- Target serving size: ${servingSizeText} ${servingSizeText === 1 ? 'serving' : 'servings'}
+- Scale ALL ingredient amounts proportionally to serve exactly ${servingSizeText} ${servingSizeText === 1 ? 'person' : 'people'}
+- Ensure measurements are practical (e.g., don't call for "0.3 eggs" - round sensibly to "1 egg")
+- Instructions should reflect the scaled quantities and cooking times may need adjustment
+- Consider cookware size - larger servings may need bigger pans or longer cooking times
 
 Return ONLY a valid JSON array with exactly 2 recipes in this format:
 [
@@ -185,7 +195,7 @@ Return ONLY a valid JSON array with exactly 2 recipes in this format:
     "prep_time": "X minutes",
     "cook_time": "X minutes", 
     "total_time": "X minutes",
-    "servings": 2,
+    "servings": ${servingSizeText},
     "difficulty": "Easy|Medium|Hard",
     "cuisine_type": "Italian|Asian|American|etc",
     "ingredients": [

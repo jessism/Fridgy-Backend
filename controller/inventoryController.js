@@ -51,6 +51,90 @@ const getUserIdFromToken = (req) => {
 
 // Inventory Controller Functions
 const inventoryController = {
+  // Create multiple inventory items for authenticated user
+  async createItems(req, res) {
+    const requestId = Math.random().toString(36).substring(7);
+    
+    try {
+      console.log(`\n📦 ================== CREATE ITEMS START ==================`);
+      console.log(`📦 REQUEST ID: ${requestId}`);
+      console.log(`📦 Creating inventory items for authenticated user...`);
+      
+      const { items } = req.body;
+      
+      // Get user ID from JWT token
+      const userId = getUserIdFromToken(req);
+      console.log(`📦 [${requestId}] User ID: ${userId}`);
+      console.log(`📦 [${requestId}] Items to create: ${items ? items.length : 0}`);
+      
+      // Validate input
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        throw new Error('No valid items provided');
+      }
+      
+      console.log(`📦 [${requestId}] Items data:`, items);
+      
+      const supabase = getSupabaseClient();
+      
+      // Prepare items for database insertion, ensuring user_id matches JWT token
+      const itemsToInsert = items.map((item, index) => {
+        const dbItem = {
+          user_id: userId, // Always use userId from JWT token for security
+          item_name: item.item_name,
+          quantity: parseInt(item.quantity) || 1,
+          expiration_date: item.expiration_date,
+          category: item.category || 'Other',
+          uploaded_at: new Date().toISOString(),
+          created_at: new Date().toISOString()
+        };
+        
+        console.log(`📦 [${requestId}] Item ${index + 1} prepared:`, dbItem);
+        return dbItem;
+      });
+      
+      // Insert all items into database
+      const { data: insertedItems, error } = await supabase
+        .from('fridge_items')
+        .insert(itemsToInsert)
+        .select('*');
+      
+      if (error) {
+        console.error(`❌ [${requestId}] Supabase error:`, error);
+        throw error;
+      }
+      
+      console.log(`📦 [${requestId}] Successfully created ${insertedItems ? insertedItems.length : 0} items`);
+      console.log(`📦 [${requestId}] Inserted items:`, insertedItems);
+      
+      res.json({
+        success: true,
+        message: `Successfully created ${insertedItems.length} items`,
+        savedItems: insertedItems,
+        count: insertedItems.length,
+        requestId: requestId
+      });
+      
+      console.log(`\n✅ [${requestId}] =============== CREATE ITEMS COMPLETE ===============\n`);
+      
+    } catch (error) {
+      console.error(`\n💥 [${requestId}] ========== CREATE ITEMS ERROR ==========`);
+      console.error(`💥 [${requestId}] Error:`, error);
+      console.error(`💥 [${requestId}] Error message:`, error.message);
+      console.error(`💥 [${requestId}] =============================================\n`);
+      
+      const statusCode = error.message.includes('token') ? 401 : 
+                        error.message.includes('No valid items') ? 400 : 500;
+      
+      res.status(statusCode).json({
+        success: false,
+        error: error.message.includes('token') ? 'Authentication required' : 
+               error.message.includes('No valid items') ? 'No valid items provided' :
+               'Failed to create items',
+        requestId: requestId
+      });
+    }
+  },
+
   // Get all inventory items for authenticated user
   async getInventory(req, res) {
     const requestId = Math.random().toString(36).substring(7);
@@ -265,7 +349,88 @@ const inventoryController = {
         requestId: requestId
       });
     }
+  },
+
+  // Validate if inventory can support requested serving size
+  async validateServingSize(req, res) {
+    const requestId = Math.random().toString(36).substring(7);
+    
+    try {
+      console.log(`\n🔍 ============== SERVING SIZE VALIDATION START ==============`);
+      console.log(`🔍 REQUEST ID: ${requestId}`);
+      
+      const requestedServings = parseInt(req.query.servings) || 1;
+      
+      // Get user ID from JWT token
+      const userId = getUserIdFromToken(req);
+      console.log(`🔍 [${requestId}] User ID: ${userId}, Requested Servings: ${requestedServings}`);
+      
+      const supabase = getSupabaseClient();
+      
+      // Get user's current inventory
+      const { data: inventory, error: inventoryError } = await supabase
+        .from('fridge_items')
+        .select('*')
+        .eq('user_id', userId);
+      
+      if (inventoryError) {
+        console.error(`❌ [${requestId}] Inventory fetch error:`, inventoryError);
+        throw inventoryError;
+      }
+      
+      console.log(`🔍 [${requestId}] Found ${inventory?.length || 0} inventory items`);
+      
+      // Estimate maximum realistic servings based on inventory
+      const maxRealisticServings = estimateMaxServingsFromInventory(inventory || []);
+      const isRealistic = requestedServings <= maxRealisticServings;
+      
+      console.log(`🔍 [${requestId}] Max realistic: ${maxRealisticServings}, Requested: ${requestedServings}, Realistic: ${isRealistic}`);
+      
+      const response = {
+        success: true,
+        data: {
+          requestedServings,
+          maxRealisticServings,
+          realistic: isRealistic,
+          confidence: (inventory?.length || 0) < 3 ? 'low' : 'medium',
+          inventoryItemCount: inventory?.length || 0
+        },
+        requestId: requestId,
+        timestamp: new Date().toISOString()
+      };
+      
+      res.json(response);
+      
+      console.log(`✅ [${requestId}] Serving size validation complete`);
+      console.log(`✅ ============== SERVING SIZE VALIDATION END ==============\n`);
+      
+    } catch (error) {
+      console.error(`❌ [${requestId}] Serving size validation error:`, error);
+      
+      const statusCode = error.message.includes('token') ? 401 : 500;
+      
+      res.status(statusCode).json({
+        success: false,
+        error: error.message.includes('token') ? 'Authentication required' : 'Failed to validate serving size',
+        requestId: requestId,
+        timestamp: new Date().toISOString()
+      });
+    }
   }
+};
+
+// Helper function to estimate maximum realistic servings from inventory
+const estimateMaxServingsFromInventory = (inventory) => {
+  const totalItems = inventory.length;
+  
+  // Simple heuristic based on total number of ingredients
+  if (totalItems === 0) return 1;      // No ingredients, but allow 1 serving
+  if (totalItems <= 2) return 1;       // Very limited ingredients
+  if (totalItems <= 4) return 2;       // Few ingredients  
+  if (totalItems <= 6) return 3;       // Decent ingredients
+  if (totalItems <= 8) return 4;       // Good variety
+  if (totalItems <= 10) return 5;      // Great variety
+  return Math.min(Math.ceil(totalItems / 2), 6); // Cap at 6 servings max
 };
 
 module.exports = inventoryController;

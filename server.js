@@ -11,6 +11,7 @@ const inventoryRoutes = require('./routes/inventory');
 const recipeRoutes = require('./routes/recipes');
 const userPreferencesRoutes = require('./routes/userPreferences');
 const aiRecipeRoutes = require('./routes/aiRecipes');
+const mealRoutes = require('./routes/meals');
 
 // Load environment variables
 dotenv.config();
@@ -26,8 +27,8 @@ const upload = multer({
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));  // Increased limit for larger payloads
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));  // Increased limit for form data
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -35,6 +36,7 @@ app.use('/api/inventory', inventoryRoutes);
 app.use('/api/recipes', recipeRoutes);
 app.use('/api/user-preferences', userPreferencesRoutes);
 app.use('/api/ai-recipes', aiRecipeRoutes);
+app.use('/api/meals', mealRoutes);
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';

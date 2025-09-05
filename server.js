@@ -12,6 +12,7 @@ const recipeRoutes = require('./routes/recipes');
 const userPreferencesRoutes = require('./routes/userPreferences');
 const aiRecipeRoutes = require('./routes/aiRecipes');
 const mealRoutes = require('./routes/meals');
+const ingredientImagesRoutes = require('./routes/ingredientImages');
 
 // Load environment variables
 dotenv.config();
@@ -37,6 +38,7 @@ app.use('/api/recipes', recipeRoutes);
 app.use('/api/user-preferences', userPreferencesRoutes);
 app.use('/api/ai-recipes', aiRecipeRoutes);
 app.use('/api/meals', mealRoutes);
+app.use('/api/ingredient-images', ingredientImagesRoutes);
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
@@ -87,8 +89,9 @@ const analyzeGroceryImages = async (images) => {
             text: `Analyze these grocery/food images and identify each food item. For each item, provide:
             1. Item name (common grocery name)
             2. Food category (see categories below)
-            3. Estimated quantity 
-            4. Estimated expiration date (see expiry logic below)
+            3. Estimated quantity (number of items/pieces)
+            4. Estimated total weight in ounces (oz) - IMPORTANT!
+            5. Estimated expiration date (see expiry logic below)
             
             TODAY'S DATE: ${new Date().toISOString().split('T')[0]}
             
@@ -100,6 +103,25 @@ const analyzeGroceryImages = async (images) => {
             - Fats and oils (cooking oil, olive oil, avocado oil, coconut oil, etc.)
             - Grains (bread, rice, pasta, cereal, oats, quinoa, etc.)
             - Other (for items that don't fit the above categories)
+            
+            WEIGHT ESTIMATION GUIDE (per item):
+            - Chicken breast: 6 oz each
+            - Steak/beef cut: 8 oz each
+            - Pork chop: 6 oz each
+            - Fish fillet: 5 oz each
+            - Apple: 7 oz each
+            - Banana: 4 oz each
+            - Orange: 8 oz each
+            - Carrot: 3 oz each
+            - Potato: 10 oz each
+            - Onion: 8 oz each
+            - Tomato: 5 oz each
+            - Broccoli crown: 16 oz each
+            - Bell pepper: 6 oz each
+            - Bread loaf: 20 oz each
+            - Milk (gallon): 128 oz
+            - Milk (half gallon): 64 oz
+            - Eggs: 2 oz each
             
             EXPIRY DATE LOGIC:
             1. First, look for printed expiration dates on packaging/labels
@@ -115,14 +137,15 @@ const analyzeGroceryImages = async (images) => {
             
             Return ONLY a JSON array in this exact format:
             [
-              {"item": "Item Name", "category": "Fruits", "quantity": number, "expires": "YYYY-MM-DD"},
-              {"item": "Item Name", "category": "Vegetables", "quantity": number, "expires": "YYYY-MM-DD"}
+              {"item": "Chicken breast", "category": "Protein", "quantity": 2, "total_weight_oz": 12, "expires": "YYYY-MM-DD"},
+              {"item": "Broccoli", "category": "Vegetables", "quantity": 1, "total_weight_oz": 16, "expires": "YYYY-MM-DD"}
             ]
             
             Guidelines:
             - Use common grocery names (e.g., "Milk" not "Dairy beverage")
             - Be precise with categories (dragon fruit = "Fruits", not "Produce")
-            - Quantity should be realistic (e.g., 1 for milk carton, 12 for egg carton, 6 for apple bag)
+            - Quantity should be the count of items (e.g., 2 for 2 chicken breasts)
+            - total_weight_oz should be quantity × weight per item (e.g., 2 × 6oz = 12oz)
             - Expiry dates must be FUTURE dates from today (${new Date().toISOString().split('T')[0]})
             - Consider visual ripeness/freshness when estimating expiry
             - If you can't clearly identify an item, skip it

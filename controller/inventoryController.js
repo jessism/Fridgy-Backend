@@ -84,11 +84,16 @@ const inventoryController = {
           quantity: parseInt(item.quantity) || 1,
           expiration_date: item.expiration_date,
           category: item.category || 'Other',
+          weight_equivalent: item.weight_equivalent || item.total_weight_oz || null, // Store weight if provided
+          weight_unit: (item.weight_equivalent || item.total_weight_oz) ? 'oz' : null, // Store unit as 'oz' if weight provided
           uploaded_at: new Date().toISOString(),
           created_at: new Date().toISOString()
         };
         
         console.log(`📦 [${requestId}] Item ${index + 1} prepared:`, dbItem);
+        if (dbItem.weight_equivalent) {
+          console.log(`📦 [${requestId}]   Weight: ${dbItem.weight_equivalent} ${dbItem.weight_unit}`);
+        }
         return dbItem;
       });
       
@@ -150,10 +155,18 @@ const inventoryController = {
       
       const supabase = getSupabaseClient();
       
-      // Fetch all non-deleted items for the user
+      // Fetch all non-deleted items for the user with ingredient images
       const { data: items, error } = await supabase
         .from('fridge_items')
-        .select('*')
+        .select(`
+          *,
+          ingredient_images:ingredient_image_id (
+            id,
+            ingredient_name,
+            image_url,
+            thumbnail_url
+          )
+        `)
         .eq('user_id', userId)
         .is('deleted_at', null) // Only get items that haven't been deleted
         .order('expiration_date', { ascending: true });
@@ -170,11 +183,16 @@ const inventoryController = {
         id: item.id,
         category: item.category || 'Other',
         itemName: item.item_name,
-        quantity: item.quantity.toString(),
+        quantity: parseFloat(item.quantity), // Keep as number for proper decimal display
+        unit: item.unit || 'pieces', // Include unit information
         expiryDate: item.expiration_date,
         status: calculateItemStatus(item.expiration_date, item.quantity),
         uploadedAt: item.uploaded_at,
-        createdAt: item.created_at
+        createdAt: item.created_at,
+        weightEquivalent: item.weight_equivalent, // Include weight data if available
+        weightUnit: item.weight_unit,
+        imageUrl: item.image_url || item.ingredient_images?.image_url || null, // Include image URL
+        thumbnailUrl: item.ingredient_images?.thumbnail_url || null // Include thumbnail if available
       }));
       
       console.log(`📦 [${requestId}] Formatted items:`, formattedItems);

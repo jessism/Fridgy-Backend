@@ -147,47 +147,71 @@ class AIRecipeService {
       const additionalNotesText = questionnaire.additional_notes || 'None';
       const servingSizeText = questionnaire.serving_size || 2; // Default to 2 if not provided
 
-      const recipePrompt = `You are a professional chef and recipe developer. Analyze the user's current fridge inventory and specific preferences to create exactly 3 unique, delicious recipes using ONLY the available ingredients.
+      // Group inventory by category for clearer understanding
+      const proteins = inventory.filter(i => i.category === 'Protein' || i.category === 'Meat').map(i => i.item_name);
+      const vegetables = inventory.filter(i => i.category === 'Vegetables').map(i => i.item_name);
+      const fruits = inventory.filter(i => i.category === 'Fruits').map(i => i.item_name);
+      const dairy = inventory.filter(i => i.category === 'Dairy').map(i => i.item_name);
+      const grains = inventory.filter(i => i.category === 'Grains' || i.category === 'Pasta').map(i => i.item_name);
+      
+      const recipePrompt = `You are an expert chef creating personalized recipes for a home cook. You MUST follow these rules in STRICT PRIORITY ORDER.
 
-CURRENT FRIDGE INVENTORY:
+🔴 CRITICAL CONSTRAINTS - VIOLATION WILL CAUSE REJECTION:
+
+1. MAIN INGREDIENTS - You can ONLY use these items from the user's fridge:
 ${inventoryText}
 
-USER DIETARY PREFERENCES:
-- Dietary Restrictions: ${restrictionsText}
-- Allergies: ${allergiesText}  
-- Preferred Cuisines: ${cuisinePrefsText}
-- Cooking Time Preference: ${timePreferenceText}
-- Custom Allergies: ${preferences.custom_allergies || 'None'}
+   Available Proteins: ${proteins.length > 0 ? proteins.join(', ') : 'NONE'}
+   Available Vegetables: ${vegetables.length > 0 ? vegetables.join(', ') : 'NONE'}
+   Available Fruits: ${fruits.length > 0 ? fruits.join(', ') : 'NONE'}
+   Available Dairy: ${dairy.length > 0 ? dairy.join(', ') : 'NONE'}
+   
+   ⚠️ CRITICAL: If salmon is the only protein, ALL 3 recipes MUST use salmon
+   ⚠️ CRITICAL: Do NOT suggest chicken/beef/tilapia if they're not listed above
+   ⚠️ CRITICAL: Every main ingredient MUST be from the list above
 
-CURRENT COOKING CONTEXT:
-- Meal Type: ${mealTypeText}
-- Target Serving Size: ${servingSizeText} ${servingSizeText === 1 ? 'serving' : 'servings'}
-- Available Cooking Time: ${cookingTimeText}
-- Desired Vibe: ${vibeText}
-- Cuisine Preference: ${cuisinePreferenceText}
-- Special Considerations: ${dietaryConsiderationsText}
-- Additional Notes: ${additionalNotesText}
+2. ALLERGIES & RESTRICTIONS - NEVER VIOLATE:
+   ${allergiesText !== 'None' ? `❌ NEVER USE: ${allergiesText} - User is ALLERGIC!` : ''}
+   ${restrictionsText !== 'None' ? `❌ MUST RESPECT: ${restrictionsText}` : ''}
+   ${preferences.custom_allergies ? `❌ ALSO AVOID: ${preferences.custom_allergies}` : ''}
 
-STRICT REQUIREMENTS:
-1. Use ONLY ingredients from the inventory above - no additional ingredients
-2. Respect ALL dietary restrictions and allergies completely
-3. Create 3 completely different recipes with different cooking methods
-4. MUST match the specified meal type and cooking time constraints
-5. MUST reflect the desired vibe and cuisine preference
-6. Consider expiration dates - use items expiring sooner first
-7. Scale ingredient amounts appropriately for the requested serving size (${servingSizeText} servings)
-8. Ensure portion sizes are realistic and practical for the target serving count
-9. Incorporate any additional notes and special considerations
-10. Each recipe should be practical, delicious, and contextually appropriate
+🟡 MANDATORY PREFERENCES - MUST FOLLOW:
 
-SERVING SIZE SCALING INSTRUCTIONS:
-- Target serving size: ${servingSizeText} ${servingSizeText === 1 ? 'serving' : 'servings'}
-- Scale ALL ingredient amounts proportionally to serve exactly ${servingSizeText} ${servingSizeText === 1 ? 'person' : 'people'}
-- Ensure measurements are practical (e.g., don't call for "0.3 eggs" - round sensibly to "1 egg")
-- Instructions should reflect the scaled quantities and cooking times may need adjustment
-- Consider cookware size - larger servings may need bigger pans or longer cooking times
+3. CURRENT MEAL REQUEST:
+   - MUST BE: ${mealTypeText}
+   - MUST COMPLETE IN: ${cookingTimeText}
+   - MUST MATCH VIBE: ${vibeText}
+   - MUST SERVE: Exactly ${servingSizeText} ${servingSizeText === 1 ? 'person' : 'people'}
+   ${questionnaire.additional_notes ? `- SPECIAL REQUEST: ${additionalNotesText}` : ''}
 
-Return ONLY a valid JSON array with exactly 2 recipes in this format:
+4. USER PROFILE PREFERENCES:
+   - Preferred Cuisines: ${cuisinePrefsText}
+   - Skill Level: ${timePreferenceText}
+   ${dietaryConsiderationsText !== 'None' ? `- Today's Considerations: ${dietaryConsiderationsText}` : ''}
+
+🟢 PANTRY STAPLES - You MAY assume these are available:
+   - Basic seasonings: salt, pepper, garlic powder, onion powder
+   - Oils/fats: olive oil, vegetable oil, butter, cooking spray
+   - Common liquids: water, milk, cream, broth
+   - Basic items: flour, sugar, eggs, breadcrumbs
+   - Common acids: vinegar, lemon juice, soy sauce
+   - Dried herbs: oregano, basil, thyme, paprika
+
+VALIDATION BEFORE RETURNING:
+□ Each recipe uses at least 2-3 MAIN ingredients from the fridge inventory
+□ NO allergic ingredients included anywhere
+□ All 3 recipes are ${questionnaire.meal_type || 'appropriate'} meals
+□ All can be completed within ${cookingTimeText}
+□ All match the ${vibeText} style requested
+□ All serve exactly ${servingSizeText} people
+
+THINK STEP BY STEP:
+1. What proteins do I have? ${proteins.length > 0 ? proteins.join(', ') : 'NO PROTEINS - make vegetarian'}
+2. What vegetables? ${vegetables.length > 0 ? vegetables.join(', ') : 'None available'}
+3. Can I make ${questionnaire.meal_type} with these? YES - proceed
+4. Will it be ${vibeText}? Make sure it matches
+
+Return ONLY a valid JSON array with exactly 3 recipes in this format:
 [
   {
     "title": "Descriptive Recipe Name",
@@ -292,9 +316,66 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
       }
 
       // Validate recipes structure
-      if (!Array.isArray(recipes) || recipes.length !== 2) {
-        console.error(`❌ [${requestId}] Invalid recipe structure - expected 2 recipes, got:`, recipes.length);
-        throw new Error(`Expected exactly 2 recipes, got ${recipes.length}`);
+      if (!Array.isArray(recipes) || recipes.length !== 3) {
+        console.error(`❌ [${requestId}] Invalid recipe structure - expected 3 recipes, got:`, recipes.length);
+        throw new Error(`Expected exactly 3 recipes, got ${recipes.length}`);
+      }
+
+      // Post-generation validation: Ensure recipes use inventory items
+      console.log(`🔍 [${requestId}] Validating recipes against inventory...`);
+      const validationIssues = [];
+      
+      recipes.forEach((recipe, index) => {
+        console.log(`🔍 [${requestId}] Validating Recipe ${index + 1}: "${recipe.title}"`);
+        
+        // Check if recipe uses any main ingredients from inventory
+        const recipeIngredients = recipe.ingredients.map(ing => ing.item.toLowerCase());
+        const inventoryNames = inventory.map(item => item.item_name.toLowerCase());
+        
+        // Check for main ingredient usage (excluding pantry staples)
+        const pantryStaples = ['salt', 'pepper', 'oil', 'butter', 'flour', 'sugar', 'garlic powder', 
+                              'onion powder', 'milk', 'cream', 'water', 'vinegar', 'soy sauce'];
+        
+        const mainIngredientsUsed = recipeIngredients.filter(ing => {
+          // Check if this is a pantry staple
+          const isPantryStaple = pantryStaples.some(staple => ing.includes(staple));
+          if (isPantryStaple) return false;
+          
+          // Check if this ingredient is from inventory
+          return inventoryNames.some(invItem => 
+            ing.includes(invItem) || invItem.includes(ing)
+          );
+        });
+        
+        if (mainIngredientsUsed.length === 0) {
+          validationIssues.push(`Recipe "${recipe.title}" uses NO items from inventory!`);
+          console.error(`❌ [${requestId}] Recipe ${index + 1} validation failed: No inventory items used`);
+        } else {
+          console.log(`✅ [${requestId}] Recipe ${index + 1} uses inventory items: ${mainIngredientsUsed.join(', ')}`);
+        }
+        
+        // Check for forbidden ingredients (proteins not in inventory)
+        const forbiddenProteins = ['chicken', 'beef', 'pork', 'tilapia', 'cod', 'turkey', 'lamb'];
+        const availableProteins = inventory
+          .filter(item => item.category === 'Protein' || item.category === 'Meat')
+          .map(item => item.item_name.toLowerCase());
+        
+        forbiddenProteins.forEach(protein => {
+          if (recipeIngredients.some(ing => ing.includes(protein)) && 
+              !availableProteins.some(avail => avail.includes(protein))) {
+            validationIssues.push(`Recipe "${recipe.title}" uses ${protein} which is NOT in inventory!`);
+            console.error(`❌ [${requestId}] Forbidden protein detected: ${protein}`);
+          }
+        });
+      });
+      
+      if (validationIssues.length > 0) {
+        console.error(`❌ [${requestId}] Recipe validation failed with ${validationIssues.length} issues:`);
+        validationIssues.forEach(issue => console.error(`   - ${issue}`));
+        // Log but don't fail - let the recipes through but monitor the issue
+        console.warn(`⚠️  [${requestId}] Proceeding despite validation issues - AI needs improvement`);
+      } else {
+        console.log(`✅ [${requestId}] All recipes validated successfully!`);
       }
 
       console.log(`🎉 [${requestId}] Recipe generation successful!`);

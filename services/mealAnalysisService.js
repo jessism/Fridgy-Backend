@@ -17,37 +17,50 @@ const mealAnalysisService = {
       console.log('🍽️ Base64 image created, length:', base64Image.length);
 
       // Prepare the AI prompt
-      const prompt = `Analyze this meal photo and identify all ingredients with approximate quantities.
+      const prompt = `Analyze this meal photo and identify all consumed ingredients with standardized units.
       
-      Return ONLY a JSON object with the following structure:
+      IMPORTANT UNIT STANDARDIZATION:
+      - For proteins (meat, fish, tofu): ALWAYS use ounces (oz)
+      - For vegetables: ALWAYS use ounces (oz) 
+      - For grains/pasta (cooked): use cups
+      - For liquids/sauces: use tablespoons (tbsp)
+      - Never use "pieces" or "servings" - convert to weight/volume
+      
+      PORTION ESTIMATION GUIDE:
+      - Typical chicken/meat serving: 4-6 oz
+      - Typical fish serving: 4-5 oz
+      - Typical vegetable serving: 4-8 oz
+      - Typical rice/pasta (cooked): 1 cup (~6 oz)
+      - Typical sauce/dressing: 2-4 tbsp
+      
+      Return ONLY a JSON object with this structure:
       {
-        "meal_name": "concise name for the dish (2-4 words, e.g., 'Chicken Stir Fry', 'Pasta Carbonara', 'Greek Salad')",
+        "meal_name": "concise name for the dish (2-4 words)",
         "ingredients": [
           {
-            "name": "ingredient name (e.g., 'chicken breast, grilled')",
-            "quantity": estimated amount as a number,
-            "unit": "measurement unit (cup, oz, piece, tbsp, etc.)",
-            "category": "food category (protein, vegetable, grain, etc.)",
-            "calories": estimated calories (optional, number only),
-            "confidence": confidence score from 0-100
+            "name": "base ingredient name (e.g., 'chicken', 'broccoli')",
+            "quantity": estimated amount consumed as number,
+            "unit": "oz for proteins/vegetables, cups for grains, tbsp for sauces",
+            "category": "protein/vegetable/grain/sauce/etc.",
+            "calories": estimated calories (number),
+            "confidence": confidence score 0-100
           }
         ]
       }
       
-      Important guidelines:
-      - Provide a clear, appetizing meal name that describes the dish
-      - Be specific about preparation (cooked, raw, grilled, boiled, etc.)
-      - Use singular form for ingredient names
-      - Estimate realistic portions based on typical serving sizes
-      - Include all visible ingredients, even small amounts like herbs or spices
-      - For mixed dishes, break down into individual components
+      Guidelines:
+      - Use simple base ingredient names (chicken not "chicken breast, grilled")
+      - Focus on what was CONSUMED (visible portion on plate)
+      - Be conservative with portions if unsure
+      - All proteins and vegetables MUST be in oz
       
       Example output:
       {
-        "meal_name": "Pad Thai",
+        "meal_name": "Grilled Chicken Dinner",
         "ingredients": [
-          {"name": "rice noodles, cooked", "quantity": 1, "unit": "cup", "category": "grain", "calories": 190, "confidence": 85},
-          {"name": "chicken breast, grilled", "quantity": 4, "unit": "oz", "category": "protein", "calories": 180, "confidence": 90}
+          {"name": "chicken", "quantity": 5, "unit": "oz", "category": "protein", "calories": 220, "confidence": 90},
+          {"name": "broccoli", "quantity": 6, "unit": "oz", "category": "vegetable", "calories": 50, "confidence": 85},
+          {"name": "rice", "quantity": 1, "unit": "cup", "category": "grain", "calories": 200, "confidence": 80}
         ]
       }`;
 

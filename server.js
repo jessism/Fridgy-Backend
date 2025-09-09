@@ -16,6 +16,7 @@ const userPreferencesRoutes = require('./routes/userPreferences');
 const aiRecipeRoutes = require('./routes/aiRecipes');
 const mealRoutes = require('./routes/meals');
 const ingredientImagesRoutes = require('./routes/ingredientImages');
+const onboardingRoutes = require('./routes/onboarding');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -62,6 +63,7 @@ app.use('/api/user-preferences', userPreferencesRoutes);
 app.use('/api/ai-recipes', aiRecipeRoutes);
 app.use('/api/meals', mealRoutes);
 app.use('/api/ingredient-images', ingredientImagesRoutes);
+app.use('/api/onboarding', onboardingRoutes);
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
@@ -574,5 +576,6 @@ app.listen(PORT, () => {
   console.log(`   SPOONACULAR_API_KEY: ${process.env.SPOONACULAR_API_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   EDAMAM_APP_ID: ${process.env.EDAMAM_APP_ID ? '✅ Present' : '❌ Missing'}`);
   console.log(`   EDAMAM_APP_KEY: ${process.env.EDAMAM_APP_KEY ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   RAPIDAPI_KEY: ${process.env.RAPIDAPI_KEY ? '✅ Present (Tasty)' : '❌ Missing (Tasty)'}`);
   console.log(`   FIREWORKS_API_KEY: ${process.env.FIREWORKS_API_KEY ? '✅ Present' : '❌ Missing'}`);
 }); 

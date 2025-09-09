@@ -114,6 +114,107 @@ router.get('/edamam-test/suggestions', authMiddleware.authenticateToken, async (
   }
 });
 
+// Tasty test route for side-by-side comparison
+// GET /api/recipes/tasty-test/check
+router.get('/tasty-test/check', async (req, res) => {
+  console.log('\n🍳 Testing Tasty connection...');
+  
+  try {
+    // Check if API key is configured
+    const apiKeySet = !!process.env.RAPIDAPI_KEY;
+    
+    if (!apiKeySet) {
+      return res.json({
+        success: false,
+        message: 'Tasty API key not configured',
+        credentials: {
+          apiKeySet: false
+        }
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Tasty API configured',
+      credentials: {
+        apiKeySet: true
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      credentials: {
+        apiKeySet: !!process.env.RAPIDAPI_KEY
+      }
+    });
+  }
+});
+
+// Tasty recipes based on inventory
+// GET /api/recipes/tasty-test/suggestions
+router.get('/tasty-test/suggestions', authMiddleware.authenticateToken, async (req, res) => {
+  const requestId = Math.random().toString(36).substring(7);
+  
+  try {
+    console.log(`\n🍳 Tasty test request: ${requestId}`);
+    
+    // Get user ID from JWT token
+    const userId = req.user?.userId || req.user?.id;
+    console.log(`🍳 User ID: ${userId}`);
+    
+    // Check if Tasty is configured
+    if (!process.env.RAPIDAPI_KEY) {
+      throw new Error('Tasty API key not configured');
+    }
+    
+    // Get user's inventory
+    const inventory = await recipeService.getUserInventory(userId);
+    
+    if (inventory.length === 0) {
+      console.log(`⚠️ No inventory items found for user`);
+      return res.json({
+        success: true,
+        suggestions: [],
+        source: 'tasty',
+        message: 'No inventory items to search with'
+      });
+    }
+    
+    // Prioritize ingredients
+    const prioritizedIngredients = recipeService.prioritizeIngredients(inventory);
+    const ingredientNames = prioritizedIngredients.map(item => item.item_name);
+    
+    console.log(`🍳 Searching Tasty with: ${ingredientNames.slice(0, 5).join(', ')}`);
+    
+    // Import Tasty service
+    const tastyService = require('../services/tastyService');
+    
+    // Get recipes from Tasty
+    const tastyRecipes = await tastyService.searchRecipesByIngredients(
+      ingredientNames,
+      { number: parseInt(req.query.limit) || 8 }
+    );
+    
+    console.log(`🍳 Found ${tastyRecipes.length} Tasty recipes`);
+    
+    res.json({
+      success: true,
+      suggestions: tastyRecipes,
+      source: 'tasty',
+      count: tastyRecipes.length
+    });
+    
+  } catch (error) {
+    console.error(`💥 Tasty test error:`, error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      source: 'tasty'
+    });
+  }
+});
+
 // Get detailed recipe information
 // GET /api/recipes/:id
 // NOTE: This generic route must come AFTER all specific routes

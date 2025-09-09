@@ -1,8 +1,18 @@
 const jwt = require('jsonwebtoken');
 const recipeService = require('../services/recipeService');
+const inventoryDeductionService = require('../services/inventoryDeductionService');
+const { createClient } = require('@supabase/supabase-js');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
+
+// Helper function to get Supabase client
+const getSupabaseClient = () => {
+  return createClient(
+    process.env.SUPABASE_URL || 'your-supabase-url',
+    process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key'
+  );
+};
 
 // Helper function to get user ID from token
 const getUserIdFromToken = (req) => {
@@ -121,6 +131,54 @@ const recipeController = {
       
       console.log(`📖 [${requestId}] Retrieved details for: ${recipeDetails.title}`);
       
+      // Extract step-by-step instructions from analyzedInstructions
+      let instructionSteps = [];
+      if (recipeDetails.analyzedInstructions && recipeDetails.analyzedInstructions.length > 0) {
+        const firstSection = recipeDetails.analyzedInstructions[0];
+        if (firstSection.steps && Array.isArray(firstSection.steps)) {
+          instructionSteps = firstSection.steps.map(step => step.step);
+        }
+      }
+
+      // Extract and format nutrition data
+      let nutrition = null;
+      if (recipeDetails.nutrition) {
+        const nutrients = recipeDetails.nutrition.nutrients || [];
+        const caloricBreakdown = recipeDetails.nutrition.caloricBreakdown || {};
+        
+        // Find key nutrients
+        const findNutrient = (name) => {
+          const nutrient = nutrients.find(n => 
+            n.name.toLowerCase().includes(name.toLowerCase())
+          );
+          return nutrient ? {
+            amount: Math.round(nutrient.amount * 10) / 10,
+            unit: nutrient.unit,
+            percentOfDailyNeeds: Math.round(nutrient.percentOfDailyNeeds)
+          } : null;
+        };
+        
+        nutrition = {
+          perServing: {
+            calories: findNutrient('Calories'),
+            protein: findNutrient('Protein'),
+            carbohydrates: findNutrient('Carbohydrates'),
+            fat: findNutrient('Fat'),
+            saturatedFat: findNutrient('Saturated Fat'),
+            fiber: findNutrient('Fiber'),
+            sugar: findNutrient('Sugar'),
+            sodium: findNutrient('Sodium'),
+            cholesterol: findNutrient('Cholesterol')
+          },
+          caloricBreakdown: {
+            percentProtein: Math.round(caloricBreakdown.percentProtein || 0),
+            percentFat: Math.round(caloricBreakdown.percentFat || 0),
+            percentCarbs: Math.round(caloricBreakdown.percentCarbs || 0)
+          },
+          healthScore: recipeDetails.healthScore || 0
+        };
+      }
+
       // Format response with additional fields
       const formattedRecipe = {
         id: recipeDetails.id,
@@ -134,6 +192,8 @@ const recipeController = {
         sourceUrl: recipeDetails.sourceUrl,
         summary: recipeDetails.summary,
         instructions: recipeDetails.instructions,
+        instructionSteps: instructionSteps, // Add structured step-by-step instructions
+        nutrition: nutrition, // Add formatted nutrition data
         extendedIngredients: recipeDetails.extendedIngredients?.map(ing => ({
           id: ing.id,
           name: ing.name,
@@ -183,52 +243,74 @@ const recipeController = {
   },
 
   /**
-   * Mark ingredients as used when cooking a recipe
+   * Cook a recipe and deduct ingredients from inventory
    * POST /api/recipes/:id/cook
    */
   async markRecipeCooked(req, res) {
     const requestId = Math.random().toString(36).substring(7);
     
     try {
-      console.log(`\n👨‍🍳 ================ MARK RECIPE COOKED START ================`);
+      console.log(`\n👨‍🍳 ================ COOK RECIPE START ================`);
       console.log(`👨‍🍳 REQUEST ID: ${requestId}`);
       
       const { id } = req.params;
-      const { usedIngredients = [] } = req.body;
+      const { ingredients = [], imageUrl, mealType, mealName, servings = 1 } = req.body;
       
       // Get user ID from JWT token
       const userId = getUserIdFromToken(req);
       console.log(`👨‍🍳 [${requestId}] User ID: ${userId}, Recipe ID: ${id}`);
+      console.log(`👨‍🍳 [${requestId}] Meal name: ${mealName}`);
+      console.log(`👨‍🍳 [${requestId}] Meal type: ${mealType}`);
+      console.log(`👨‍🍳 [${requestId}] Servings: ${servings}`);
       
       if (!id || isNaN(parseInt(id))) {
         throw new Error('Invalid recipe ID');
       }
       
-      if (!Array.isArray(usedIngredients)) {
-        throw new Error('usedIngredients must be an array');
+      if (!Array.isArray(ingredients) || ingredients.length === 0) {
+        throw new Error('No ingredients provided');
       }
       
-      console.log(`👨‍🍳 [${requestId}] Marking ${usedIngredients.length} ingredients as used`);
+      // Validate meal type if provided
+      const validMealTypes = ['breakfast', 'lunch', 'dinner', 'snack'];
+      if (mealType && !validMealTypes.includes(mealType)) {
+        throw new Error('Invalid meal type. Must be breakfast, lunch, dinner, or snack');
+      }
       
-      // TODO: Implement inventory update logic
-      // This would decrease quantities of used ingredients in the fridge_items table
-      // For now, we'll just return success
+      console.log(`👨‍🍳 [${requestId}] Processing ${ingredients.length} ingredients for deduction`);
       
-      console.log(`⚠️  [${requestId}] Ingredient usage tracking not yet implemented`);
+      // Format ingredients for deduction service
+      const formattedIngredients = ingredients.map(ing => ({
+        name: ing.name,
+        quantity: ing.quantity * servings, // Multiply by servings
+        unit: ing.unit || 'piece'
+      }));
       
+      // Deduct ingredients from inventory and save meal log
+      const deductionResult = await inventoryDeductionService.deductFromInventory(
+        userId,
+        formattedIngredients,
+        imageUrl,  // Recipe image URL
+        mealType,  // Meal type (breakfast, lunch, dinner, snack)
+        null,      // Use current date
+        mealName   // Recipe title as meal name
+      );
+      
+      console.log(`👨‍🍳 [${requestId}] Deduction results:`, deductionResult.summary);
+      
+      // Return the results
       res.json({
         success: true,
-        message: 'Recipe marked as cooked successfully',
+        results: deductionResult,
+        message: `Successfully cooked ${mealName} with ${deductionResult.summary.successfulDeductions} items deducted`,
         requestId: requestId,
-        cookedRecipeId: parseInt(id),
-        ingredientsUsed: usedIngredients.length,
-        note: 'Ingredient quantity updates not yet implemented'
+        timestamp: new Date().toISOString()
       });
       
-      console.log(`\n✅ [${requestId}] ============= MARK RECIPE COOKED COMPLETE =============\n`);
+      console.log(`\n✅ [${requestId}] ============= COOK RECIPE COMPLETE =============\n`);
       
     } catch (error) {
-      console.error(`\n💥 [${requestId}] ========== MARK RECIPE COOKED ERROR ==========`);
+      console.error(`\n💥 [${requestId}] ========== COOK RECIPE ERROR ==========`);
       console.error(`💥 [${requestId}] Error:`, error);
       console.error(`💥 [${requestId}] =============================================\n`);
       

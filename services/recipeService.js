@@ -189,7 +189,7 @@ class RecipeService {
     }
 
     try {
-      const path = `/recipes/${recipeId}/information?includeNutrition=false&apiKey=${apiKey}`;
+      const path = `/recipes/${recipeId}/information?includeNutrition=true&apiKey=${apiKey}`;
       
       const recipe = await this.makeApiRequest(path);
       
@@ -197,6 +197,107 @@ class RecipeService {
     } catch (error) {
       console.error(`Error fetching recipe details for ID ${recipeId}:`, error);
       throw new Error(`Failed to fetch recipe details: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get bulk recipe information for multiple recipe IDs
+   */
+  async getRecipeDetailsBulk(recipeIds) {
+    const apiKey = process.env.SPOONACULAR_API_KEY;
+    if (!apiKey || apiKey === 'your-api-key-here') {
+      throw new Error('Spoonacular API key not configured');
+    }
+
+    if (!recipeIds || recipeIds.length === 0) {
+      return [];
+    }
+
+    try {
+      // Spoonacular bulk endpoint accepts comma-separated IDs
+      const ids = recipeIds.join(',');
+      const path = `/recipes/informationBulk?ids=${ids}&includeNutrition=true&apiKey=${apiKey}`;
+      
+      console.log(`📚 Fetching bulk recipe details for ${recipeIds.length} recipes`);
+      
+      const recipes = await this.makeApiRequest(path);
+      
+      return recipes;
+    } catch (error) {
+      console.error(`Error fetching bulk recipe details:`, error);
+      throw new Error(`Failed to fetch bulk recipe details: ${error.message}`);
+    }
+  }
+
+  /**
+   * Check if a recipe has valid instructions
+   */
+  hasInstructions(recipe) {
+    // Check for instructions in multiple formats
+    if (recipe.instructions && recipe.instructions.length > 50) {
+      // Has text instructions with reasonable length
+      return true;
+    }
+    
+    if (recipe.analyzedInstructions && 
+        Array.isArray(recipe.analyzedInstructions) && 
+        recipe.analyzedInstructions.length > 0) {
+      // Check if there are actual steps in the analyzed instructions
+      const hasSteps = recipe.analyzedInstructions.some(section => 
+        section.steps && Array.isArray(section.steps) && section.steps.length > 0
+      );
+      return hasSteps;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Filter recipes to only include those with instructions
+   */
+  async filterRecipesWithInstructions(recipes) {
+    if (!recipes || recipes.length === 0) {
+      return [];
+    }
+
+    const requestId = Math.random().toString(36).substring(7);
+    console.log(`🔍 [${requestId}] Filtering ${recipes.length} recipes for instructions...`);
+
+    try {
+      // Extract recipe IDs
+      const recipeIds = recipes.map(r => r.id);
+      
+      // Fetch detailed information for all recipes
+      const detailedRecipes = await this.getRecipeDetailsBulk(recipeIds);
+      
+      // Create a map for quick lookup
+      const detailsMap = new Map();
+      detailedRecipes.forEach(recipe => {
+        detailsMap.set(recipe.id, recipe);
+      });
+      
+      // Filter recipes that have instructions
+      const recipesWithInstructions = recipes.filter(recipe => {
+        const details = detailsMap.get(recipe.id);
+        if (!details) {
+          console.log(`⚠️ [${requestId}] No details found for recipe ${recipe.id}: ${recipe.title}`);
+          return false;
+        }
+        
+        const hasInstr = this.hasInstructions(details);
+        if (!hasInstr) {
+          console.log(`❌ [${requestId}] No instructions for recipe ${recipe.id}: ${recipe.title}`);
+        }
+        return hasInstr;
+      });
+      
+      console.log(`✅ [${requestId}] ${recipesWithInstructions.length} of ${recipes.length} recipes have instructions`);
+      
+      return recipesWithInstructions;
+    } catch (error) {
+      console.error(`❌ [${requestId}] Error filtering recipes:`, error);
+      // Return original recipes if filtering fails
+      return recipes;
     }
   }
 
@@ -306,14 +407,23 @@ class RecipeService {
         return [];
       }
       
-      // Step 4: Calculate match scores and format
-      console.log(`🧮 [${requestId}] Step 4: Calculating match scores...`);
-      const recipeSuggestions = recipes.map(recipe => {
+      // Step 4: Filter recipes with instructions
+      console.log(`📝 [${requestId}] Step 4: Filtering recipes with instructions...`);
+      const recipesWithInstructions = await this.filterRecipesWithInstructions(recipes);
+      
+      if (recipesWithInstructions.length === 0) {
+        console.log(`⚠️  [${requestId}] No recipes with instructions found`);
+        return [];
+      }
+      
+      // Step 5: Calculate match scores and format
+      console.log(`🧮 [${requestId}] Step 5: Calculating match scores...`);
+      const recipeSuggestions = recipesWithInstructions.map(recipe => {
         const matchScore = this.calculateMatchScore(recipe, prioritizedIngredients);
         return this.formatRecipeForFrontend(recipe, matchScore, prioritizedIngredients);
       });
       
-      // Step 5: Sort by match score
+      // Step 6: Sort by match score
       recipeSuggestions.sort((a, b) => b.matchPercentage - a.matchPercentage);
       
       console.log(`✅ [${requestId}] Generated ${recipeSuggestions.length} recipe suggestions`);

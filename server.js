@@ -28,8 +28,24 @@ const upload = multer({
 
 // Configure CORS for production
 const corsOptions = {
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'https://fridgy-frontend.vercel.app'
+    ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
   optionsSuccessStatus: 200
 };
 
@@ -551,6 +567,7 @@ app.listen(PORT, () => {
   console.log(`Auth endpoints available at: http://localhost:${PORT}/api/auth/`);
   console.log(`Image processing available at: http://localhost:${PORT}/api/process-images`);
   console.log(`\n📝 Environment check:`);
+  console.log(`   FRONTEND_URL: ${process.env.FRONTEND_URL || 'Not set (using default)'}`);
   console.log(`   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   SUPABASE_URL: ${process.env.SUPABASE_URL ? '✅ Present' : '❌ Missing'}`);
   console.log(`   JWT_SECRET: ${process.env.JWT_SECRET ? '✅ Present' : '❌ Missing'}`);

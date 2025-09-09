@@ -3,8 +3,7 @@ const https = require('https');
 class EdamamService {
   constructor() {
     this.baseUrl = 'api.edamam.com';
-    this.appId = process.env.EDAMAM_APP_ID;
-    this.appKey = process.env.EDAMAM_APP_KEY;
+    // Don't cache credentials - read them fresh each time
   }
 
   makeRequest(path) {
@@ -54,6 +53,15 @@ class EdamamService {
   }
 
   async searchRecipesByIngredients(ingredients, options = {}) {
+    // Read credentials fresh each time
+    const appId = process.env.EDAMAM_APP_ID;
+    const appKey = process.env.EDAMAM_APP_KEY;
+    
+    if (!appId || !appKey) {
+      console.error('Edamam credentials missing:', { appId: !!appId, appKey: !!appKey });
+      throw new Error('Edamam API credentials not configured');
+    }
+    
     // Request more recipes since we'll filter some out
     const { number = 8 } = options;
     const requestNumber = number * 3; // Request 3x more to account for filtering
@@ -63,8 +71,8 @@ class EdamamService {
     const params = new URLSearchParams({
       type: 'public',
       q: query,
-      app_id: this.appId,
-      app_key: this.appKey,
+      app_id: appId,
+      app_key: appKey,
       from: 0,
       to: requestNumber
     });

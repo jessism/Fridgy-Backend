@@ -571,5 +571,8 @@ app.listen(PORT, () => {
   console.log(`   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   SUPABASE_URL: ${process.env.SUPABASE_URL ? '✅ Present' : '❌ Missing'}`);
   console.log(`   JWT_SECRET: ${process.env.JWT_SECRET ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   SPOONACULAR_API_KEY: ${process.env.SPOONACULAR_API_KEY ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   EDAMAM_APP_ID: ${process.env.EDAMAM_APP_ID ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   EDAMAM_APP_KEY: ${process.env.EDAMAM_APP_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   FIREWORKS_API_KEY: ${process.env.FIREWORKS_API_KEY ? '✅ Present' : '❌ Missing'}`);
 }); 

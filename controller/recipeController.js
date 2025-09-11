@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const recipeService = require('../services/recipeService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
+const tastyService = require('../services/tastyService');
 const { createClient } = require('@supabase/supabase-js');
 
 // JWT secret
@@ -122,12 +123,29 @@ const recipeController = {
       const userId = getUserIdFromToken(req);
       console.log(`📖 [${requestId}] User ID: ${userId}, Recipe ID: ${id}`);
       
-      if (!id || isNaN(parseInt(id))) {
-        throw new Error('Invalid recipe ID');
+      if (!id) {
+        throw new Error('Recipe ID is required');
       }
       
-      // Get recipe details from service
-      const recipeDetails = await recipeService.getRecipeDetails(parseInt(id));
+      let recipeDetails;
+      
+      // Check if this might be a Tasty recipe by attempting to get it from cache first
+      // Tasty recipes are cached with their original ID (could be string)
+      try {
+        console.log(`📖 [${requestId}] Attempting to get recipe from Tasty cache: ${id}`);
+        recipeDetails = await tastyService.getRecipeDetails(id);
+        console.log(`📖 [${requestId}] Found Tasty recipe: ${recipeDetails.title}`);
+      } catch (tastyError) {
+        // If not in Tasty cache, try Spoonacular
+        console.log(`📖 [${requestId}] Not a Tasty recipe, trying Spoonacular: ${tastyError.message}`);
+        
+        if (isNaN(parseInt(id))) {
+          throw new Error('Invalid recipe ID format for Spoonacular');
+        }
+        
+        recipeDetails = await recipeService.getRecipeDetails(parseInt(id));
+        console.log(`📖 [${requestId}] Found Spoonacular recipe: ${recipeDetails.title}`);
+      }
       
       console.log(`📖 [${requestId}] Retrieved details for: ${recipeDetails.title}`);
       
@@ -210,7 +228,12 @@ const recipeController = {
         dairyFree: recipeDetails.dairyFree,
         glutenFree: recipeDetails.glutenFree,
         vegetarian: recipeDetails.vegetarian,
-        vegan: recipeDetails.vegan
+        vegan: recipeDetails.vegan,
+        
+        // Tasty-specific features
+        video: recipeDetails.video || null,
+        _source: recipeDetails._source || 'spoonacular',
+        _hasVideo: recipeDetails._hasVideo || false
       };
       
       res.json({

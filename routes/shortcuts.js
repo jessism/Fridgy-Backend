@@ -1,0 +1,371 @@
+const express = require('express');
+const router = express.Router();
+const crypto = require('crypto');
+const InstagramExtractor = require('../services/instagramExtractor');
+const RecipeAIExtractor = require('../services/recipeAIExtractor');
+const authMiddleware = require('../middleware/auth');
+const { getServiceClient } = require('../config/supabase');
+const { shortcutImportLimiter } = require('../middleware/rateLimiter');
+const { validateShortcutImport, sanitizeRecipeData } = require('../middleware/validation');
+
+// Use service client for database operations (bypasses RLS)
+const supabase = getServiceClient();
+
+const instagramExtractor = new InstagramExtractor();
+const recipeAI = new RecipeAIExtractor();
+
+// POST /api/shortcuts/import - Main import endpoint for shortcuts
+router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req, res) => {
+  try {
+    const { url, token, caption } = req.body;
+    
+    console.log('[Shortcuts] Import request received:', { url, hasToken: !!token });
+    
+    // Validate input
+    if (!url || !token) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameters'
+      });
+    }
+    
+    // Validate and get user from token
+    const { data: tokenData, error: tokenError } = await supabase
+      .from('shortcut_tokens')
+      .select('user_id, usage_count, daily_usage_count, daily_usage_reset')
+      .eq('token', token)
+      .eq('is_active', true)
+      .single();
+    
+    if (tokenError || !tokenData) {
+      console.log('[Shortcuts] Invalid token:', token);
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired token. Please reinstall shortcut.'
+      });
+    }
+    
+    // Check daily limits
+    const dailyLimit = parseInt(process.env.MAX_RECIPES_PER_DAY_FREE) || 5;
+    const now = new Date();
+    const resetTime = tokenData.daily_usage_reset ? new Date(tokenData.daily_usage_reset) : now;
+    
+    if (tokenData.daily_usage_count >= dailyLimit && resetTime > now) {
+      return res.status(429).json({
+        success: false,
+        error: `Daily limit reached (${dailyLimit} recipes). Resets at ${resetTime.toLocaleTimeString()}`
+      });
+    }
+    
+    // Reset daily counter if needed
+    if (resetTime <= now) {
+      await supabase
+        .from('shortcut_tokens')
+        .update({
+          daily_usage_count: 0,
+          daily_usage_reset: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString()
+        })
+        .eq('token', token);
+      tokenData.daily_usage_count = 0;
+    }
+    
+    // Extract Instagram content
+    console.log(`[Shortcuts] Extracting from URL: ${url}`);
+    const instagramData = await instagramExtractor.extractFromUrl(url);
+    
+    console.log('[Shortcuts] Instagram extraction result:', {
+      success: instagramData.success,
+      hasCaption: !!instagramData.caption,
+      captionLength: instagramData.caption?.length || 0,
+      captionPreview: instagramData.caption?.substring(0, 200),
+      imageCount: instagramData.images?.length || 0,
+      hashtags: instagramData.hashtags
+    });
+    
+    // Use provided caption if extraction failed
+    if (!instagramData.success && caption) {
+      console.log('[Shortcuts] Using provided caption as fallback');
+      instagramData.caption = caption;
+      instagramData.success = true;
+    }
+    
+    // Extract recipe using AI
+    console.log('[Shortcuts] Extracting recipe with AI...');
+    const aiResult = await recipeAI.extractFromInstagramData(instagramData);
+    
+    console.log('[Shortcuts] AI extraction result:', {
+      success: aiResult.success,
+      confidence: aiResult.confidence,
+      title: aiResult.recipe?.title,
+      ingredientCount: aiResult.recipe?.extendedIngredients?.length,
+      notes: aiResult.extractionNotes,
+      missingInfo: aiResult.missingInfo
+    });
+    
+    // More lenient handling - accept partial recipes with warnings
+    if (!aiResult.success) {
+      console.log('[Shortcuts] Recipe extraction had low confidence. Full AI result:', aiResult);
+      
+      // If we have partial data, try to save it anyway
+      if (aiResult.partialExtraction && aiResult.recipe) {
+        console.log('[Shortcuts] Attempting to save partial recipe extraction');
+        
+        // Update the recipe title if we have caption info
+        if (instagramData.caption) {
+          const firstLine = instagramData.caption.split('\n')[0].substring(0, 100);
+          if (firstLine && firstLine.length > 5) {
+            aiResult.recipe.title = firstLine.replace(/[🍝🌟✨🥗🍕🍔]/g, '').trim() || "Recipe from Instagram";
+          }
+        }
+        
+        // Mark as low confidence but continue
+        aiResult.success = true;
+        aiResult.confidence = 0.3;
+        aiResult.extractionNotes = "Partial recipe extraction - please review and edit the saved recipe";
+      } else {
+        // Complete failure - no data to save
+        let errorMessage = 'Could not extract recipe from this post';
+        if (aiResult.extractionNotes) {
+          errorMessage += `: ${aiResult.extractionNotes}`;
+        }
+        if (!instagramData.caption || instagramData.caption.length < 50) {
+          errorMessage = 'No recipe content found. The Instagram post may not contain a recipe or the caption could not be extracted.';
+        }
+        
+        return res.status(400).json({
+          success: false,
+          error: errorMessage,
+          details: {
+            extractionNotes: aiResult.extractionNotes,
+            missingInfo: aiResult.missingInfo,
+            captionFound: !!instagramData.caption,
+            captionLength: instagramData.caption?.length,
+            confidence: aiResult.confidence
+          }
+        });
+      }
+    }
+    
+    // Transform recipe to match RecipeDetailModal format
+    // Sanitize and transform recipe data
+    const sanitizedRecipe = sanitizeRecipeData({
+      ...aiResult.recipe,
+      sourceUrl: url,
+      sourceAuthor: instagramData.author?.username,
+      sourceAuthorImage: instagramData.author?.profilePic,
+      image: aiResult.recipe.image || instagramData.images?.[0]?.url || instagramData.images?.[0]
+    });
+    
+    const transformedRecipe = {
+      user_id: tokenData.user_id,
+      ...sanitizedRecipe,
+      
+      // Additional arrays that might be present
+      cuisines: aiResult.recipe.cuisines || [],
+      dishTypes: aiResult.recipe.dishTypes || [],
+      diets: aiResult.recipe.diets || [],
+      
+      // Metadata
+      extraction_confidence: aiResult.confidence,
+      extraction_notes: aiResult.extractionNotes,
+      missing_info: aiResult.missingInfo || [],
+      ai_model_used: 'gemini-2.0-flash',
+      
+      // Nutrition is null for imported recipes initially
+      nutrition: null
+    };
+    
+    // Save recipe to database
+    const { data: savedRecipe, error: saveError } = await supabase
+      .from('saved_recipes')
+      .insert(transformedRecipe)
+      .select()
+      .single();
+    
+    if (saveError) {
+      console.error('[Shortcuts] Save error:', saveError);
+      throw saveError;
+    }
+    
+    // Update token usage
+    await supabase
+      .from('shortcut_tokens')
+      .update({
+        usage_count: tokenData.usage_count + 1,
+        daily_usage_count: tokenData.daily_usage_count + 1,
+        last_used: new Date().toISOString()
+      })
+      .eq('token', token);
+    
+    console.log('[Shortcuts] Recipe saved successfully:', savedRecipe.id);
+    
+    // Return success response for shortcut
+    res.json({
+      success: true,
+      recipe: {
+        id: savedRecipe.id,
+        title: savedRecipe.title,
+        confidence: aiResult.confidence
+      },
+      message: savedRecipe.title // This shows in notification
+    });
+    
+  } catch (error) {
+    console.error('[Shortcuts] Import error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to import recipe. Please try again.'
+    });
+  }
+});
+
+// GET /api/shortcuts/setup - Get user's shortcut configuration
+router.get('/setup', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
+    
+    console.log('[Shortcuts] Setup request for user:', userId);
+    
+    // Check for existing token
+    let { data: existingToken } = await supabase
+      .from('shortcut_tokens')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .single();
+    
+    let token;
+    if (existingToken) {
+      token = existingToken.token;
+      console.log('[Shortcuts] Found existing token for user');
+    } else {
+      // Generate new secure token
+      const tokenPrefix = process.env.SHORTCUT_TOKEN_PREFIX || 'scut_';
+      const randomString = crypto.randomBytes(16).toString('hex');
+      token = `${tokenPrefix}${userId.substring(0, 8)}_${randomString}`;
+      
+      const { data: insertedToken, error } = await supabase
+        .from('shortcut_tokens')
+        .insert({
+          user_id: userId,
+          token: token,
+          device_info: {
+            userAgent: req.headers['user-agent'],
+            ip: req.ip
+          }
+        })
+        .select()
+        .single();
+      
+      if (error) {
+        console.error('[Shortcuts] Insert error details:', {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          hint: error.hint
+        });
+        throw error;
+      }
+      console.log('[Shortcuts] Generated new token for user:', insertedToken?.id);
+    }
+    
+    // Generate shortcut configuration
+    const baseUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const config = {
+      token: token,
+      apiUrl: `${baseUrl}/api/shortcuts/import`,
+      shortcutName: 'Save to Fridgy',
+      
+      // Shortcut download URL - use .shortcut extension for better iOS handling
+      installUrl: `${frontendUrl}/shortcuts/save-to-fridgy.shortcut`,
+      
+      // Instructions for the shortcut
+      instructions: {
+        acceptsUrls: true,
+        acceptsText: true,
+        showNotification: true
+      },
+      
+      usage: existingToken ? {
+        totalSaved: existingToken.usage_count,
+        lastUsed: existingToken.last_used,
+        dailyUsed: existingToken.daily_usage_count,
+        dailyLimit: parseInt(process.env.MAX_RECIPES_PER_DAY_FREE) || 5
+      } : null
+    };
+    
+    res.json(config);
+    
+  } catch (error) {
+    console.error('[Shortcuts] Setup error:', {
+      message: error.message,
+      code: error.code,
+      details: error.details,
+      stack: error.stack
+    });
+    res.status(500).json({ 
+      error: 'Failed to generate shortcut configuration',
+      debug: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// POST /api/shortcuts/regenerate - Generate new token
+router.post('/regenerate', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
+    
+    console.log('[Shortcuts] Regenerating token for user:', userId);
+    
+    // Deactivate old tokens
+    await supabase
+      .from('shortcut_tokens')
+      .update({ is_active: false })
+      .eq('user_id', userId);
+    
+    // Generate new token
+    const tokenPrefix = process.env.SHORTCUT_TOKEN_PREFIX || 'scut_';
+    const randomString = crypto.randomBytes(16).toString('hex');
+    const newToken = `${tokenPrefix}${userId.substring(0, 8)}_${randomString}`;
+    
+    await supabase
+      .from('shortcut_tokens')
+      .insert({
+        user_id: userId,
+        token: newToken
+      });
+    
+    res.json({ 
+      success: true, 
+      token: newToken,
+      message: 'New token generated. Please reinstall your shortcut.'
+    });
+    
+  } catch (error) {
+    console.error('[Shortcuts] Regenerate error:', error);
+    res.status(500).json({ error: 'Failed to regenerate token' });
+  }
+});
+
+// GET /api/shortcuts/test - Test endpoint for development
+router.get('/test', async (req, res) => {
+  res.json({
+    success: true,
+    message: 'Shortcuts API is working',
+    endpoints: [
+      'POST /api/shortcuts/import',
+      'GET /api/shortcuts/setup',
+      'POST /api/shortcuts/regenerate'
+    ],
+    features: {
+      manualCaptionSupport: true,
+      partialExtractionSupport: true, 
+      lowConfidenceAcceptance: true,
+      enhancedLogging: true,
+      detailedErrorMessages: true
+    }
+  });
+});
+
+module.exports = router;

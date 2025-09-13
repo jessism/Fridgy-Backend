@@ -11,12 +11,15 @@ const multer = require('multer');
 // Import routes
 const authRoutes = require('./routes/auth');
 const inventoryRoutes = require('./routes/inventory');
+const inventoryAnalyticsRoutes = require('./routes/inventoryAnalytics');
 const recipeRoutes = require('./routes/recipes');
 const userPreferencesRoutes = require('./routes/userPreferences');
 const aiRecipeRoutes = require('./routes/aiRecipes');
 const mealRoutes = require('./routes/meals');
 const ingredientImagesRoutes = require('./routes/ingredientImages');
 const onboardingRoutes = require('./routes/onboarding');
+const shortcutsRoutes = require('./routes/shortcuts');
+const savedRecipesRoutes = require('./routes/savedRecipes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -35,8 +38,14 @@ const corsOptions = {
     
     const allowedOrigins = [
       'http://localhost:3000',
+      'http://192.168.1.72:3000',
       'https://fridgy-frontend.vercel.app'
     ];
+    
+    // Allow any ngrok domain for testing
+    if (origin && origin.includes('.ngrok-free.app')) {
+      return callback(null, true);
+    }
     
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
@@ -58,12 +67,15 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));  // Increased li
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/inventory', inventoryRoutes);
+app.use('/api/inventory-analytics', inventoryAnalyticsRoutes);
 app.use('/api/recipes', recipeRoutes);
 app.use('/api/user-preferences', userPreferencesRoutes);
 app.use('/api/ai-recipes', aiRecipeRoutes);
 app.use('/api/meals', mealRoutes);
 app.use('/api/ingredient-images', ingredientImagesRoutes);
 app.use('/api/onboarding', onboardingRoutes);
+app.use('/api/shortcuts', shortcutsRoutes);
+app.use('/api/saved-recipes', savedRecipesRoutes);
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';

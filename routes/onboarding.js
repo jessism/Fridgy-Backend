@@ -9,6 +9,7 @@ router.get('/progress', onboardingController.getProgress);
 
 // Protected routes (require auth after account creation)
 router.post('/complete', authMiddleware.authenticateToken, onboardingController.completeOnboarding);
+router.get('/user-onboarding', authMiddleware.authenticateToken, onboardingController.getUserOnboardingData);
 router.post('/skip', onboardingController.skipOnboarding);
 
 module.exports = router;

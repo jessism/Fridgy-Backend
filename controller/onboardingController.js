@@ -193,6 +193,55 @@ const onboardingController = {
   },
   
   /**
+   * Get user onboarding data
+   * GET /api/user-onboarding
+   */
+  async getUserOnboardingData(req, res) {
+    try {
+      console.log('🔄 Fetching user onboarding data...');
+
+      // Get user ID from JWT token
+      const userId = getUserIdFromToken(req);
+      console.log('User ID:', userId);
+
+      const supabase = getSupabaseClient();
+
+      // Fetch onboarding data for the user
+      const { data: onboardingData, error } = await supabase
+        .from('user_onboarding_data')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (error && error.code !== 'PGRST116') {
+        // PGRST116 is "not found" which is expected for users without onboarding data
+        throw error;
+      }
+
+      console.log('✅ Onboarding data fetched successfully');
+
+      res.json({
+        success: true,
+        hasOnboardingData: !!onboardingData,
+        onboardingData: onboardingData || null,
+        message: onboardingData ? 'Onboarding data found' : 'No onboarding data found'
+      });
+
+    } catch (error) {
+      console.error('❌ Error fetching onboarding data:', error);
+
+      const statusCode = error.message?.includes('token') ? 401 : 500;
+
+      res.status(statusCode).json({
+        success: false,
+        error: error.message?.includes('token')
+          ? 'Authentication required'
+          : 'Failed to fetch onboarding data'
+      });
+    }
+  },
+
+  /**
    * Skip onboarding
    * POST /api/onboarding/skip
    */

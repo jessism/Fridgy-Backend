@@ -8,6 +8,9 @@ const { createClient } = require('@supabase/supabase-js');
 const OpenAI = require('openai');
 const multer = require('multer');
 
+// Import middleware
+const authMiddleware = require('./middleware/auth');
+
 // Import routes
 const authRoutes = require('./routes/auth');
 const inventoryRoutes = require('./routes/inventory');
@@ -76,6 +79,81 @@ app.use('/api/ingredient-images', ingredientImagesRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/shortcuts', shortcutsRoutes);
 app.use('/api/saved-recipes', savedRecipesRoutes);
+
+// Image proxy endpoint for Instagram URLs (to bypass CORS)
+app.get('/api/proxy-image', async (req, res) => {
+  try {
+    const { url } = req.query;
+
+    if (!url) {
+      return res.status(400).json({ error: 'URL parameter is required' });
+    }
+
+    // Only allow Instagram image URLs for security
+    if (!url.includes('cdninstagram.com') &&
+        !url.includes('instagram.com') &&
+        !url.includes('fbcdn.net') &&
+        !url.includes('instagram.')) {
+      return res.status(400).json({ error: 'Only Instagram image URLs are allowed' });
+    }
+
+    console.log('[ImageProxy] Proxying Instagram image:', url.substring(0, 100) + '...');
+
+    // Fetch the image from Instagram
+    const fetch = require('node-fetch');
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'image/*,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+      },
+      timeout: 10000 // 10 second timeout
+    });
+
+    if (!response.ok) {
+      console.error('[ImageProxy] Failed to fetch image:', {
+        status: response.status,
+        statusText: response.statusText,
+        url: url.substring(0, 100) + '...',
+        headers: Object.fromEntries(response.headers.entries())
+      });
+      return res.status(404).json({ error: 'Image not found or not accessible' });
+    }
+
+    // Get the content type
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.startsWith('image/')) {
+      return res.status(400).json({ error: 'URL does not point to a valid image' });
+    }
+
+    // Set appropriate headers
+    res.set({
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=86400', // Cache for 24 hours
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    });
+
+    // Stream the image data
+    response.body.pipe(res);
+
+    console.log('[ImageProxy] Successfully proxied image');
+
+  } catch (error) {
+    console.error('[ImageProxy] Error proxying image:', {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+      url: req.query.url?.substring(0, 100) + '...'
+    });
+    res.status(500).json({ error: 'Failed to proxy image', details: error.message });
+  }
+});
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
@@ -322,6 +400,483 @@ const analyzeGroceryImages = async (images) => {
   }
 };
 
+// Recipe Image Analysis Function
+const analyzeRecipeImage = async (imageBase64) => {
+  const aiRequestId = Math.random().toString(36).substring(7);
+
+  try {
+    console.log(`\n🍳 ================== RECIPE ANALYSIS START ==================`);
+    console.log(`🍳 RECIPE REQUEST ID: ${aiRequestId}`);
+    console.log(`🍳 Analyzing recipe image with Gemini 2.0 Flash...`);
+    console.log(`🍳 Timestamp: ${new Date().toISOString()}`);
+    console.log(`🍳 ========================================================\n`);
+
+    // Validate API key
+    if (!process.env.OPENROUTER_API_KEY) {
+      throw new Error('OPENROUTER_API_KEY is missing from environment variables');
+    }
+
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    console.log(`🔐 [${aiRequestId}] API key present: ✅`);
+
+    // Prepare messages for Gemini
+    const messages = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: `Analyze this recipe image and extract the complete recipe information. This could be from a cookbook, magazine, handwritten note, or any recipe source.
+
+EXTRACTION REQUIREMENTS:
+1. Recipe title/name - extract the exact title if visible
+2. Complete ingredients list with quantities and units
+3. Step-by-step cooking instructions in order
+4. Cooking time and servings (if visible)
+5. Any dietary information mentioned
+
+IMPORTANT GUIDELINES:
+- Extract ALL visible text related to the recipe
+- Preserve exact quantities and measurements
+- Keep instructions in the original order
+- If handwritten, do your best to interpret the handwriting
+- If parts are unclear, make reasonable assumptions based on context
+
+Return the result as a JSON object with this EXACT structure:
+{
+  "title": "Recipe Name",
+  "summary": "Brief description of the dish",
+  "image": null,
+  "extendedIngredients": [
+    {
+      "original": "2 cups all-purpose flour",
+      "name": "flour",
+      "amount": 2,
+      "unit": "cups"
+    }
+  ],
+  "analyzedInstructions": [
+    {
+      "name": "",
+      "steps": [
+        {
+          "number": 1,
+          "step": "First step instructions"
+        }
+      ]
+    }
+  ],
+  "readyInMinutes": 30,
+  "servings": 4,
+  "vegetarian": false,
+  "vegan": false,
+  "glutenFree": false,
+  "dairyFree": false
+}
+
+Respond with ONLY the JSON object, no additional text.`
+          },
+          {
+            type: "image_url",
+            image_url: {
+              url: imageBase64
+            }
+          }
+        ]
+      }
+    ];
+
+    console.log(`📝 [${aiRequestId}] Calling OpenRouter API...`);
+
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'http://localhost:5000',
+        'X-Title': 'Fridgy Recipe Scanner'
+      },
+      body: JSON.stringify({
+        model: 'google/gemini-2.0-flash-exp:free',
+        messages: messages,
+        temperature: 0.3,
+        max_tokens: 2000
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`❌ [${aiRequestId}] OpenRouter API error:`, errorData);
+      throw new Error(`OpenRouter API failed: ${response.status}`);
+    }
+
+    const responseData = await response.json();
+    console.log(`✅ [${aiRequestId}] OpenRouter API response received`);
+
+    if (!responseData.choices || !responseData.choices[0] || !responseData.choices[0].message) {
+      throw new Error('Invalid response from OpenRouter API');
+    }
+
+    const content = responseData.choices[0].message.content;
+    console.log(`📊 [${aiRequestId}] Parsing AI response...`);
+
+    // Parse the JSON response
+    let recipeData;
+    try {
+      // Clean the response in case there's extra text
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        recipeData = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON found in response');
+      }
+    } catch (parseError) {
+      console.error(`❌ [${aiRequestId}] Failed to parse AI response:`, parseError);
+      console.log(`❌ [${aiRequestId}] Raw content:`, content);
+      throw new Error('Failed to parse recipe data');
+    }
+
+    // Ensure required fields exist
+    if (!recipeData.title) {
+      recipeData.title = "Scanned Recipe";
+    }
+
+    if (!recipeData.extendedIngredients || !Array.isArray(recipeData.extendedIngredients)) {
+      recipeData.extendedIngredients = [];
+    }
+
+    if (!recipeData.analyzedInstructions || !Array.isArray(recipeData.analyzedInstructions)) {
+      recipeData.analyzedInstructions = [{ name: "", steps: [] }];
+    }
+
+    console.log(`✅ [${aiRequestId}] Recipe extracted successfully:`, {
+      title: recipeData.title,
+      ingredientCount: recipeData.extendedIngredients.length,
+      stepCount: recipeData.analyzedInstructions[0]?.steps?.length || 0
+    });
+
+    return recipeData;
+
+  } catch (error) {
+    console.error(`\n💥 [${aiRequestId}] ========== RECIPE ANALYSIS ERROR ==========`);
+    console.error(`💥 [${aiRequestId}] Error:`, error.message);
+    console.error(`💥 [${aiRequestId}] ==========================================\n`);
+    throw error;
+  }
+};
+
+// Helper function for OpenRouter API with fallback
+const callOpenRouterWithFallback = async (requestData, requestId) => {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+
+  // Try free model first
+  console.log(`🆓 [${requestId}] Trying free model: google/gemini-2.0-flash-exp:free`);
+  try {
+    const freeResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'http://localhost:5000',
+        'X-Title': 'Fridgy Recipe Scanner'
+      },
+      body: JSON.stringify({
+        ...requestData,
+        model: 'google/gemini-2.0-flash-exp:free'
+      })
+    });
+
+    if (freeResponse.ok) {
+      console.log(`✅ [${requestId}] Free model successful!`);
+      return await freeResponse.json();
+    }
+
+    // Check if it's a rate limit error
+    if (freeResponse.status === 429) {
+      const errorData = await freeResponse.text();
+      console.log(`⚠️ [${requestId}] Free model rate limited (429), trying paid fallback...`);
+      console.log(`⚠️ [${requestId}] Rate limit details:`, errorData);
+
+      // Fallback to paid model
+      console.log(`💳 [${requestId}] Trying paid model: google/gemini-flash-1.5`);
+      const paidResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'http://localhost:5000',
+          'X-Title': 'Fridgy Recipe Scanner'
+        },
+        body: JSON.stringify({
+          ...requestData,
+          model: 'google/gemini-flash-1.5'
+        })
+      });
+
+      if (paidResponse.ok) {
+        console.log(`✅ [${requestId}] Paid model fallback successful!`);
+        return await paidResponse.json();
+      } else {
+        const paidErrorData = await paidResponse.text();
+        console.error(`❌ [${requestId}] Paid model also failed:`, paidErrorData);
+        throw new Error(`Both free and paid models failed: ${paidResponse.status}`);
+      }
+    } else {
+      // Non-rate-limit error, throw original error
+      const errorData = await freeResponse.text();
+      console.error(`❌ [${requestId}] Free model error (non-rate-limit):`, errorData);
+      throw new Error(`OpenRouter API failed: ${freeResponse.status}`);
+    }
+  } catch (error) {
+    // Network or other errors
+    console.error(`❌ [${requestId}] Network/fetch error:`, error.message);
+    throw error;
+  }
+};
+
+// Multi-Page Recipe Image Analysis Function - Returns recipe data AND best photo index
+const analyzeRecipeImages = async (imageBase64Array) => {
+  const aiRequestId = Math.random().toString(36).substring(7);
+
+  try {
+    console.log(`\n🍳 ================== MULTI-PAGE RECIPE ANALYSIS START ==================`);
+    console.log(`🍳 RECIPE REQUEST ID: ${aiRequestId}`);
+    console.log(`🍳 Analyzing ${imageBase64Array.length} recipe page(s) with Gemini 2.0 Flash...`);
+    console.log(`🍳 Timestamp: ${new Date().toISOString()}`);
+    console.log(`🍳 ====================================================================\n`);
+
+    // Validate API key
+    if (!process.env.OPENROUTER_API_KEY) {
+      throw new Error('OPENROUTER_API_KEY is missing from environment variables');
+    }
+
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    console.log(`🔐 [${aiRequestId}] API key present: ✅`);
+
+    // Build content array with all images
+    const contentArray = [
+      {
+        type: "text",
+        text: `Analyze these recipe images and extract the complete recipe information. These images may represent multiple pages of the same recipe from a cookbook, magazine, handwritten notes, or any recipe source.
+
+MULTI-PAGE HANDLING:
+- These ${imageBase64Array.length} image(s) may contain different parts of the same recipe
+- Page 1 might have the title and ingredients
+- Page 2 might have the cooking instructions
+- Combine ALL information from ALL pages into a single complete recipe
+
+EXTRACTION REQUIREMENTS:
+1. Recipe title/name - extract the exact title (usually on first page)
+2. Complete ingredients list with quantities and units (combine from all pages)
+3. Step-by-step cooking instructions in order (may span multiple pages)
+4. Cooking time and servings (if visible on any page)
+5. Any dietary information mentioned
+
+IMPORTANT GUIDELINES:
+- Extract and COMBINE all visible text related to the recipe from ALL pages
+- Preserve exact quantities and measurements
+- Keep instructions in the original order, even if split across pages
+- If handwritten, do your best to interpret the handwriting
+- If parts are unclear, make reasonable assumptions based on context
+- Ensure continuity between pages (e.g., step 5 on page 2 follows step 4 from page 1)
+
+Return the result as a JSON object with this EXACT structure:
+{
+  "title": "Recipe Name",
+  "summary": "Brief description of the dish",
+  "image": null,
+  "extendedIngredients": [
+    {
+      "original": "2 cups all-purpose flour",
+      "name": "flour",
+      "amount": 2,
+      "unit": "cups"
+    }
+  ],
+  "analyzedInstructions": [
+    {
+      "name": "",
+      "steps": [
+        {
+          "number": 1,
+          "step": "First step instructions"
+        }
+      ]
+    }
+  ],
+  "readyInMinutes": 30,
+  "servings": 4,
+  "vegetarian": false,
+  "vegan": false,
+  "glutenFree": false,
+  "dairyFree": false
+}
+
+Respond with ONLY the JSON object, no additional text.`
+      }
+    ];
+
+    // Add all images to the content array
+    imageBase64Array.forEach((imageBase64, index) => {
+      contentArray.push({
+        type: "image_url",
+        image_url: {
+          url: imageBase64
+        }
+      });
+      console.log(`📄 [${aiRequestId}] Added page ${index + 1} to analysis`);
+    });
+
+    // Prepare messages for Gemini
+    const messages = [
+      {
+        role: "user",
+        content: contentArray
+      }
+    ];
+
+    console.log(`📝 [${aiRequestId}] Calling OpenRouter API with ${imageBase64Array.length} pages...`);
+
+    const responseData = await callOpenRouterWithFallback({
+      messages: messages,
+      temperature: 0.3,
+      max_tokens: 3000  // Increased for potentially longer multi-page recipes
+    }, aiRequestId);
+    console.log(`✅ [${aiRequestId}] OpenRouter API response received`);
+
+    if (!responseData.choices || !responseData.choices[0] || !responseData.choices[0].message) {
+      throw new Error('Invalid response from OpenRouter API');
+    }
+
+    const content = responseData.choices[0].message.content;
+    console.log(`📊 [${aiRequestId}] Parsing AI response...`);
+
+    // Parse the JSON response
+    let recipeData;
+    try {
+      // Clean the response in case there's extra text
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        recipeData = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON found in response');
+      }
+    } catch (parseError) {
+      console.error(`❌ [${aiRequestId}] Failed to parse AI response:`, parseError);
+      console.log(`❌ [${aiRequestId}] Raw content:`, content);
+      throw new Error('Failed to parse recipe data');
+    }
+
+    // Ensure required fields exist
+    if (!recipeData.title) {
+      recipeData.title = "Scanned Recipe";
+    }
+
+    if (!recipeData.extendedIngredients || !Array.isArray(recipeData.extendedIngredients)) {
+      recipeData.extendedIngredients = [];
+    }
+
+    if (!recipeData.analyzedInstructions || !Array.isArray(recipeData.analyzedInstructions)) {
+      recipeData.analyzedInstructions = [{ name: "", steps: [] }];
+    }
+
+    console.log(`✅ [${aiRequestId}] Multi-page recipe extracted successfully:`, {
+      title: recipeData.title,
+      pages: imageBase64Array.length,
+      ingredientCount: recipeData.extendedIngredients.length,
+      stepCount: recipeData.analyzedInstructions[0]?.steps?.length || 0
+    });
+
+    // Step 2: Identify the best photo that shows the finished dish
+    let bestPhotoIndex = 0; // Default to first photo if AI can't determine
+
+    if (imageBase64Array.length > 1) {
+      console.log(`🖼️ [${aiRequestId}] Identifying best photo from ${imageBase64Array.length} images...`);
+
+      try {
+        const photoSelectionContent = [
+          {
+            type: "text",
+            text: `You have ${imageBase64Array.length} images from a recipe. Please identify which image best shows the FINISHED DISH or FOOD itself (not ingredient lists, instruction text, or recipe title pages).
+
+            Look for:
+            - Plated food or completed dish
+            - Food photography showing the final result
+            - The most appetizing view of the prepared meal
+
+            Avoid selecting:
+            - Pages with mostly text (ingredients list or instructions)
+            - Title pages or headers
+            - Close-ups of raw ingredients
+
+            Return ONLY a JSON object with this format:
+            {
+              "bestPhotoIndex": 0,
+              "confidence": "high",
+              "reason": "Shows the finished plated dish"
+            }
+
+            The index is 0-based (0 for first image, 1 for second, etc.)`
+          }
+        ];
+
+        // Add all images for comparison
+        imageBase64Array.forEach((base64, index) => {
+          photoSelectionContent.push({
+            type: "image_url",
+            image_url: { url: base64 }
+          });
+        });
+
+        const photoResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'http://localhost:5000',
+            'X-Title': 'Fridgy Recipe Scanner - Photo Selection'
+          },
+          body: JSON.stringify({
+            model: 'google/gemini-2.0-flash-exp:free',
+            messages: [{ role: "user", content: photoSelectionContent }],
+            temperature: 0.1,
+            max_tokens: 200
+          })
+        });
+
+        if (photoResponse.ok) {
+          const photoData = await photoResponse.json();
+          const photoContent = photoData.choices[0]?.message?.content;
+
+          try {
+            const photoMatch = photoContent.match(/\{[\s\S]*\}/);
+            if (photoMatch) {
+              const photoSelection = JSON.parse(photoMatch[0]);
+              bestPhotoIndex = photoSelection.bestPhotoIndex || 0;
+              console.log(`🖼️ [${aiRequestId}] Best photo identified: Index ${bestPhotoIndex} - ${photoSelection.reason}`);
+            }
+          } catch (e) {
+            console.log(`⚠️ [${aiRequestId}] Could not parse photo selection, using first photo`);
+          }
+        }
+      } catch (photoError) {
+        console.log(`⚠️ [${aiRequestId}] Photo selection failed, using first photo:`, photoError.message);
+      }
+    }
+
+    return {
+      recipeData,
+      bestPhotoIndex
+    };
+
+  } catch (error) {
+    console.error(`\n💥 [${aiRequestId}] ========== MULTI-PAGE RECIPE ANALYSIS ERROR ==========`);
+    console.error(`💥 [${aiRequestId}] Error:`, error.message);
+    console.error(`💥 [${aiRequestId}] =====================================================\n`);
+    throw error;
+  }
+};
+
 
 
 // Routes
@@ -472,6 +1027,216 @@ app.post('/api/process-images', upload.array('images', 10), async (req, res) => 
   }
 });
 
+// Recipe Scanning Endpoint - Supports multiple images for multi-page recipes
+app.post('/api/scan-recipe', authMiddleware.authenticateToken, upload.array('images', 10), async (req, res) => {
+  const requestId = Math.random().toString(36).substring(7);
+
+  console.log(`\n🍳 ================== RECIPE SCAN REQUEST START ==================`);
+  console.log(`🍳 REQUEST ID: ${requestId}`);
+  console.log(`🍳 ENDPOINT: /api/scan-recipe`);
+  console.log(`🍳 USER ID: ${req.user?.id || 'Not authenticated'}`);
+  console.log(`🍳 USER EMAIL: ${req.user?.email || 'Not authenticated'}`);
+  console.log(`🍳 TIMESTAMP: ${new Date().toISOString()}`);
+  console.log(`🍳 =================================================================\n`);
+
+  try {
+    // Check if files were uploaded
+    if (!req.files || req.files.length === 0) {
+      console.log(`⚠️  [${requestId}] No image files provided`);
+      return res.status(400).json({
+        success: false,
+        error: 'No images provided. Please upload recipe photos.',
+        requestId: requestId
+      });
+    }
+
+    console.log(`📸 [${requestId}] Received ${req.files.length} image(s) for recipe scanning`);
+    req.files.forEach((file, index) => {
+      console.log(`📸 [${requestId}] Image ${index + 1}: ${file.originalname} (${file.size} bytes)`);
+    });
+
+    // Validate images before processing
+    console.log(`🔍 [${requestId}] Validating uploaded images...`);
+    const maxFileSize = 10 * 1024 * 1024; // 10MB
+    const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+
+    for (let i = 0; i < req.files.length; i++) {
+      const file = req.files[i];
+
+      // Check file size
+      if (file.size > maxFileSize) {
+        console.error(`💥 [${requestId}] Image ${i + 1} too large: ${file.size} bytes (max: ${maxFileSize})`);
+        throw new Error(`Image ${i + 1} is too large. Maximum size is 10MB.`);
+      }
+
+      // Check file type
+      if (!allowedMimeTypes.includes(file.mimetype)) {
+        console.error(`💥 [${requestId}] Image ${i + 1} invalid type: ${file.mimetype}`);
+        throw new Error(`Image ${i + 1} has invalid format. Please use JPEG, PNG, or WebP.`);
+      }
+
+      // Check if file buffer exists
+      if (!file.buffer || file.buffer.length === 0) {
+        console.error(`💥 [${requestId}] Image ${i + 1} has no data`);
+        throw new Error(`Image ${i + 1} appears to be corrupted or empty.`);
+      }
+
+      console.log(`✅ [${requestId}] Image ${i + 1} validation passed: ${file.mimetype}, ${file.size} bytes`);
+    }
+
+    // Convert all images to base64
+    const base64Images = req.files.map(file => {
+      const base64 = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+      console.log(`🔄 [${requestId}] Converted image to base64, length: ${base64.length} characters`);
+      return base64;
+    });
+
+    // Health check OpenRouter API before analysis
+    console.log(`🔍 [${requestId}] Performing OpenRouter API health check...`);
+    try {
+      if (!process.env.OPENROUTER_API_KEY) {
+        throw new Error('OPENROUTER_API_KEY is missing from environment variables');
+      }
+
+      // Quick health check with minimal API call
+      const healthResponse = await fetch('https://openrouter.ai/api/v1/models', {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`
+        },
+        timeout: 5000  // 5 second timeout
+      });
+
+      if (!healthResponse.ok) {
+        throw new Error(`OpenRouter API health check failed: ${healthResponse.status}`);
+      }
+
+      console.log(`✅ [${requestId}] OpenRouter API health check passed`);
+    } catch (healthError) {
+      console.error(`💥 [${requestId}] OpenRouter API health check failed:`, healthError.message);
+      throw new Error(`OpenRouter API failed: ${healthError.message}`);
+    }
+
+    console.log(`🤖 [${requestId}] Starting AI recipe analysis with ${base64Images.length} page(s)...`);
+
+    // Analyze all recipe images (will combine text from multiple pages) AND get best photo index
+    const analysisResult = await analyzeRecipeImages(base64Images);
+    const { recipeData, bestPhotoIndex } = analysisResult;
+
+    console.log(`✅ [${requestId}] Recipe analysis completed successfully!`);
+    console.log(`✅ [${requestId}] Recipe title: ${recipeData.title}`);
+    console.log(`✅ [${requestId}] Ingredients count: ${recipeData.extendedIngredients?.length || 0}`);
+    console.log(`✅ [${requestId}] Instructions steps: ${recipeData.analyzedInstructions?.[0]?.steps?.length || 0}`);
+    console.log(`🖼️ [${requestId}] Best photo index: ${bestPhotoIndex}`);
+
+    // Upload the best photo to Supabase Storage
+    let imageUrl = null;
+    let imageStoragePath = null;
+
+    try {
+      const bestPhoto = req.files[bestPhotoIndex];
+      if (bestPhoto) {
+        console.log(`📸 [${requestId}] Uploading best photo to storage...`);
+
+        // Generate unique filename
+        const userId = req.user?.id || 'anonymous';
+        const timestamp = Date.now();
+        const randomId = Math.random().toString(36).substring(7);
+        const fileName = `${userId}/${timestamp}_${randomId}_recipe.jpg`;
+
+        console.log(`📸 [${requestId}] Storage path: ${fileName}`);
+
+        // Upload to Supabase Storage
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('recipe-images')
+          .upload(fileName, bestPhoto.buffer, {
+            contentType: bestPhoto.mimetype || 'image/jpeg',
+            upsert: false
+          });
+
+        if (uploadError) {
+          console.error(`❌ [${requestId}] Storage upload error:`, JSON.stringify(uploadError, null, 2));
+          console.error(`❌ [${requestId}] Error message:`, uploadError.message || 'Unknown error');
+          console.error(`❌ [${requestId}] Error statusCode:`, uploadError.statusCode);
+        } else {
+          // Get public URL
+          const { data: urlData } = supabase.storage
+            .from('recipe-images')
+            .getPublicUrl(fileName);
+
+          imageUrl = urlData.publicUrl;
+          imageStoragePath = fileName;
+          console.log(`✅ [${requestId}] Image uploaded successfully`);
+          console.log(`✅ [${requestId}] Image URL: ${imageUrl}`);
+        }
+      }
+    } catch (storageError) {
+      console.error(`❌ [${requestId}] Storage error:`, storageError.message || storageError);
+      console.error(`❌ [${requestId}] Full storage error:`, JSON.stringify(storageError, null, 2));
+      // Continue without image - don't fail the entire request
+    }
+
+    // Add image URL to recipe data
+    if (imageUrl) {
+      recipeData.image = imageUrl;
+      recipeData.imageStoragePath = imageStoragePath;
+    }
+
+    // Send successful response
+    res.json({
+      success: true,
+      recipe: recipeData,
+      requestId: requestId,
+      timestamp: new Date().toISOString()
+    });
+
+    console.log(`\n✅ [${requestId}] =============== RECIPE SCAN COMPLETE ===============\n`);
+
+  } catch (error) {
+    console.error(`\n💥 [${requestId}] ========== RECIPE SCAN ERROR ==========`);
+    console.error(`💥 [${requestId}] Error Type:`, error.constructor.name);
+    console.error(`💥 [${requestId}] Error Message:`, error.message);
+    console.error(`💥 [${requestId}] Error Stack:`, error.stack);
+
+    // Log specific error context
+    if (error.message.includes('OPENROUTER_API_KEY')) {
+      console.error(`💥 [${requestId}] ISSUE: Missing or invalid OpenRouter API Key`);
+    } else if (error.message.includes('OpenRouter API failed')) {
+      console.error(`💥 [${requestId}] ISSUE: OpenRouter API request failed`);
+    } else if (error.message.includes('Failed to parse recipe data')) {
+      console.error(`💥 [${requestId}] ISSUE: AI response parsing failed`);
+    } else if (error.message.includes('Invalid response from OpenRouter')) {
+      console.error(`💥 [${requestId}] ISSUE: Invalid API response structure`);
+    } else {
+      console.error(`💥 [${requestId}] ISSUE: Unknown error in recipe analysis`);
+    }
+
+    console.error(`💥 [${requestId}] Request Details:`, {
+      imageCount: req.files?.length || 0,
+      userID: req.user?.id || 'unknown',
+      hasAPIKey: !!process.env.OPENROUTER_API_KEY,
+      timestamp: new Date().toISOString()
+    });
+    console.error(`💥 [${requestId}] ========================================\n`);
+
+    // Return more specific error message based on error type
+    let userErrorMessage = 'Failed to analyze recipe image. Please try again with a clearer photo.';
+    if (error.message.includes('OPENROUTER_API_KEY')) {
+      userErrorMessage = 'AI service configuration error. Please contact support.';
+    } else if (error.message.includes('OpenRouter API failed')) {
+      userErrorMessage = 'AI service temporarily unavailable. Please try again in a few minutes.';
+    }
+
+    res.status(500).json({
+      success: false,
+      error: userErrorMessage,
+      requestId: requestId,
+      errorType: error.constructor.name,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Save confirmed items to Supabase database
 app.post('/api/save-items', async (req, res) => {
   const saveRequestId = Math.random().toString(36).substring(7);
@@ -590,4 +1355,5 @@ app.listen(PORT, () => {
   console.log(`   EDAMAM_APP_KEY: ${process.env.EDAMAM_APP_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   RAPIDAPI_KEY: ${process.env.RAPIDAPI_KEY ? '✅ Present (Tasty)' : '❌ Missing (Tasty)'}`);
   console.log(`   FIREWORKS_API_KEY: ${process.env.FIREWORKS_API_KEY ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   APIFY_API_TOKEN: ${process.env.APIFY_API_TOKEN ? '✅ Present' : '❌ Missing'}`);
 }); 

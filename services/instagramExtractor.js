@@ -8,12 +8,19 @@ class InstagramExtractor {
       process.env.SUPABASE_ANON_KEY
     );
     this.rapidApiKey = process.env.RAPIDAPI_KEY;
-    this.rapidApiHost = process.env.RAPIDAPI_HOST || 'instagram-scraper-api2.p.rapidapi.com';
+
+    // Multiple API hosts for fallback - Updated to more reliable providers
+    this.apiHosts = [
+      process.env.RAPIDAPI_HOST_1 || 'instagram-scraper2.p.rapidapi.com',
+      process.env.RAPIDAPI_HOST_2 || 'instagram-scraper-api2.p.rapidapi.com',
+      process.env.RAPIDAPI_HOST_3 || 'instagram47.p.rapidapi.com',
+      process.env.RAPIDAPI_HOST || 'instagram-scraper-api2.p.rapidapi.com'
+    ];
   }
 
   async extractFromUrl(instagramUrl) {
     console.log(`[InstagramExtractor] Extracting from: ${instagramUrl}`);
-    
+
     // Check cache first
     const cached = await this.checkCache(instagramUrl);
     if (cached) {
@@ -21,48 +28,199 @@ class InstagramExtractor {
       return cached;
     }
 
-    try {
-      // For testing without API key, return mock data
-      if (!this.rapidApiKey || this.rapidApiKey === 'your_key_here') {
-        console.log('[InstagramExtractor] No API key configured, returning mock data for testing');
-        return this.getMockData(instagramUrl);
+    // For testing without API key, return mock data
+    if (!this.rapidApiKey || this.rapidApiKey === 'your_key_here') {
+      console.log('[InstagramExtractor] No API key configured, returning mock data for testing');
+      return this.getMockData(instagramUrl);
+    }
+
+    // Try multiple APIs in sequence
+    for (let i = 0; i < this.apiHosts.length; i++) {
+      const host = this.apiHosts[i];
+      console.log(`[InstagramExtractor] Trying API ${i + 1}/${this.apiHosts.length}: ${host}`);
+
+      const result = await this.tryExtractWithAPI(instagramUrl, host, i);
+      if (result.success) {
+        console.log(`[InstagramExtractor] Success with API ${i + 1}: ${host}`);
+
+        // Cache the result
+        await this.cacheResult(instagramUrl, result);
+        return result;
       }
 
-      // Use RapidAPI Instagram Scraper
+      console.log(`[InstagramExtractor] API ${i + 1} failed, trying next...`);
+    }
+
+    // All APIs failed - try direct page fetch as last resort
+    console.log('[InstagramExtractor] All APIs failed, trying direct page fetch...');
+    const directResult = await this.tryDirectPageFetch(instagramUrl);
+
+    if (directResult.success) {
+      console.log('[InstagramExtractor] Direct page fetch succeeded');
+      await this.cacheResult(instagramUrl, directResult);
+      return directResult;
+    }
+
+    // Everything failed - return with flag for manual caption
+    console.log('[InstagramExtractor] All methods failed, manual caption required');
+    return {
+      success: false,
+      url: instagramUrl,
+      error: 'Could not automatically fetch Instagram content',
+      requiresManualCaption: true,
+      requiresManualInput: true,
+      caption: '',
+      images: [],
+      author: { username: 'unknown' },
+      hashtags: []
+    };
+  }
+
+  async tryExtractWithAPI(instagramUrl, apiHost, apiIndex) {
+    try {
+      let endpoint, params, method = 'GET';
+
+      // Different endpoints for different APIs
+      if (apiHost.includes('instagram-scraper2')) {
+        // API 1: instagram-scraper2
+        endpoint = `https://${apiHost}/v1/post_info`;
+        params = { code_or_id_or_url: instagramUrl };
+      } else if (apiHost.includes('instagram-scraper-api2')) {
+        // API 2: instagram-scraper-api2
+        endpoint = `https://${apiHost}/v1/post_info`;
+        params = { code_or_id_or_url: instagramUrl };
+      } else if (apiHost.includes('instagram47')) {
+        // API 3: instagram47 (legacy)
+        endpoint = `https://${apiHost}/v1.2/posts/details`;
+        params = { url: instagramUrl };
+      } else {
+        // Default/Fallback API
+        endpoint = `https://${apiHost}/v1/post_info`;
+        params = { code_or_id_or_url: instagramUrl };
+      }
+
+      console.log(`[InstagramExtractor] Calling: ${endpoint}`);
+
       const response = await axios({
-        method: 'GET',
-        url: `https://${this.rapidApiHost}/v1/post_info`,
-        params: { 
-          code_or_id_or_url: instagramUrl 
-        },
+        method: method,
+        url: endpoint,
+        params: params,
         headers: {
           'X-RapidAPI-Key': this.rapidApiKey,
-          'X-RapidAPI-Host': this.rapidApiHost
+          'X-RapidAPI-Host': apiHost,
+          'Accept': 'application/json'
         },
-        timeout: 10000
+        timeout: 15000 // Increased timeout for more reliable APIs
       });
 
-      const extractedData = this.parseInstagramResponse(response.data);
-      
-      // Cache the result
-      await this.cacheResult(instagramUrl, extractedData);
-      
-      return extractedData;
+      // Parse response based on API
+      const extractedData = this.parseResponseByAPI(response.data, apiIndex);
+
+      // Check if we got actual caption content
+      if (extractedData.caption && extractedData.caption.length > 20) {
+        extractedData.success = true;
+        return extractedData;
+      }
+
+      return { success: false };
+
     } catch (error) {
-      console.error('[InstagramExtractor] Extraction error:', error.message);
-      
-      // Return partial data for manual processing
-      return {
-        success: false,
-        url: instagramUrl,
-        error: this.getErrorMessage(error),
-        requiresManualInput: true,
-        // Return mock data for development
-        images: [],
-        caption: '',
-        author: { username: 'unknown' }
-      };
+      console.error(`[InstagramExtractor] API ${apiIndex + 1} error:`, error.message);
+      return { success: false, error: error.message };
     }
+  }
+
+  parseResponseByAPI(data, apiIndex) {
+    const apiHost = this.apiHosts[apiIndex];
+
+    // Different APIs have different response structures
+    if (apiHost.includes('instagram-scraper2')) {
+      // instagram-scraper2 API
+      return this.parseInstagramResponse(data);
+    } else if (apiHost.includes('instagram-scraper-api2')) {
+      // instagram-scraper-api2 API
+      return this.parseInstagramResponse(data);
+    } else if (apiHost.includes('instagram47')) {
+      // Legacy instagram47
+      return this.parseInstagram47Response(data);
+    } else {
+      // Default parser
+      return this.parseInstagramResponse(data);
+    }
+  }
+
+  parseInstagram47Response(data) {
+    // Parse instagram47.p.rapidapi.com response
+    const post = data.data || data;
+
+    return {
+      success: true,
+      caption: post.caption || post.text || '',
+      images: post.images || [],
+      author: {
+        username: post.owner?.username || 'unknown',
+        fullName: post.owner?.full_name
+      },
+      hashtags: this.extractHashtags(post.caption || post.text || '')
+    };
+  }
+
+  parseJunioroangelResponse(data) {
+    // Parse junioroangel's Instagram Scraper response
+    const post = data.data || data;
+
+    return {
+      success: true,
+      caption: post.caption?.text || post.caption || '',
+      images: this.extractImages(post),
+      videos: this.extractVideos(post),
+      author: {
+        username: post.user?.username || post.owner?.username || 'unknown',
+        fullName: post.user?.full_name || post.owner?.full_name,
+        profilePic: post.user?.profile_pic_url || post.owner?.profile_pic_url
+      },
+      hashtags: this.extractHashtags(post.caption?.text || post.caption || ''),
+      likes: post.like_count || 0,
+      comments: post.comment_count || 0
+    };
+  }
+
+  parseStableAPIResponse(data) {
+    // Parse Stable API response
+    const post = data.data || data.result || data;
+
+    return {
+      success: true,
+      caption: post.caption || post.text || post.description || '',
+      images: post.media_urls || post.images || [],
+      author: {
+        username: post.username || post.owner?.username || 'unknown',
+        fullName: post.owner?.full_name
+      },
+      hashtags: this.extractHashtags(post.caption || ''),
+      likes: post.likes_count || post.like_count || 0,
+      comments: post.comments_count || post.comment_count || 0
+    };
+  }
+
+  parseSocialScrapperResponse(data) {
+    // Parse SocialScrapper API response
+    const post = data.post || data.data || data;
+
+    return {
+      success: true,
+      caption: post.caption || post.text || '',
+      images: post.images || post.media || [],
+      videos: post.videos || [],
+      author: {
+        username: post.user?.username || post.author || 'unknown',
+        fullName: post.user?.name,
+        profilePic: post.user?.profile_pic
+      },
+      hashtags: post.hashtags || this.extractHashtags(post.caption || ''),
+      likes: post.likes || 0,
+      comments: post.comment_count || 0
+    };
   }
 
   parseInstagramResponse(data) {
@@ -158,6 +316,134 @@ class InstagramExtractor {
     const regex = /#[\w]+/g;
     const matches = caption.match(regex) || [];
     return matches.map(tag => tag.substring(1).toLowerCase());
+  }
+
+  async tryDirectPageFetch(instagramUrl) {
+    // Direct page fetch as last resort fallback
+    try {
+      console.log('[InstagramExtractor] Attempting direct page fetch...');
+
+      // Extract shortcode from URL
+      const shortcodeMatch = instagramUrl.match(/\/(p|reel|tv)\/([A-Za-z0-9_-]+)/);
+      if (!shortcodeMatch) {
+        console.log('[InstagramExtractor] Could not extract shortcode from URL');
+        return { success: false };
+      }
+
+      const shortcode = shortcodeMatch[2];
+      console.log(`[InstagramExtractor] Extracted shortcode: ${shortcode}`);
+
+      // Try to fetch the page directly
+      const response = await axios({
+        method: 'GET',
+        url: instagramUrl,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'DNT': '1',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1'
+        },
+        timeout: 20000,
+        maxRedirects: 5
+      });
+
+      const html = response.data;
+
+      // Try to extract JSON-LD structured data
+      const jsonLdMatch = html.match(/<script type="application\/ld\+json"[^>]*>(.*?)<\/script>/s);
+      if (jsonLdMatch) {
+        try {
+          const jsonLd = JSON.parse(jsonLdMatch[1]);
+          console.log('[InstagramExtractor] Found JSON-LD data');
+
+          return {
+            success: true,
+            caption: jsonLd.caption || jsonLd.description || '',
+            images: jsonLd.image ? [{ url: jsonLd.image }] : [],
+            videos: jsonLd.video ? [{ url: jsonLd.video }] : [],
+            author: {
+              username: jsonLd.author?.name || jsonLd.creator?.name || 'unknown'
+            },
+            hashtags: this.extractHashtags(jsonLd.caption || jsonLd.description || '')
+          };
+        } catch (e) {
+          console.log('[InstagramExtractor] Failed to parse JSON-LD');
+        }
+      }
+
+      // Try to extract from meta tags
+      const metaDescription = html.match(/<meta\s+(?:property|name)="(?:og:)?description"\s+content="([^"]+)"/);
+      const metaImage = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/);
+      const metaVideo = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/);
+      const metaTitle = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
+
+      if (metaDescription || metaTitle) {
+        console.log('[InstagramExtractor] Found meta tag data');
+
+        // Extract username from title (usually format: "@username on Instagram: ...")
+        let username = 'unknown';
+        if (metaTitle) {
+          const usernameMatch = metaTitle[1].match(/@([A-Za-z0-9_.]+)/);
+          if (usernameMatch) {
+            username = usernameMatch[1];
+          }
+        }
+
+        // Clean up description - often starts with likes count
+        let caption = metaDescription ? metaDescription[1] : '';
+        // Remove likes count if present (e.g., "123 likes, ")
+        caption = caption.replace(/^\d+[\s,]*(?:likes?|Me gusta|J'aime)[,\s]*/, '');
+        // Remove username mentions at the start
+        caption = caption.replace(/^@[A-Za-z0-9_.]+:?\s*/, '');
+
+        return {
+          success: true,
+          caption: caption,
+          images: metaImage ? [{ url: metaImage[1] }] : [],
+          videos: metaVideo ? [{ url: metaVideo[1] }] : [],
+          author: { username },
+          hashtags: this.extractHashtags(caption)
+        };
+      }
+
+      // Try to extract from window._sharedData (Instagram's data object)
+      const sharedDataMatch = html.match(/window\._sharedData\s*=\s*({.+?});/s);
+      if (sharedDataMatch) {
+        try {
+          const sharedData = JSON.parse(sharedDataMatch[1]);
+          const media = sharedData?.entry_data?.PostPage?.[0]?.graphql?.shortcode_media ||
+                       sharedData?.entry_data?.PostPage?.[0]?.media;
+
+          if (media) {
+            console.log('[InstagramExtractor] Found _sharedData');
+
+            return {
+              success: true,
+              caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || media.caption || '',
+              images: media.display_url ? [{ url: media.display_url }] : [],
+              videos: media.video_url ? [{ url: media.video_url }] : [],
+              author: {
+                username: media.owner?.username || 'unknown',
+                fullName: media.owner?.full_name
+              },
+              hashtags: this.extractHashtags(media.edge_media_to_caption?.edges?.[0]?.node?.text || '')
+            };
+          }
+        } catch (e) {
+          console.log('[InstagramExtractor] Failed to parse _sharedData');
+        }
+      }
+
+      console.log('[InstagramExtractor] Could not extract data from page HTML');
+      return { success: false };
+
+    } catch (error) {
+      console.error('[InstagramExtractor] Direct page fetch error:', error.message);
+      return { success: false, error: error.message };
+    }
   }
 
   async checkCache(url) {

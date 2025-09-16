@@ -8,6 +8,76 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
+// POST /api/saved-recipes - Create a new saved recipe
+router.post('/', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
+    const recipeData = req.body;
+
+    console.log(`[SavedRecipes] Creating new recipe for user ${userId}`);
+    console.log(`[SavedRecipes] Recipe title: ${recipeData.title}`);
+    console.log(`[SavedRecipes] Source type: ${recipeData.source_type || 'manual'}`);
+
+    // Prepare recipe data for database
+    const newRecipe = {
+      user_id: userId,
+      source_type: recipeData.source_type || 'manual',
+      title: recipeData.title || 'Untitled Recipe',
+      summary: recipeData.summary || recipeData.description || '',
+      image: recipeData.image || null,
+
+      // Match RecipeDetailModal structure - Use quoted names for PostgreSQL
+      '"extendedIngredients"': recipeData.extendedIngredients || [],
+      '"analyzedInstructions"': recipeData.analyzedInstructions || [],
+
+      // Time and servings - Use quoted names for case-sensitive columns
+      '"readyInMinutes"': recipeData.readyInMinutes || null,
+      '"cookingMinutes"': recipeData.cookingMinutes || null,
+      servings: recipeData.servings || 4,
+
+      // Dietary attributes - Use quoted names for case-sensitive columns
+      vegetarian: recipeData.vegetarian || false,
+      vegan: recipeData.vegan || false,
+      '"glutenFree"': recipeData.glutenFree || false,
+      '"dairyFree"': recipeData.dairyFree || false,
+
+      // Metadata - Use quoted names for case-sensitive columns
+      cuisines: recipeData.cuisines || [],
+      '"dishTypes"': recipeData.dishTypes || [],
+
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    // Save to database
+    const { data, error } = await supabase
+      .from('saved_recipes')
+      .insert(newRecipe)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[SavedRecipes] Create error:', error);
+      throw error;
+    }
+
+    console.log(`[SavedRecipes] Recipe created successfully with ID: ${data.id}`);
+
+    res.json({
+      success: true,
+      recipe: data,
+      message: 'Recipe saved successfully'
+    });
+
+  } catch (error) {
+    console.error('[SavedRecipes] Create recipe error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to save recipe'
+    });
+  }
+});
+
 // GET /api/saved-recipes - Get user's saved recipes
 router.get('/', authMiddleware.authenticateToken, async (req, res) => {
   try {
@@ -32,6 +102,8 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
       query = query.eq('is_favorite', true);
     } else if (filter === 'instagram') {
       query = query.eq('source_type', 'instagram');
+    } else if (filter === 'scanned') {
+      query = query.eq('source_type', 'scanned');
     } else if (filter === 'edited') {
       query = query.eq('user_edited', true);
     }

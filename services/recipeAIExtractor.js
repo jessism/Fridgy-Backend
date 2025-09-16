@@ -10,6 +10,8 @@ class RecipeAIExtractor {
     // Track usage for intelligent switching
     this.freeModelFailures = 0;
     this.freeModelSuccesses = 0;
+    this.totalRequests = 0;
+    this.lastResetAt = Date.now();
   }
 
   // Helper function to convert recipe fractions to decimal numbers for valid JSON
@@ -780,16 +782,43 @@ IMPORTANT FORMATTING RULES:
     return await this.callAIWithFallback(messages, prompt, images);
   }
 
+  // Reset free model stats periodically or when requested
+  resetFreeModelStats() {
+    console.log('[RecipeAIExtractor] 🔄 Resetting free model statistics');
+    this.freeModelFailures = 0;
+    this.freeModelSuccesses = 0;
+    this.totalRequests = 0;
+    this.lastResetAt = Date.now();
+  }
+
   async callAIWithFallback(messages, prompt, images = []) {
+    this.totalRequests++;
+
+    // Reset stats every 50 requests or every 24 hours to give free model fresh chances
+    const hoursSinceReset = (Date.now() - this.lastResetAt) / (1000 * 60 * 60);
+    const shouldReset = this.totalRequests % 50 === 0 ||
+                       hoursSinceReset >= 24 ||
+                       process.env.RESET_AI_STATS === 'true';
+
+    if (shouldReset) {
+      this.resetFreeModelStats();
+    }
+
+    // Environment variable to force free model usage (for testing/cost optimization)
+    const forceFreeModel = process.env.FORCE_FREE_AI_MODEL === 'true';
+
     // Determine which model to try first based on recent success rates
     const freeModelSuccessRate = this.freeModelSuccesses / Math.max(1, this.freeModelSuccesses + this.freeModelFailures);
-    const shouldUseFreeFirst = freeModelSuccessRate >= 0.3; // Use free if 30%+ success rate
+    const shouldUseFreeFirst = forceFreeModel || freeModelSuccessRate >= 0.1; // Lowered threshold to 10%
 
     console.log('[RecipeAIExtractor] === MODEL SELECTION ===');
     console.log('[RecipeAIExtractor] Free model stats:', {
       successes: this.freeModelSuccesses,
       failures: this.freeModelFailures,
       successRate: freeModelSuccessRate.toFixed(2),
+      totalRequests: this.totalRequests,
+      hoursSinceReset: hoursSinceReset.toFixed(1),
+      forceFreeModel: forceFreeModel,
       usingFreeFirst: shouldUseFreeFirst
     });
 
@@ -803,7 +832,18 @@ IMPORTANT FORMATTING RULES:
         return result;
       } catch (error) {
         console.log('[RecipeAIExtractor] ❌ Free model failed:', error.message);
-        this.freeModelFailures++;
+
+        // Only count as failure if it's not a temporary rate limit
+        const isRateLimit = error.message.includes('quota') ||
+                           error.message.includes('rate limit') ||
+                           error.message.includes('429');
+
+        if (isRateLimit) {
+          console.log('[RecipeAIExtractor] 🕒 Rate limit detected - not counting as failure');
+        } else {
+          this.freeModelFailures++;
+          console.log('[RecipeAIExtractor] 📊 Counting as failure (not rate limit)');
+        }
 
         // Fallback to paid model
         console.log('[RecipeAIExtractor] Falling back to paid model...');

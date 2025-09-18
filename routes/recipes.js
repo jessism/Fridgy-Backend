@@ -6,6 +6,9 @@ const recipeService = require('../services/recipeService');
 const InstagramExtractor = require('../services/instagramExtractor');
 const RecipeAIExtractor = require('../services/recipeAIExtractor');
 const ApifyInstagramService = require('../services/apifyInstagramService');
+const ProgressiveExtractor = require('../services/progressiveExtractor');
+const MultiModalExtractor = require('../services/multiModalExtractor');
+const NutritionAnalysisService = require('../services/nutritionAnalysisService');
 const { getServiceClient } = require('../config/supabase');
 const { validateShortcutImport, sanitizeRecipeData } = require('../middleware/validation');
 
@@ -16,6 +19,8 @@ const supabase = getServiceClient();
 const instagramExtractor = new InstagramExtractor();
 const recipeAI = new RecipeAIExtractor();
 const apifyService = new ApifyInstagramService();
+const multiModalExtractor = new MultiModalExtractor();
+const nutritionAnalysis = new NutritionAnalysisService();
 
 /**
  * Recipe Routes
@@ -260,6 +265,26 @@ router.post('/import-instagram', authMiddleware.authenticateToken, async (req, r
       source_author_image: sanitizedRecipe.source_author_image
     };
 
+    // Analyze nutrition for the recipe
+    console.log('[RecipeImport] Analyzing nutrition for recipe...');
+    try {
+      const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(recipeToSave);
+      if (nutritionData) {
+        console.log('[RecipeImport] Nutrition analysis successful:', {
+          calories: nutritionData.perServing?.calories?.amount,
+          confidence: nutritionData.confidence
+        });
+        recipeToSave.nutrition = nutritionData;
+      } else {
+        console.log('[RecipeImport] Nutrition analysis returned no data');
+        recipeToSave.nutrition = null;
+      }
+    } catch (nutritionError) {
+      console.error('[RecipeImport] Nutrition analysis failed:', nutritionError);
+      // Don't fail the import if nutrition analysis fails
+      recipeToSave.nutrition = null;
+    }
+
     // DEBUG: Log exactly what we're trying to save
     console.log('[RecipeImport] DEBUG - About to save to database:', {
       title: recipeToSave.title,
@@ -313,6 +338,112 @@ router.post('/import-instagram', authMiddleware.authenticateToken, async (req, r
     res.status(500).json({
       success: false,
       error: 'Failed to import recipe. Please try again later.'
+    });
+  }
+});
+
+// NEW: Multi-modal extraction endpoint (unified caption + video + audio analysis)
+// POST /api/recipes/multi-modal-extract
+router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body;
+    const userId = req.user?.userId || req.user?.id;
+
+    console.log('[MultiModal] Starting multi-modal extraction for user:', userId);
+    console.log('[MultiModal] Instagram URL:', url);
+
+    // Validate URL
+    if (!url || !url.includes('instagram.com')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide a valid Instagram URL'
+      });
+    }
+
+    // Extract with Apify for video content
+    console.log('[MultiModal] Fetching Instagram data with Apify...');
+    const apifyData = await apifyService.extractFromUrl(url, userId);
+
+    if (!apifyData.success) {
+      console.log('[MultiModal] Apify extraction failed:', apifyData.error);
+      return res.status(400).json({
+        success: false,
+        error: apifyData.error || 'Failed to extract Instagram content',
+        limitExceeded: apifyData.limitExceeded
+      });
+    }
+
+    console.log('[MultiModal] Apify extraction successful:', {
+      hasCaption: !!apifyData.caption,
+      hasVideo: !!apifyData.videoUrl,
+      videoDuration: apifyData.videoDuration,
+      imageCount: apifyData.images?.length || 0
+    });
+
+    // Use multi-modal extractor for unified analysis
+    console.log('[MultiModal] Starting unified multi-modal analysis...');
+    const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+
+    if (!result.success || !result.recipe) {
+      console.log('[MultiModal] Extraction failed or incomplete');
+      return res.status(400).json({
+        success: false,
+        error: 'Could not extract recipe with multi-modal analysis',
+        partialRecipe: result.recipe,
+        confidence: result.confidence
+      });
+    }
+
+    console.log('[MultiModal] Extraction successful:', {
+      confidence: result.confidence,
+      sourcesUsed: result.sourcesUsed,
+      processingTime: result.processingTime
+    });
+
+    // Prepare recipe data (but don't save yet - let frontend confirm)
+    const sanitizedRecipe = sanitizeRecipeData({
+      ...result.recipe,
+      source_url: url,
+      source_author: apifyData.author?.username,
+      image: result.recipe.image || apifyData.images?.[0]?.url
+    });
+
+    // Analyze nutrition for the recipe
+    console.log('[MultiModal] Analyzing nutrition for extracted recipe...');
+    try {
+      const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(sanitizedRecipe);
+      if (nutritionData) {
+        console.log('[MultiModal] Nutrition analysis successful:', {
+          calories: nutritionData.perServing?.calories?.amount,
+          confidence: nutritionData.confidence
+        });
+        sanitizedRecipe.nutrition = nutritionData;
+      } else {
+        console.log('[MultiModal] Nutrition analysis returned no data');
+        sanitizedRecipe.nutrition = null;
+      }
+    } catch (nutritionError) {
+      console.error('[MultiModal] Nutrition analysis failed:', nutritionError);
+      // Don't fail the extraction if nutrition analysis fails
+      sanitizedRecipe.nutrition = null;
+    }
+
+    // Return the extracted recipe without saving
+    res.json({
+      success: true,
+      recipe: sanitizedRecipe,
+      confidence: result.confidence,
+      sourcesUsed: result.sourcesUsed,
+      processingTime: result.processingTime,
+      extractionMethod: 'multi-modal',
+      sourceAttribution: result.sourceAttribution || null
+    });
+
+  } catch (error) {
+    console.error('[MultiModal] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Multi-modal extraction failed'
     });
   }
 });
@@ -412,11 +543,17 @@ router.post('/import-instagram-apify', authMiddleware.authenticateToken, async (
           confidence: tier2Result.confidence,
           tier: tier2Result.tier,
           title: tier2Result.recipe?.title,
-          videoAnalyzed: tier2Result.videoAnalyzed
+          videoAnalyzed: tier2Result.videoAnalyzed,
+          videoExpired: tier2Result.videoExpired
         });
 
+        // Handle video URL expiration - fall back to Tier 1
+        if (tier2Result.videoExpired) {
+          console.log('[ApifyImport] ⚠️ Video URL expired - using TIER 1 result as fallback');
+          var finalResult = tier1Result;
+        }
         // TIER 2 DECISION: Check if confidence > 0.5
-        if (tier2Result.success && tier2Result.confidence >= 0.5) {
+        else if (tier2Result.success && tier2Result.confidence >= 0.5) {
           console.log('[ApifyImport] ✅ TIER 2 SUCCESS - Using video-enhanced extraction');
           var finalResult = tier2Result;
         } else {
@@ -747,6 +884,26 @@ router.post('/import-instagram-apify', authMiddleware.authenticateToken, async (
       video_view_count: recipeToSave.video_view_count
     });
 
+    // Analyze nutrition for the recipe
+    console.log('[ApifyImport] Analyzing nutrition for recipe...');
+    try {
+      const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(recipeToSave);
+      if (nutritionData) {
+        console.log('[ApifyImport] Nutrition analysis successful:', {
+          calories: nutritionData.perServing?.calories?.amount,
+          confidence: nutritionData.confidence
+        });
+        recipeToSave.nutrition = nutritionData;
+      } else {
+        console.log('[ApifyImport] Nutrition analysis returned no data');
+        recipeToSave.nutrition = null;
+      }
+    } catch (nutritionError) {
+      console.error('[ApifyImport] Nutrition analysis failed:', nutritionError);
+      // Don't fail the import if nutrition analysis fails
+      recipeToSave.nutrition = null;
+    }
+
     // Save to database
     const { data: savedRecipe, error: saveError } = await supabase
       .from('saved_recipes')
@@ -1021,6 +1178,130 @@ router.get('/tasty-test/suggestions', authMiddleware.authenticateToken, async (r
       success: false,
       error: error.message,
       source: 'tasty'
+    });
+  }
+});
+
+// Save extracted recipe (from multi-modal or other extraction methods)
+// POST /api/recipes/save
+router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { recipe, source_url, import_method, confidence } = req.body;
+    const userId = req.user?.userId || req.user?.id;
+
+    console.log('[RecipeSave] Saving extracted recipe for user:', userId);
+    console.log('[RecipeSave] Recipe title:', recipe?.title);
+    console.log('[RecipeSave] Import method:', import_method);
+
+    // Validate recipe data
+    if (!recipe || !recipe.title) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid recipe data - missing title'
+      });
+    }
+
+    // Prepare recipe for database with case-sensitive column names
+    const recipeToSave = {
+      user_id: userId,
+      source_type: source_url?.includes('instagram') ? 'instagram' : 'web',
+      source_url: source_url || null,
+      import_method: import_method || 'manual',
+      // extraction_method column doesn't exist - removed
+
+      // Core recipe data
+      title: recipe.title,
+      summary: recipe.summary || '',
+      image: recipe.image || null,
+      image_urls: recipe.image_urls || null,
+
+      // Recipe details - Supabase client handles case-sensitivity
+      extendedIngredients: recipe.extendedIngredients || [],
+      analyzedInstructions: recipe.analyzedInstructions || [],
+
+      // Time and servings
+      readyInMinutes: recipe.readyInMinutes || null,
+      cookingMinutes: recipe.cookingMinutes || null,
+      servings: recipe.servings || 4,
+
+      // Dietary attributes
+      vegetarian: recipe.vegetarian || false,
+      vegan: recipe.vegan || false,
+      glutenFree: recipe.glutenFree || false,
+      dairyFree: recipe.dairyFree || false,
+
+      // Additional metadata
+      cuisines: recipe.cuisines || [],
+      dishTypes: recipe.dishTypes || [],
+      diets: recipe.diets || [],
+
+      // Extraction metadata
+      extraction_confidence: confidence || null,
+      extraction_notes: recipe.extraction_notes || null,
+      missing_info: recipe.missing_info || [],
+
+      // Source info
+      source_author: recipe.source_author || null,
+      source_author_image: recipe.source_author_image || null
+      // source_attribution column doesn't exist - removed
+    };
+
+    console.log('[RecipeSave] Saving to database...');
+
+    // Check if nutrition already exists or needs analysis
+    if (recipe.nutrition) {
+      console.log('[RecipeSave] Recipe already has nutrition data');
+      recipeToSave.nutrition = recipe.nutrition;
+    } else {
+      // Analyze nutrition for the recipe using the original recipe object
+      console.log('[RecipeSave] Analyzing nutrition for recipe...');
+      try {
+        const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(recipe);
+        if (nutritionData) {
+          console.log('[RecipeSave] Nutrition analysis successful:', {
+            calories: nutritionData.perServing?.calories?.amount,
+            confidence: nutritionData.confidence
+          });
+          recipeToSave.nutrition = nutritionData;
+        } else {
+          console.log('[RecipeSave] Nutrition analysis returned no data');
+          recipeToSave.nutrition = null;
+        }
+      } catch (nutritionError) {
+        console.error('[RecipeSave] Nutrition analysis failed:', nutritionError);
+        // Don't fail the import if nutrition analysis fails
+        recipeToSave.nutrition = null;
+      }
+    }
+
+    // Save to database
+    const { data: savedRecipe, error: saveError } = await supabase
+      .from('saved_recipes')
+      .insert(recipeToSave)
+      .select()
+      .single();
+
+    if (saveError) {
+      console.error('[RecipeSave] Database save error:', saveError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to save recipe to database'
+      });
+    }
+
+    console.log('[RecipeSave] Recipe saved successfully:', savedRecipe.id);
+
+    res.json({
+      success: true,
+      recipe: savedRecipe,
+      message: 'Recipe saved successfully'
+    });
+
+  } catch (error) {
+    console.error('[RecipeSave] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to save recipe'
     });
   }
 });

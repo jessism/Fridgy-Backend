@@ -1,8 +1,10 @@
 const fetch = require('node-fetch');
+const VideoProcessor = require('./videoProcessor');
 
 class RecipeAIExtractor {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
+    this.videoProcessor = new VideoProcessor();
     // Primary model: Free Gemini 2.0 Flash (faster, newer)
     this.primaryModel = 'google/gemini-2.0-flash-exp:free';
     // Fallback model: Paid Gemini Flash 1.5 (reliable backup)
@@ -196,11 +198,18 @@ class RecipeAIExtractor {
         throw new Error('Invalid AI response format');
       }
 
-      // Validate and clean the result (NO video boosting in Tier 1)
-      const finalResult = this.validateAndTransformRecipe(result);
+      // Prepare source data for confidence scoring
+      const sourceData = {
+        hasCaption: !!apifyData.caption,
+        hashtagCount: apifyData.hashtags?.length || 0,
+        viewCount: apifyData.viewCount || 0,
+        author: apifyData.author,
+        hasVideo: false, // Tier 1 doesn't use video
+        videoDuration: 0
+      };
 
-      // Tier 1 confidence boosting - ONLY for caption quality
-      let confidenceBoost = 0;
+      // Validate and clean the result with source data
+      const finalResult = this.validateAndTransformRecipe(result, sourceData);
 
 
       // Apply confidence boost
@@ -226,6 +235,119 @@ class RecipeAIExtractor {
     }
   }
 
+  // TIER 3: Premium Multi-Modal Analysis with Frame Extraction (Most Comprehensive)
+  async extractWithFrameSampling(apifyData) {
+    console.log('[RecipeAIExtractor] Starting TIER 3 premium analysis with frame extraction');
+
+    if (!apifyData.videoUrl || apifyData.videoDuration < 10) {
+      console.log('[RecipeAIExtractor] Video too short or unavailable for Tier 3');
+      return this.extractFromVideoData(apifyData); // Fall back to Tier 2
+    }
+
+    try {
+      // Extract key frames for enhanced analysis
+      const frameData = await this.videoProcessor.extractFramesFromVideo(
+        apifyData.videoUrl,
+        apifyData.videoDuration,
+        {
+          maxFrames: 8,
+          smartSampling: true,
+          extractAudio: false // Audio extraction pending implementation
+        }
+      );
+
+      // Combine frame data with original Apify data
+      const enhancedData = {
+        ...apifyData,
+        extractedFrames: frameData.frames,
+        frameMetadata: frameData.metadata
+      };
+
+      // Build enhanced prompt with frame context
+      const prompt = this.buildTier3Prompt(enhancedData);
+
+      // Prepare media content with frames
+      const mediaContent = [];
+
+      // Add video URL
+      if (apifyData.videoUrl) {
+        mediaContent.push(this.videoProcessor.prepareVideoForAI(apifyData.videoUrl, {
+          duration: apifyData.videoDuration,
+          viewCount: apifyData.viewCount,
+          author: apifyData.author?.username
+        }));
+      }
+
+      // Add extracted frames
+      frameData.frames.forEach((frame, index) => {
+        mediaContent.push({
+          type: 'image',
+          url: frame.base64,
+          context: `frame_${index}_${frame.context}`,
+          timestamp: frame.timestamp
+        });
+      });
+
+      const response = await this.callAI(prompt, mediaContent);
+      const result = JSON.parse(this.sanitizeFractions(response));
+
+      // Enhanced confidence for Tier 3
+      result.tier = 3;
+      result.extractionMethod = 'premium-frame-analysis';
+      result.framesAnalyzed = frameData.frames.length;
+
+      const sourceData = {
+        hasCaption: !!apifyData.caption,
+        hashtagCount: apifyData.hashtags?.length || 0,
+        viewCount: apifyData.viewCount || 0,
+        author: apifyData.author,
+        hasVideo: true,
+        videoUrl: apifyData.videoUrl,
+        videoDuration: apifyData.videoDuration,
+        framesExtracted: true
+      };
+
+      return this.validateAndTransformRecipe(result, sourceData);
+
+    } catch (error) {
+      console.error('[RecipeAIExtractor] Tier 3 frame extraction failed:', error);
+      // Fall back to Tier 2 on failure
+      return this.extractFromVideoData(apifyData);
+    }
+  }
+
+  // Build Tier 3 prompt with frame context
+  buildTier3Prompt(data) {
+    const primaryImageUrl = data.images?.[0]?.url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c';
+
+    return `You are performing TIER 3 PREMIUM EXTRACTION with frame-by-frame analysis of ${data.extractedFrames?.length || 0} key frames.
+
+FRAME ANALYSIS DATA:
+${data.extractedFrames?.map((frame, i) => `
+Frame ${i + 1} at ${frame.timestamp}s (${frame.context}):
+- Context: ${frame.context === 'ingredient_display' ? 'Ingredients shown' :
+           frame.context === 'preparation' ? 'Food preparation' :
+           frame.context === 'cooking_process' ? 'Active cooking' :
+           frame.context === 'finishing_touches' ? 'Final steps' :
+           'Final presentation'}
+`).join('\n') || 'No frames extracted'}
+
+VIDEO METADATA:
+Duration: ${data.videoDuration}s
+View Count: ${data.viewCount || 0}
+Author: @${data.author?.username || 'unknown'}
+
+TIER 3 EXTRACTION REQUIREMENTS:
+1. FRAME-BY-FRAME: Analyze each provided frame for specific recipe information
+2. TEMPORAL FLOW: Understand the cooking sequence from frame timestamps
+3. INGREDIENT IDENTIFICATION: List ALL ingredients visible across all frames
+4. TECHNIQUE EXTRACTION: Identify cooking methods from visual evidence
+5. ULTRA-HIGH CONFIDENCE: Tier 3 should achieve 0.8+ confidence
+6. COMPLETENESS: Recipe should be fully actionable with all details
+
+Return comprehensive JSON with confidence 0.8+ due to frame analysis.`;
+  }
+
   // TIER 2: Multi-Modal Video Analysis (Comprehensive & Expensive)
   async extractFromVideoData(apifyData) {
     console.log('[RecipeAIExtractor] Starting TIER 2 video analysis:', {
@@ -234,8 +356,23 @@ class RecipeAIExtractor {
       viewCount: apifyData.viewCount,
       hasCaption: !!apifyData.caption,
       captionLength: apifyData.caption?.length || 0,
-      imageCount: apifyData.images?.length || 0
+      imageCount: apifyData.images?.length || 0,
+      videoUrlExpiry: apifyData.videoUrlExpiry,
+      timeUntilExpiry: apifyData.videoUrlExpiry ? Math.round((apifyData.videoUrlExpiry - Date.now()) / 1000) + 's' : 'N/A'
     });
+
+    // Check video URL expiration
+    if (apifyData.videoUrlExpiry && Date.now() > apifyData.videoUrlExpiry) {
+      console.warn('[RecipeAIExtractor] Video URL has expired, falling back to Tier 1');
+      return {
+        success: false,
+        confidence: 0,
+        error: 'Video URL has expired - please re-import for video analysis',
+        tier: 2,
+        videoExpired: true,
+        fallbackToTier1: true
+      };
+    }
 
     if (!apifyData.videoUrl) {
       console.log('[RecipeAIExtractor] No video available for TIER 2 analysis');
@@ -261,13 +398,28 @@ class RecipeAIExtractor {
         return mockResult;
       }
 
-      // Include video URL and all available media for comprehensive analysis
-      const mediaContent = apifyData.images || [];
+      // Prepare enhanced video data for Gemini analysis
+      const mediaContent = [];
+
+      // Prepare video with analysis hints for better extraction
       if (apifyData.videoUrl) {
-        mediaContent.unshift({
-          url: apifyData.videoUrl,
-          type: 'video',
-          duration: apifyData.videoDuration
+        console.log('[RecipeAIExtractor] Preparing video for enhanced AI analysis');
+        const videoData = this.videoProcessor.prepareVideoForAI(apifyData.videoUrl, {
+          duration: apifyData.videoDuration,
+          viewCount: apifyData.viewCount,
+          author: apifyData.author?.username
+        });
+        mediaContent.push(videoData);
+      }
+
+      // Add images as supplementary content
+      if (apifyData.images && apifyData.images.length > 0) {
+        apifyData.images.slice(0, 3).forEach((img, index) => {
+          mediaContent.push({
+            url: img.url || img,
+            type: 'image',
+            context: index === 0 ? 'thumbnail/cover' : 'additional'
+          });
         });
       }
 
@@ -293,29 +445,19 @@ class RecipeAIExtractor {
         throw new Error('Invalid AI response format');
       }
 
-      // Validate and clean the result with video analysis boost
-      const finalResult = this.validateAndTransformRecipe(result);
+      // Prepare enhanced source data for Tier 2 confidence scoring
+      const sourceData = {
+        hasCaption: !!apifyData.caption,
+        hashtagCount: apifyData.hashtags?.length || 0,
+        viewCount: apifyData.viewCount || 0,
+        author: apifyData.author,
+        hasVideo: !!apifyData.videoUrl,
+        videoUrl: apifyData.videoUrl,
+        videoDuration: apifyData.videoDuration
+      };
 
-      // Tier 2 confidence boosting - Enhanced for video analysis
-      let confidenceBoost = 0;
-
-      // Video data available (significant boost for Tier 2)
-      if (apifyData.videoUrl && finalResult.confidence < 0.9) {
-        confidenceBoost += 0.25; // Higher boost for video in Tier 2
-        finalResult.videoConfidence = finalResult.confidence + confidenceBoost;
-        console.log('[RecipeAIExtractor] TIER 2 confidence boosted for video analysis');
-      }
-
-      // High view count indicates popular/quality content
-      if (apifyData.viewCount > 10000) {
-        confidenceBoost += 0.1;
-        console.log('[RecipeAIExtractor] TIER 2 confidence boosted for popular video');
-      }
-
-      // Apply confidence boost
-      if (confidenceBoost > 0) {
-        finalResult.confidence = Math.min(1.0, finalResult.confidence + confidenceBoost);
-      }
+      // Validate and clean the result with enhanced source data
+      const finalResult = this.validateAndTransformRecipe(result, sourceData);
 
       // Mark as Tier 2 result
       finalResult.tier = 2;
@@ -452,26 +594,62 @@ Has ${data.images?.length || 0} high-quality image(s)
 ${hasVideo ? `VIDEO AVAILABLE: ${data.videoDuration} seconds of cooking footage (${data.viewCount || 0} views)` : 'No video'}
 
 ${hasVideo ? `
-TIER 2 VIDEO CONTEXT (COMPREHENSIVE ANALYSIS):
-- A ${data.videoDuration}-second cooking video shows the complete preparation process
-- Video contains visual cooking steps, techniques, timing, and ingredient reveals
-- Ingredients are typically shown at the beginning of cooking videos
-- Each scene change likely indicates a new cooking step or technique
-- Final dish appearance validates recipe type and presentation
-- Cooking sounds and visual cues provide technique information
-- Video duration indicates cooking complexity and time requirements
+TIER 2 VIDEO DEEP ANALYSIS INSTRUCTIONS:
+
+🎥 FRAME-BY-FRAME ANALYSIS:
+- SCAN the entire ${data.videoDuration}-second video for ingredient reveals
+- IDENTIFY text overlays that appear at ANY point (often quick, 1-2 seconds)
+- CAPTURE ingredient quantities shown visually (measuring cups, packages, containers)
+- DETECT scene transitions that indicate new cooking phases
+- ANALYZE hand movements and cooking techniques demonstrated
+- NOTE timing of each cooking action (sautéing duration, baking time shown)
+
+📝 TEXT OVERLAY EXTRACTION:
+- TEXT OVERLAYS are CRITICAL - they often contain the COMPLETE recipe
+- Look for ingredient lists that flash on screen (often at video start)
+- Capture step-by-step instructions shown as text during cooking
+- Extract measurements/quantities from on-screen text ("2 cups", "350°F")
+- Identify recipe tips or notes shown as captions during specific moments
+
+🎵 AUDIO/NARRATION ANALYSIS:
+- LISTEN for verbal instructions and ingredient callouts
+- Extract cooking temperatures and times mentioned verbally
+- Capture tips and techniques explained through narration
+- Identify background discussions about ingredients or methods
+- Note any verbal cues about substitutions or variations
+
+👁️ VISUAL INGREDIENT DETECTION:
+- COUNT distinct ingredients shown (even if not mentioned in caption)
+- IDENTIFY packages, bottles, and containers with visible labels
+- ESTIMATE quantities based on visual portion sizes
+- RECOGNIZE fresh ingredients by appearance (vegetables, proteins, herbs)
+- DETECT pre-made components (sauces, broths, prepared items)
+
+⏱️ TEMPORAL SEQUENCE MAPPING:
+- First 5 seconds: Often shows all ingredients laid out
+- 10-30% mark: Preparation techniques (chopping, marinating)
+- 30-70% mark: Main cooking process (heat application, combining)
+- 70-90% mark: Final assembly and plating
+- Last 5 seconds: Finished dish glamour shot
+
+🔍 COOKING TECHNIQUE ANALYSIS:
+- Identify cooking methods: sautéing, baking, grilling, steaming, etc.
+- Detect heat levels from visual cues (flame size, steam, bubbling)
+- Note cooking vessel types and sizes (affects cooking times)
+- Observe mixing/folding techniques that affect texture
+- Identify garnishing and plating techniques
 ` : ''}
 
-TIER 2 EXTRACTION RULES (MULTI-MODAL):
-1. VIDEO-FIRST ANALYSIS: Prioritize video content over caption when available
-2. Tier 2 extraction should achieve HIGH CONFIDENCE (0.7+) due to comprehensive data
-3. Video ingredients often more complete than caption ingredients
-4. Visual cooking techniques override text descriptions when conflicting
-5. Use video duration to estimate actual cooking and prep times
-6. Scene changes indicate recipe progression and step count
-7. Final dish appearance helps identify cuisine type and serving size
-8. Popular videos (high view count) typically have reliable content
-9. Comprehensive analysis should yield MORE COMPLETE recipes than Tier 1
+TIER 2 EXTRACTION RULES (ENHANCED MULTI-MODAL):
+1. COMPLETE VIDEO SCAN: Analyze EVERY second for recipe information
+2. TEXT OVERLAY PRIORITY: Text on video overrides caption text
+3. VISUAL EVIDENCE: Trust what you SEE over what's written
+4. AUDIO EXTRACTION: Verbal instructions are authoritative
+5. INGREDIENT COMPLETENESS: List ALL ingredients shown, even briefly
+6. TEMPORAL ACCURACY: Use video timeline for actual cooking times
+7. CONFIDENCE BOOSTING: More visual evidence = higher confidence
+8. MISSING INFO DETECTION: Flag any gaps in recipe completeness
+9. CROSS-VALIDATION: Compare caption, visual, audio, and text overlay data
 
 CRITICAL JSON FORMAT REQUIREMENTS:
 - Convert ALL recipe fractions to decimal numbers in JSON
@@ -766,20 +944,54 @@ IMPORTANT FORMATTING RULES:
 - Be creative in parsing informal recipe formats - Instagram posts are rarely formal recipes`;
   }
 
-  async callAI(prompt, images = []) {
+  async callAI(prompt, mediaContent = []) {
+    const contentParts = [{ type: 'text', text: prompt }];
+
+    // Process media content with type awareness
+    for (const media of mediaContent.slice(0, 5)) {
+      if (media.type === 'video') {
+        // For video, send the URL with analysis hints
+        contentParts.push({
+          type: 'image_url',
+          image_url: {
+            url: media.url,
+            detail: 'high' // Request detailed analysis
+          }
+        });
+
+        // Add analysis hints as supplementary text
+        if (media.analysisHints) {
+          const hintsText = `
+VIDEO ANALYSIS FOCUS POINTS:
+- Duration: ${media.duration} seconds
+- Key timestamps to analyze: ${media.analysisHints.focusTimestamps.join(', ')} seconds
+- Expected sections: ${media.analysisHints.expectedSections.map(s =>
+            `${Math.round(s.start * media.duration)}s-${Math.round(s.end * media.duration)}s: ${s.focus}`
+          ).join(', ')}
+- Scan for text overlays and ingredient displays
+- Extract audio narration if present`;
+
+          contentParts.push({ type: 'text', text: hintsText });
+        }
+      } else if (media.type === 'image' || media.url) {
+        // Regular image handling
+        contentParts.push({
+          type: 'image_url',
+          image_url: {
+            url: media.url || media,
+            detail: media.context === 'thumbnail/cover' ? 'high' : 'low'
+          }
+        });
+      }
+    }
+
     const messages = [{
       role: 'user',
-      content: [
-        { type: 'text', text: prompt },
-        ...images.slice(0, 5).map(img => ({
-          type: 'image_url',
-          image_url: { url: img.url || img }
-        }))
-      ]
+      content: contentParts
     }];
 
     // Try free model first, with fallback to paid model
-    return await this.callAIWithFallback(messages, prompt, images);
+    return await this.callAIWithFallback(messages, prompt, mediaContent);
   }
 
   // Reset free model stats periodically or when requested
@@ -791,7 +1003,7 @@ IMPORTANT FORMATTING RULES:
     this.lastResetAt = Date.now();
   }
 
-  async callAIWithFallback(messages, prompt, images = []) {
+  async callAIWithFallback(messages, prompt, mediaContent = []) {
     this.totalRequests++;
 
     // Reset stats every 50 requests or every 24 hours to give free model fresh chances
@@ -908,7 +1120,81 @@ IMPORTANT FORMATTING RULES:
     return data.choices[0].message.content;
   }
 
-  validateAndTransformRecipe(result) {
+  /**
+   * Calculate comprehensive confidence score based on multiple factors
+   * @param {object} result - AI extraction result
+   * @param {object} sourceData - Original source data (Apify/Instagram)
+   * @returns {number} - Confidence score between 0 and 1
+   */
+  calculateConfidenceScore(result, sourceData = {}) {
+    const recipe = result.recipe || {};
+    const scores = {
+      base: 0.3,        // Base confidence for any extraction
+      ingredients: 0,    // Up to 0.25
+      instructions: 0,   // Up to 0.25
+      metadata: 0,       // Up to 0.1
+      source: 0,         // Up to 0.1
+      video: 0           // Video bonus up to 0.15
+    };
+
+    // Ingredient scoring (0-0.25)
+    if (recipe.extendedIngredients?.length > 0) {
+      const ingredientScore = Math.min(recipe.extendedIngredients.length / 10, 1);
+      const hasQuantities = recipe.extendedIngredients.filter(i => i.amount > 0).length / recipe.extendedIngredients.length;
+      scores.ingredients = (ingredientScore * 0.15) + (hasQuantities * 0.1);
+    }
+
+    // Instruction scoring (0-0.25)
+    const steps = recipe.analyzedInstructions?.[0]?.steps || [];
+    if (steps.length > 0) {
+      const stepScore = Math.min(steps.length / 8, 1);
+      const avgStepLength = steps.reduce((sum, s) => sum + (s.step?.length || 0), 0) / steps.length;
+      const detailScore = Math.min(avgStepLength / 100, 1);
+      scores.instructions = (stepScore * 0.15) + (detailScore * 0.1);
+    }
+
+    // Metadata scoring (0-0.1)
+    if (recipe.title && recipe.title !== 'Untitled Recipe') scores.metadata += 0.04;
+    if (recipe.summary && recipe.summary.length > 20) scores.metadata += 0.03;
+    if (recipe.readyInMinutes && recipe.readyInMinutes !== 30) scores.metadata += 0.02;
+    if (recipe.cuisines?.length > 0 || recipe.dishTypes?.length > 0) scores.metadata += 0.01;
+
+    // Source quality scoring (0-0.1)
+    if (sourceData.hasCaption) scores.source += 0.04;
+    if (sourceData.hashtagCount > 3) scores.source += 0.02;
+    if (sourceData.viewCount > 10000) scores.source += 0.02;
+    if (sourceData.author?.isVerified) scores.source += 0.02;
+
+    // Video analysis bonus (0-0.15)
+    if (sourceData.hasVideo || sourceData.videoUrl) {
+      scores.video += 0.05; // Base video bonus
+      if (sourceData.videoDuration > 30) scores.video += 0.05; // Longer videos typically more detailed
+      if (result.videoAnalyzed || result.tier === 2) scores.video += 0.05; // Tier 2 analysis bonus
+    }
+
+    // Calculate total confidence
+    const totalScore = Object.values(scores).reduce((sum, score) => sum + score, 0);
+
+    // Apply extraction tier multiplier
+    let tierMultiplier = 1.0;
+    if (result.tier === 2) tierMultiplier = 1.15; // 15% boost for Tier 2
+    else if (result.tier === 1) tierMultiplier = 1.0; // No change for Tier 1
+
+    const finalConfidence = Math.min(totalScore * tierMultiplier, 1.0);
+
+    // Log confidence breakdown for debugging
+    console.log('[RecipeAIExtractor] Confidence breakdown:', {
+      scores,
+      totalScore,
+      tierMultiplier,
+      finalConfidence,
+      tier: result.tier
+    });
+
+    return finalConfidence;
+  }
+
+  validateAndTransformRecipe(result, sourceData = {}) {
     // Ensure required fields exist
     if (!result.recipe) {
       result.recipe = {};
@@ -917,7 +1203,7 @@ IMPORTANT FORMATTING RULES:
     }
 
     const recipe = result.recipe;
-    
+
     // Ensure extendedIngredients format matches RecipeDetailModal
     if (!recipe.extendedIngredients || !Array.isArray(recipe.extendedIngredients)) {
       recipe.extendedIngredients = [];
@@ -953,7 +1239,7 @@ IMPORTANT FORMATTING RULES:
     recipe.readyInMinutes = recipe.readyInMinutes || 30;
     recipe.cookingMinutes = recipe.cookingMinutes || recipe.readyInMinutes;
     recipe.servings = recipe.servings || 4;
-    
+
     // Ensure all dietary booleans exist
     recipe.vegetarian = recipe.vegetarian || false;
     recipe.vegan = recipe.vegan || false;
@@ -962,36 +1248,23 @@ IMPORTANT FORMATTING RULES:
     recipe.veryHealthy = recipe.veryHealthy || false;
     recipe.cheap = recipe.cheap || false;
     recipe.veryPopular = recipe.veryPopular || false;
-    
+
     // Ensure arrays exist
     recipe.cuisines = recipe.cuisines || [];
     recipe.dishTypes = recipe.dishTypes || [];
     recipe.diets = recipe.diets || [];
-    
+
     // Nutrition is always null for imported recipes
     recipe.nutrition = null;
-    
-    // Calculate confidence based on completeness (more lenient)
-    let confidence = 1.0;
 
-    // Less severe penalties for missing data
-    if (!recipe.title || recipe.title === 'Untitled Recipe') confidence -= 0.15; // was 0.2
-    if (recipe.extendedIngredients.length === 0) confidence -= 0.2; // was 0.25
-    if (!recipe.analyzedInstructions ||
-        !recipe.analyzedInstructions[0] ||
-        !recipe.analyzedInstructions[0].steps ||
-        recipe.analyzedInstructions[0].steps.length === 0) confidence -= 0.2; // was 0.25
+    // Use the comprehensive confidence scoring system
+    result.confidence = this.calculateConfidenceScore(result, sourceData);
 
-    // Boost confidence if we have at least some data
-    if (recipe.extendedIngredients.length > 3) confidence += 0.1;
-    if (recipe.analyzedInstructions?.[0]?.steps?.length > 3) confidence += 0.1;
-
-    result.confidence = Math.max(0.35, Math.min(1.0, confidence)); // Minimum 35% confidence
-    // Much more lenient - accept anything with at least title OR ingredients OR instructions
-    result.success = (recipe.title && recipe.title !== 'Untitled Recipe') || 
-                     recipe.extendedIngredients.length > 0 || 
+    // Success determination with minimum thresholds
+    result.success = (recipe.title && recipe.title !== 'Untitled Recipe') ||
+                     recipe.extendedIngredients.length > 0 ||
                      (recipe.analyzedInstructions?.[0]?.steps?.length > 0);
-    
+
     return result;
   }
 

@@ -24,6 +24,7 @@ const upload = multer({
 // Routes
 router.post('/scan', authMiddleware.authenticateToken, upload.single('image'), mealController.scanMeal);
 router.post('/log', authMiddleware.authenticateToken, mealController.logMeal);
+router.post('/dine-out', authMiddleware.authenticateToken, upload.single('image'), mealController.logDineOutMeal);
 router.get('/history', authMiddleware.authenticateToken, mealController.getMealHistory);
 router.put('/:id', authMiddleware.authenticateToken, mealController.updateMeal);
 router.delete('/:id', authMiddleware.authenticateToken, mealController.deleteMeal);

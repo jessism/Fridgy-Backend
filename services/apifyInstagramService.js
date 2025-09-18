@@ -232,10 +232,14 @@ class ApifyInstagramService {
       };
     }
 
-    // Extract video URL - now using correct field from response
+    // Extract video URL with expiration tracking
     const videoUrl = data.videoUrl || null;
     const videoDuration = data.videoDuration || null;
     const isVideo = data.type === "Video";
+
+    // Add timestamp for URL expiration tracking (Instagram URLs typically expire in ~1 hour)
+    const extractionTimestamp = Date.now();
+    const videoUrlExpiry = videoUrl ? extractionTimestamp + (60 * 60 * 1000) : null; // 1 hour expiry
 
     // Extract images - enhanced for video content and reels
     const images = [];
@@ -332,7 +336,14 @@ class ApifyInstagramService {
       images: images,
       videoUrl: videoUrl,
       videoDuration: videoDuration,
-      videos: videoUrl ? [{ url: videoUrl, duration: videoDuration }] : [],
+      videoUrlExpiry: videoUrlExpiry,
+      extractionTimestamp: extractionTimestamp,
+      videos: videoUrl ? [{
+        url: videoUrl,
+        duration: videoDuration,
+        expiry: videoUrlExpiry,
+        isExpired: false
+      }] : [],
       author: author,
       hashtags: hashtags,
       likes: data.likesCount || 0,
@@ -340,7 +351,8 @@ class ApifyInstagramService {
       viewCount: data.videoViewCount || data.videoPlayCount || 0,
       timestamp: data.timestamp,
       isVideo: isVideo,
-      extractedWithApify: true
+      extractedWithApify: true,
+      requiresImmediateProcessing: isVideo // Flag for priority processing
     };
   }
 

@@ -469,6 +469,160 @@ const mealController = {
         timestamp: new Date().toISOString()
       });
     }
+  },
+
+  /**
+   * Log a dine-out meal (without ingredient deduction)
+   */
+  async logDineOutMeal(req, res) {
+    const requestId = Math.random().toString(36).substring(7);
+
+    try {
+      console.log(`\n🍴 ================== DINE OUT MEAL LOG START ==================`);
+      console.log(`🍴 REQUEST ID: ${requestId}`);
+
+      // Get user ID from token
+      const userId = getUserIdFromToken(req);
+      console.log(`🍴 [${requestId}] User ID: ${userId}`);
+
+      // Get meal type from form data or body
+      // When using multer with FormData, non-file fields are still in req.body
+      const mealType = req.body.mealType || req.body.meal_type;
+      console.log(`🍴 [${requestId}] Request body:`, req.body);
+      console.log(`🍴 [${requestId}] Meal type: ${mealType}`);
+
+      // Validate meal type
+      const validMealTypes = ['breakfast', 'lunch', 'dinner', 'snack'];
+      if (!mealType || !validMealTypes.includes(mealType)) {
+        throw new Error('Invalid meal type. Must be breakfast, lunch, dinner, or snack');
+      }
+
+      // Analyze the meal image for calorie estimation if image is provided
+      let mealName = 'Dine Out Meal';
+      let estimatedCalories = null;
+
+      if (req.file) {
+        try {
+          console.log(`🍴 [${requestId}] Analyzing dine-out meal for calories...`);
+
+          // Use the existing meal analysis service
+          const analysisResult = await mealAnalysisService.analyzeMealImage(req.file.buffer);
+
+          // Extract meal name and calculate total calories
+          if (analysisResult) {
+            mealName = analysisResult.meal_name || 'Dine Out Meal';
+
+            // Calculate total calories from all detected ingredients
+            const ingredients = analysisResult.ingredients || analysisResult;
+            if (Array.isArray(ingredients)) {
+              estimatedCalories = ingredients.reduce((total, item) => {
+                return total + (item.calories || 0);
+              }, 0);
+
+              console.log(`🍴 [${requestId}] Meal name: ${mealName}`);
+              console.log(`🍴 [${requestId}] Estimated calories: ${estimatedCalories}`);
+            }
+          }
+        } catch (analysisError) {
+          console.error(`🍴 [${requestId}] Error analyzing meal for calories:`, analysisError);
+          // Continue without calorie estimation if analysis fails
+        }
+      }
+
+      // Upload image to Supabase Storage if provided
+      let imageUrl = null;
+      if (req.file) {
+        try {
+          // Generate unique filename
+          const timestamp = Date.now();
+          const randomId = Math.random().toString(36).substring(7);
+          const fileName = `${userId}/dine-out_${timestamp}_${randomId}.jpg`;
+
+          console.log(`🍴 [${requestId}] Uploading dine-out image: ${fileName}`);
+
+          // Upload to Supabase Storage
+          const supabase = getSupabaseClient();
+          const { data: uploadData, error: uploadError } = await supabase.storage
+            .from('meal-photos')
+            .upload(fileName, req.file.buffer, {
+              contentType: req.file.mimetype || 'image/jpeg',
+              upsert: false
+            });
+
+          if (uploadError) {
+            console.error(`🍴 [${requestId}] Storage upload error:`, uploadError);
+          } else {
+            // Get public URL
+            const { data: urlData } = supabase.storage
+              .from('meal-photos')
+              .getPublicUrl(fileName);
+
+            imageUrl = urlData.publicUrl;
+            console.log(`🍴 [${requestId}] Image uploaded successfully`);
+          }
+        } catch (storageError) {
+          console.error(`🍴 [${requestId}] Storage error:`, storageError);
+          // Continue without image URL
+        }
+      }
+
+      // Get current date or use provided target date
+      const targetDate = req.body.targetDate ? new Date(req.body.targetDate) : new Date();
+
+      // Save dine-out meal log to database
+      const supabase = getSupabaseClient();
+      const { data: mealLog, error: dbError } = await supabase
+        .from('meal_logs')
+        .insert({
+          user_id: userId,
+          meal_photo_url: imageUrl,
+          meal_type: mealType,
+          meal_name: mealName,  // Use the AI-detected meal name
+          is_dine_out: true, // Mark as dine-out meal
+          ingredients_detected: null, // No ingredients for dine-out
+          ingredients_logged: estimatedCalories ? [{
+            name: 'Total Calories',
+            calories: estimatedCalories,
+            quantity: 1,
+            unit: 'meal'
+          }] : null, // Store calories in ingredients_logged for consistency
+          logged_at: targetDate.toISOString(),
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (dbError) {
+        console.error(`🍴 [${requestId}] Database error:`, dbError);
+        console.error(`🍴 [${requestId}] Error details:`, JSON.stringify(dbError, null, 2));
+        throw new Error(`Failed to save dine-out meal: ${dbError.message || 'Database error'}`);
+      }
+
+      console.log(`🍴 [${requestId}] Dine-out meal logged successfully:`, mealLog.id);
+
+      res.json({
+        success: true,
+        message: 'Dine-out meal logged successfully',
+        meal: mealLog,
+        requestId: requestId,
+        timestamp: new Date().toISOString()
+      });
+
+      console.log(`✅ [${requestId}] Dine-out meal log complete`);
+      console.log(`✅ ================== DINE OUT MEAL LOG END ==================\n`);
+
+    } catch (error) {
+      console.error(`❌ [${requestId}] Dine-out meal log error:`, error);
+
+      const statusCode = error.message.includes('token') ? 401 : 500;
+
+      res.status(statusCode).json({
+        success: false,
+        error: error.message.includes('token') ? 'Authentication required' : error.message,
+        requestId: requestId,
+        timestamp: new Date().toISOString()
+      });
+    }
   }
 };
 

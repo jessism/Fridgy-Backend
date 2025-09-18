@@ -23,6 +23,7 @@ const ingredientImagesRoutes = require('./routes/ingredientImages');
 const onboardingRoutes = require('./routes/onboarding');
 const shortcutsRoutes = require('./routes/shortcuts');
 const savedRecipesRoutes = require('./routes/savedRecipes');
+const shoppingListsRoutes = require('./routes/shoppingLists');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -79,6 +80,7 @@ app.use('/api/ingredient-images', ingredientImagesRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/shortcuts', shortcutsRoutes);
 app.use('/api/saved-recipes', savedRecipesRoutes);
+app.use('/api/shopping-lists', shoppingListsRoutes);
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)
 app.get('/api/proxy-image', async (req, res) => {

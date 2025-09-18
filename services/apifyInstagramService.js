@@ -29,7 +29,12 @@ class ApifyInstagramService {
       'cdninstagram.com',
       'fbcdn.net',
       'scontent',
-      'ig.me'
+      'ig.me',
+      'cloudfront.net',    // AWS CloudFront CDN
+      'akamaihd.net',      // Akamai CDN
+      'akamaized.net',     // Akamai CDN alternative
+      'fbsbx.com',         // Facebook sandbox
+      'facebook.com'       // Facebook domain
     ];
 
     const hasValidDomain = validDomains.some(domain => url.includes(domain));

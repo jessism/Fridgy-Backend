@@ -30,6 +30,24 @@ const nutritionAnalysis = new NutritionAnalysisService();
 // Health check endpoint (no auth required for monitoring)
 router.get('/health', recipeController.healthCheck);
 
+// API Keys health check endpoint (for debugging production issues)
+router.get('/health/keys', (req, res) => {
+  res.json({
+    status: 'ok',
+    keys: {
+      hasGemini: !!process.env.GOOGLE_GEMINI_API_KEY && process.env.GOOGLE_GEMINI_API_KEY !== 'your_google_gemini_api_key_here',
+      hasOpenRouter: !!process.env.OPENROUTER_API_KEY,
+      hasApify: !!process.env.APIFY_API_TOKEN,
+      hasSpoonacular: !!process.env.SPOONACULAR_API_KEY,
+      hasEdamam: !!process.env.EDAMAM_APP_ID && !!process.env.EDAMAM_APP_KEY
+    },
+    multiModalStatus: {
+      geminiConfigured: !!multiModalExtractor.geminiModel,
+      openRouterConfigured: !!multiModalExtractor.apiKey
+    }
+  });
+});
+
 // Import recipe from Instagram URL (Web flow for authenticated users)
 // POST /api/recipes/import-instagram
 router.post('/import-instagram', authMiddleware.authenticateToken, async (req, res) => {

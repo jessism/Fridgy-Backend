@@ -74,13 +74,24 @@ class MultiModalExtractor {
       // FALLBACK PATH: Original multi-source extraction
       console.log('[MultiModal] Using fallback extraction method (caption + images)');
 
+      // Log incoming Apify data for debugging
+      console.log('[MultiModal] Apify data received:', {
+        hasCaption: !!apifyData.caption,
+        captionLength: apifyData.caption?.length || 0,
+        imageCount: apifyData.images?.length || 0,
+        firstImageUrl: apifyData.images?.[0]?.url?.substring(0, 100) || 'none',
+        videoUrl: !!apifyData.videoUrl,
+        author: apifyData.author?.username || 'unknown'
+      });
+
       // Extract caption and static images
       const captionData = await this.extractCaptionData(apifyData);
       const imageData = await this.extractStaticImages(apifyData);
 
       console.log('[MultiModal] Fallback sources extracted:', {
         captionLength: captionData?.text?.length || 0,
-        imageCount: imageData?.images?.length || 0
+        imageCount: imageData?.images?.length || 0,
+        imageUrls: imageData?.images?.map(img => img.url?.substring(0, 50) + '...') || []
       });
 
       // Use OpenRouter for synthesis with images + caption
@@ -834,11 +845,22 @@ READ EVERY PIECE OF TEXT IN THE VIDEO. Text is MORE important than visuals!`;
   async synthesizeWithOpenRouter(sources) {
     const { caption, images, metadata } = sources;
 
-    // Build prompt for OpenRouter
-    const prompt = this.buildOpenRouterPrompt(caption, images, metadata);
+    // Ensure images structure exists
+    const safeImages = images || { images: [] };
+    if (!safeImages.images) {
+      safeImages.images = [];
+    }
 
-    // Prepare image content
-    const imageContent = images.images.map(img => ({
+    // Log if no images available
+    if (safeImages.images.length === 0) {
+      console.warn('[MultiModal] No images available for synthesis, using caption-only extraction');
+    }
+
+    // Build prompt for OpenRouter
+    const prompt = this.buildOpenRouterPrompt(caption, safeImages, metadata);
+
+    // Prepare image content with null safety
+    const imageContent = (safeImages.images || []).map(img => ({
       type: 'image_url',
       image_url: {
         url: img.url,
@@ -857,7 +879,12 @@ READ EVERY PIECE OF TEXT IN THE VIDEO. Text is MORE important than visuals!`;
       return result;
 
     } catch (error) {
-      console.error('[MultiModal] OpenRouter synthesis failed:', error);
+      console.error('[MultiModal] OpenRouter synthesis failed:', {
+        error: error.message,
+        stack: error.stack,
+        imageCount: safeImages.images?.length || 0,
+        captionLength: caption?.text?.length || 0
+      });
       return {
         success: false,
         error: error.message,
@@ -874,13 +901,16 @@ READ EVERY PIECE OF TEXT IN THE VIDEO. Text is MORE important than visuals!`;
    * @returns {string} - Prompt for OpenRouter
    */
   buildOpenRouterPrompt(caption, images, metadata) {
+    // Ensure images structure exists
+    const imageCount = images?.images?.length || 0;
+
     return `Extract a recipe from this Instagram post.
 
 CAPTION:
-${caption.text || 'No caption available'}
+${caption?.text || 'No caption available'}
 
 IMAGES:
-You are provided with ${images.images.length} images from the post. Analyze them for:
+You are provided with ${imageCount} images from the post. Analyze them for:
 - Ingredients shown
 - Cooking steps
 - Final dish presentation
@@ -904,8 +934,9 @@ Ensure all ingredient amounts are in decimal format (not fractions).`;
     }
 
     // Has images
-    if (sources.images?.images?.length > 0) {
-      confidence += 0.1 * Math.min(sources.images.images.length, 3);
+    const imageCount = sources.images?.images?.length || 0;
+    if (imageCount > 0) {
+      confidence += 0.1 * Math.min(imageCount, 3);
     }
 
     // Has complete recipe

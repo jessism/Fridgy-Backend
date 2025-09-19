@@ -5,31 +5,48 @@ const pushNotificationService = require('../services/pushNotificationService');
 
 // Get VAPID public key
 router.get('/vapid-public-key', (req, res) => {
+  const publicKey = process.env.VAPID_PUBLIC_KEY;
+  console.log('VAPID public key requested, key exists:', !!publicKey);
+
+  if (!publicKey) {
+    console.error('VAPID_PUBLIC_KEY not found in environment variables!');
+    return res.status(500).json({
+      error: 'VAPID key not configured on server'
+    });
+  }
+
   res.json({
-    publicKey: process.env.VAPID_PUBLIC_KEY
+    publicKey: publicKey
   });
 });
 
 // Subscribe to push notifications
 router.post('/subscribe', authenticateToken, async (req, res) => {
   try {
+    console.log('Push subscription request from user:', req.user.id, req.user.email);
     const { subscription } = req.body;
     const userId = req.user.id;
 
+    console.log('Subscription object received:', JSON.stringify(subscription, null, 2));
+
     if (!subscription) {
+      console.error('No subscription data provided');
       return res.status(400).json({
         success: false,
         message: 'Subscription data required'
       });
     }
 
+    console.log('Saving subscription for user:', userId);
     const result = await pushNotificationService.saveSubscription(userId, subscription);
+    console.log('Subscription save result:', result);
     res.json(result);
   } catch (error) {
-    console.error('Subscribe error:', error);
+    console.error('Subscribe error:', error.message || error);
+    console.error('Stack trace:', error.stack);
     res.status(500).json({
       success: false,
-      message: 'Failed to save subscription'
+      message: `Failed to save subscription: ${error.message || 'Unknown error'}`
     });
   }
 });

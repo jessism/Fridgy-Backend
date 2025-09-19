@@ -40,21 +40,36 @@ const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    
+
     const allowedOrigins = [
       'http://localhost:3000',
+      'http://localhost:3001',
       'http://192.168.1.72:3000',
-      'https://fridgy-frontend.vercel.app'
+      'https://fridgy-frontend.vercel.app',
+      'https://trackabite.vercel.app',
+      'https://trackabite.app'
     ];
-    
+
+    // Get additional allowed origins from environment
+    if (process.env.FRONTEND_URL) {
+      allowedOrigins.push(process.env.FRONTEND_URL);
+    }
+
     // Allow any ngrok domain for testing
     if (origin && origin.includes('.ngrok-free.app')) {
       return callback(null, true);
     }
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
+
+    // Allow any Vercel preview deployments
+    if (origin && origin.includes('.vercel.app')) {
+      return callback(null, true);
+    }
+
+    // Check against allowed origins
+    if (allowedOrigins.some(allowed => origin === allowed || origin.startsWith(allowed))) {
       callback(null, true);
     } else {
+      console.log('CORS blocked origin:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },

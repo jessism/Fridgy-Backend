@@ -4,7 +4,7 @@
 -- Step 1: Create push_subscriptions table for storing browser push subscriptions
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE, -- Changed to public.users
   endpoint TEXT NOT NULL,
   keys JSONB NOT NULL, -- Stores p256dh and auth keys
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 -- Step 2: Create notification_preferences table for user settings
 CREATE TABLE IF NOT EXISTS notification_preferences (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE, -- Changed to public.users
   enabled BOOLEAN DEFAULT true,
   days_before_expiry INTEGER[] DEFAULT ARRAY[1, 3], -- Array of days before expiry to notify
   notification_time TIME DEFAULT '09:00:00', -- Preferred notification time
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
 -- Step 3: Create notification_logs table to track sent notifications
 CREATE TABLE IF NOT EXISTS notification_logs (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE, -- Changed to public.users
   item_id INTEGER REFERENCES fridge_items(id) ON DELETE SET NULL, -- Changed from UUID to INTEGER
   notification_type TEXT NOT NULL, -- 'expiry', 'test', 'recipe_suggestion', etc.
   title TEXT,
@@ -69,26 +69,14 @@ FOR EACH ROW
 EXECUTE FUNCTION update_push_updated_at_column();
 
 -- Step 7: Grant necessary permissions
-GRANT ALL ON push_subscriptions TO authenticated;
-GRANT ALL ON notification_preferences TO authenticated;
-GRANT ALL ON notification_logs TO authenticated;
+-- Since we're using custom authentication, grant to both anon and authenticated
+GRANT ALL ON push_subscriptions TO anon, authenticated;
+GRANT ALL ON notification_preferences TO anon, authenticated;
+GRANT ALL ON notification_logs TO anon, authenticated;
 
--- Step 8: Add RLS policies (Row Level Security)
-ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE notification_preferences ENABLE ROW LEVEL SECURITY;
-ALTER TABLE notification_logs ENABLE ROW LEVEL SECURITY;
-
--- Users can only manage their own subscriptions
-CREATE POLICY "Users can manage own push subscriptions" ON push_subscriptions
-  FOR ALL USING (auth.uid() = user_id);
-
--- Users can only manage their own preferences
-CREATE POLICY "Users can manage own notification preferences" ON notification_preferences
-  FOR ALL USING (auth.uid() = user_id);
-
--- Users can only view their own notification logs
-CREATE POLICY "Users can view own notification logs" ON notification_logs
-  FOR SELECT USING (auth.uid() = user_id);
+-- Step 8: No RLS policies since we're using custom auth in backend
+-- Authentication and authorization is handled by the Express backend
+-- using JWT tokens, not Supabase auth
 
 -- Verification query to check tables were created
 SELECT table_name, column_name, data_type

@@ -382,12 +382,16 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req
     console.log('[MultiModal] Fetching Instagram data with Apify...');
     const apifyData = await apifyService.extractFromUrl(url, userId);
 
+    console.log('[MultiModal] Author from Apify:', apifyData.author?.username || 'NO USERNAME');
+
     if (!apifyData.success) {
       console.log('[MultiModal] Apify extraction failed:', apifyData.error);
       return res.status(400).json({
         success: false,
         error: apifyData.error || 'Failed to extract Instagram content',
-        limitExceeded: apifyData.limitExceeded
+        limitExceeded: apifyData.limitExceeded,
+        isTimeout: apifyData.isTimeout || false,
+        technicalError: apifyData.technicalError
       });
     }
 
@@ -403,10 +407,14 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req
     const result = await multiModalExtractor.extractWithAllModalities(apifyData);
 
     if (!result.success || !result.recipe) {
-      console.log('[MultiModal] Extraction failed or incomplete');
+      console.log('[MultiModal] Extraction failed or incomplete:', {
+        errorMessage: result.error,
+        errorDetails: result.errorDetails
+      });
       return res.status(400).json({
         success: false,
-        error: 'Could not extract recipe with multi-modal analysis',
+        error: result.error || 'Could not extract recipe with multi-modal analysis',
+        errorDetails: result.errorDetails,
         partialRecipe: result.recipe,
         confidence: result.confidence
       });
@@ -1210,6 +1218,7 @@ router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
     console.log('[RecipeSave] Saving extracted recipe for user:', userId);
     console.log('[RecipeSave] Recipe title:', recipe?.title);
     console.log('[RecipeSave] Import method:', import_method);
+    console.log('[RecipeSave] Source author:', recipe?.source_author || 'NOT PROVIDED');
 
     // Validate recipe data
     if (!recipe || !recipe.title) {

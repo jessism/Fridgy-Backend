@@ -61,12 +61,12 @@ const sanitizeRecipeData = (recipeData) => {
     vegan: Boolean(recipeData.vegan),
     glutenFree: Boolean(recipeData.glutenFree),
     dairyFree: Boolean(recipeData.dairyFree),
-    // Add source metadata
-    sourceType: 'instagram',
-    sourceUrl: recipeData.sourceUrl,
-    sourceAuthor: String(recipeData.sourceAuthor || '').substring(0, 255),
-    sourceAuthorImage: String(recipeData.sourceAuthorImage || ''),
-    importMethod: 'ios_shortcut'
+    // Add source metadata - using snake_case to match database columns
+    source_type: 'instagram',
+    source_url: recipeData.source_url || recipeData.sourceUrl,
+    source_author: String(recipeData.source_author || recipeData.sourceAuthor || '').substring(0, 255),
+    source_author_image: String(recipeData.source_author_image || recipeData.sourceAuthorImage || ''),
+    import_method: 'ios_shortcut'
   };
 };
 

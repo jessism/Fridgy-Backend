@@ -202,6 +202,16 @@ class ApifyInstagramService {
             data: itemsResponse.data[0] // First item
           };
         } else if (status === 'FAILED' || status === 'ABORTED' || status === 'TIMED-OUT') {
+          // Special handling for timeout
+          if (status === 'TIMED-OUT') {
+            return {
+              success: false,
+              error: 'Instagram is taking longer than usual. This sometimes happens with video recipes. Please try again in a moment or try a different recipe.',
+              isTimeout: true,
+              technicalError: `Actor run timed-out after ${this.timeoutSeconds} seconds`
+            };
+          }
+
           return {
             success: false,
             error: `Actor run ${status.toLowerCase()}`
@@ -223,7 +233,9 @@ class ApifyInstagramService {
 
     return {
       success: false,
-      error: 'Timeout waiting for results'
+      error: 'Instagram is taking longer than usual. This sometimes happens with video recipes. Please try again in a moment or try a different recipe.',
+      isTimeout: true,
+      technicalError: 'Polling timeout - actor still running after maximum attempts'
     };
   }
 
@@ -308,6 +320,14 @@ class ApifyInstagramService {
       fullName: data.ownerFullName || '',
       profilePic: data.ownerProfilePicUrl || ''
     };
+
+    // Enhanced logging for author extraction
+    console.log('[ApifyInstagram] Author extraction:', {
+      username: author.username,
+      fullName: author.fullName,
+      hasProfilePic: !!author.profilePic,
+      rawOwnerUsername: data.ownerUsername
+    });
 
     // Debug logging for image extraction
     console.log('[ApifyInstagram] Image extraction debug:', {

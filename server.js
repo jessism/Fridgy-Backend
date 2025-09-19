@@ -24,6 +24,7 @@ const onboardingRoutes = require('./routes/onboarding');
 const shortcutsRoutes = require('./routes/shortcuts');
 const savedRecipesRoutes = require('./routes/savedRecipes');
 const shoppingListsRoutes = require('./routes/shoppingLists');
+const pushRoutes = require('./routes/push');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -80,6 +81,7 @@ app.use('/api/ingredient-images', ingredientImagesRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/shortcuts', shortcutsRoutes);
 app.use('/api/saved-recipes', savedRecipesRoutes);
+app.use('/api/push', pushRoutes);
 app.use('/api/shopping-lists', shoppingListsRoutes);
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)
@@ -1335,6 +1337,9 @@ app.get('/api/test', (req, res) => {
   });
 });
 
+// Import notification scheduler
+const expiryNotificationScheduler = require('./services/expiryNotificationScheduler');
+
 // Start server
 app.listen(PORT, () => {
   const startupTime = new Date().toISOString();
@@ -1358,4 +1363,11 @@ app.listen(PORT, () => {
   console.log(`   RAPIDAPI_KEY: ${process.env.RAPIDAPI_KEY ? '✅ Present (Tasty)' : '❌ Missing (Tasty)'}`);
   console.log(`   FIREWORKS_API_KEY: ${process.env.FIREWORKS_API_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   APIFY_API_TOKEN: ${process.env.APIFY_API_TOKEN ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   VAPID_PUBLIC_KEY: ${process.env.VAPID_PUBLIC_KEY ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   VAPID_PRIVATE_KEY: ${process.env.VAPID_PRIVATE_KEY ? '✅ Present' : '❌ Missing'}`);
+
+  // Start the expiry notification scheduler
+  console.log('\n🔔 Starting expiry notification scheduler...');
+  expiryNotificationScheduler.start();
+  console.log('🔔 Notification scheduler is running');
 }); 

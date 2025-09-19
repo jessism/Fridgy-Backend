@@ -119,10 +119,15 @@ class MultiModalExtractor {
       return result;
 
     } catch (error) {
-      console.error('[MultiModal] Extraction failed:', error);
+      console.error('[MultiModal] Extraction failed:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
       return {
         success: false,
         error: error.message,
+        errorDetails: error.stack,
         extractionMethod: 'multi-modal',
         processingTime: Date.now() - startTime
       };
@@ -440,10 +445,16 @@ RETURN COMPREHENSIVE JSON:
       const data = await response.json();
 
       if (!response.ok) {
-        console.error('[MultiModal] API Error:', data);
-        throw new Error(data.error?.message || 'AI API error');
+        console.error('[MultiModal] API Error:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: data.error,
+          fullData: JSON.stringify(data).substring(0, 500)
+        });
+        throw new Error(data.error?.message || `AI API error: ${response.status}`);
       }
 
+      console.log('[MultiModal] API call successful, got response');
       return data.choices[0].message.content;
 
     } catch (error) {
@@ -464,10 +475,12 @@ RETURN COMPREHENSIVE JSON:
    */
   parseAIResponse(response) {
     try {
+      console.log('[MultiModal] AI Response (first 500 chars):', response?.substring(0, 500));
       const result = JSON.parse(response);
 
       // Ensure required fields
       if (!result.recipe) {
+        console.log('[MultiModal] WARNING: AI response missing recipe field');
         result.recipe = {};
         result.success = false;
       }
@@ -868,6 +881,13 @@ READ EVERY PIECE OF TEXT IN THE VIDEO. Text is MORE important than visuals!`;
       }
     }));
 
+    // Debug log the images being sent
+    console.log('[MultiModal] Sending to OpenRouter:', {
+      imageCount: imageContent.length,
+      captionPreview: caption?.text?.substring(0, 100) || 'No caption',
+      firstImageUrl: imageContent[0]?.image_url?.url?.substring(0, 100) || 'No images'
+    });
+
     try {
       // Call OpenRouter API
       const response = await this.callAI(prompt, imageContent);
@@ -915,7 +935,36 @@ You are provided with ${imageCount} images from the post. Analyze them for:
 - Cooking steps
 - Final dish presentation
 
-Return a complete recipe in JSON format with title, ingredients, instructions, and metadata.
+Return a JSON object with this EXACT structure:
+{
+  "success": true,
+  "recipe": {
+    "title": "Recipe name here",
+    "summary": "Brief description of the dish",
+    "extendedIngredients": [
+      {
+        "name": "ingredient name",
+        "amount": 1.0,
+        "unit": "cup",
+        "original": "1 cup ingredient name"
+      }
+    ],
+    "analyzedInstructions": [
+      {
+        "name": "",
+        "steps": [
+          {
+            "number": 1,
+            "step": "Step description here"
+          }
+        ]
+      }
+    ],
+    "readyInMinutes": 20,
+    "servings": 4
+  }
+}
+
 Ensure all ingredient amounts are in decimal format (not fractions).`;
   }
 

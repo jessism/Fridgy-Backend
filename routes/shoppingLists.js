@@ -279,16 +279,35 @@ router.post('/:id/items', authMiddleware.authenticateToken, async (req, res) => 
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Get max order index
-    const { data: maxOrder } = await supabase
-      .from('shopping_list_items')
-      .select('order_index')
-      .eq('list_id', id)
-      .order('order_index', { ascending: false })
-      .limit(1)
-      .single();
+    // Shift all existing items down by 1 to make room at the top
+    const { data: rpcData, error: rpcError } = await supabase.rpc('increment_order_indices', {
+      list_id_param: id
+    });
 
-    const orderIndex = (maxOrder?.order_index ?? -1) + 1;
+    if (rpcError) {
+      // If RPC doesn't exist, do it manually
+      if (rpcError.message?.includes('function') || rpcError.message?.includes('exist')) {
+        const { data: existingItems } = await supabase
+          .from('shopping_list_items')
+          .select('id, order_index')
+          .eq('list_id', id);
+
+        if (existingItems && existingItems.length > 0) {
+          const updates = existingItems.map(item =>
+            supabase
+              .from('shopping_list_items')
+              .update({ order_index: item.order_index + 1 })
+              .eq('id', item.id)
+          );
+          await Promise.all(updates);
+        }
+      } else {
+        throw rpcError;
+      }
+    }
+
+    // Add new item at the top (order_index = 0)
+    const orderIndex = 0;
 
     // Add item
     const { data: item, error } = await supabase

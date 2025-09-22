@@ -12,6 +12,9 @@ router.post('/signin', authController.signin);
 // Get current user endpoint
 router.get('/me', authController.getCurrentUser);
 
+// Refresh token endpoint
+router.post('/refresh', authController.refreshToken);
+
 // Logout endpoint
 router.post('/logout', authController.logout);
 

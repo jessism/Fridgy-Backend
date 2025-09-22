@@ -4,6 +4,7 @@ const authService = require('../services/authService');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
+const REFRESH_SECRET = process.env.REFRESH_SECRET || JWT_SECRET + '-refresh';
 
 // Validation functions
 const validateEmail = (email) => {
@@ -21,8 +22,29 @@ const validateName = (name) => {
 };
 
 // Generate JWT token
-const generateToken = (userId) => {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' });
+const generateToken = (userId, isPWA = false) => {
+  // Shorter access token, will use refresh token for long-term auth
+  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '1h' });
+};
+
+// Generate refresh token (longer lived for PWAs)
+const generateRefreshToken = (userId, isPWA = false) => {
+  // PWAs get 30-day refresh tokens, web gets 7-day
+  const expiresIn = isPWA ? '30d' : '7d';
+  return jwt.sign({ userId, type: 'refresh' }, REFRESH_SECRET, { expiresIn });
+};
+
+// Verify refresh token
+const verifyRefreshToken = (token) => {
+  try {
+    const decoded = jwt.verify(token, REFRESH_SECRET);
+    if (decoded.type !== 'refresh') {
+      throw new Error('Invalid token type');
+    }
+    return decoded;
+  } catch (error) {
+    throw new Error('Invalid refresh token');
+  }
 };
 
 // Auth Controller Functions
@@ -30,7 +52,7 @@ const authController = {
   // Sign up controller
   async signup(req, res) {
     try {
-      const { firstName, email, password } = req.body;
+      const { firstName, email, password, isPWA } = req.body;
 
       // Validation
       if (!validateName(firstName)) {
@@ -74,8 +96,9 @@ const authController = {
         passwordHash
       });
 
-      // Generate JWT token
-      const token = generateToken(newUser.id);
+      // Generate JWT and refresh tokens
+      const token = generateToken(newUser.id, isPWA);
+      const refreshToken = generateRefreshToken(newUser.id, isPWA);
 
       // Return success response
       res.status(201).json({
@@ -87,7 +110,10 @@ const authController = {
           firstName: newUser.first_name,
           createdAt: newUser.created_at
         },
-        token
+        token,
+        refreshToken,
+        expiresIn: 3600, // 1 hour in seconds
+        refreshExpiresIn: isPWA ? 2592000 : 604800 // 30 days or 7 days in seconds
       });
 
     } catch (error) {
@@ -102,7 +128,7 @@ const authController = {
   // Sign in controller
   async signin(req, res) {
     try {
-      const { email, password } = req.body;
+      const { email, password, isPWA } = req.body;
 
       // Validation
       if (!validateEmail(email)) {
@@ -137,8 +163,9 @@ const authController = {
         });
       }
 
-      // Generate JWT token
-      const token = generateToken(user.id);
+      // Generate JWT and refresh tokens
+      const token = generateToken(user.id, isPWA);
+      const refreshToken = generateRefreshToken(user.id, isPWA);
 
       // Return success response
       res.json({
@@ -150,7 +177,10 @@ const authController = {
           firstName: user.first_name,
           createdAt: user.created_at
         },
-        token
+        token,
+        refreshToken,
+        expiresIn: 3600, // 1 hour in seconds
+        refreshExpiresIn: isPWA ? 2592000 : 604800 // 30 days or 7 days in seconds
       });
 
     } catch (error) {
@@ -201,6 +231,65 @@ const authController = {
       res.status(401).json({
         success: false,
         error: 'Invalid token'
+      });
+    }
+  },
+
+  // Refresh token controller
+  async refreshToken(req, res) {
+    try {
+      const { refreshToken, isPWA } = req.body;
+
+      if (!refreshToken) {
+        return res.status(401).json({
+          success: false,
+          error: 'No refresh token provided'
+        });
+      }
+
+      // Verify refresh token
+      let decoded;
+      try {
+        decoded = verifyRefreshToken(refreshToken);
+      } catch (error) {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid or expired refresh token'
+        });
+      }
+
+      // Get user to ensure they still exist
+      const user = await authService.findUserById(decoded.userId);
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          error: 'User not found'
+        });
+      }
+
+      // Generate new tokens
+      const newToken = generateToken(user.id, isPWA);
+      const newRefreshToken = generateRefreshToken(user.id, isPWA);
+
+      res.json({
+        success: true,
+        token: newToken,
+        refreshToken: newRefreshToken,
+        expiresIn: 3600, // 1 hour in seconds
+        refreshExpiresIn: isPWA ? 2592000 : 604800, // 30 days or 7 days
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: user.first_name,
+          createdAt: user.created_at
+        }
+      });
+
+    } catch (error) {
+      console.error('Refresh token error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to refresh token'
       });
     }
   },

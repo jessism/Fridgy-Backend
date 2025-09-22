@@ -175,7 +175,7 @@ router.get('/:id', authMiddleware.authenticateToken, async (req, res) => {
       const memberIds = list.shopping_list_members.map(m => m.user_id);
       const { data: users } = await supabase
         .from('users')
-        .select('id, first_name, last_name, email')
+        .select('id, first_name, email')
         .in('id', memberIds);
 
       list.shopping_list_members = list.shopping_list_members.map(member => {

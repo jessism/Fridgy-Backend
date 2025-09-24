@@ -41,8 +41,8 @@ const getCookieOptions = (isPWA = false) => {
 
   return {
     httpOnly: true,
-    secure: isProduction, // Must be true for sameSite: 'none'
-    sameSite: isProduction ? 'none' : 'lax', // CRITICAL: 'none' for cross-domain in production
+    secure: isProduction, // HTTPS required in production
+    sameSite: 'lax', // Back to 'lax' since proxy makes it same-domain
     maxAge,
     path: '/'
   };

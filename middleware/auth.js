@@ -18,14 +18,20 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-i
 
 const authenticateToken = async (req, res, next) => {
   const requestId = Math.random().toString(36).substring(7);
-  
+
   try {
     console.log(`🔐 [${requestId}] Authentication request for ${req.method} ${req.path}`);
-    
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    
+
+    // Check for token in cookies first (preferred for persistence)
+    let token = req.cookies?.fridgy_access_token;
+
+    // Fall back to Authorization header for backward compatibility
     if (!token) {
-      console.log(`❌ [${requestId}] No token provided`);
+      token = req.headers.authorization?.replace('Bearer ', '');
+    }
+
+    if (!token) {
+      console.log(`❌ [${requestId}] No token provided (checked cookies and headers)`);
       return res.status(401).json({
         success: false,
         error: 'Access token required'

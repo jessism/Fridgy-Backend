@@ -34,6 +34,34 @@ const generateRefreshToken = (userId, isPWA = false) => {
   return jwt.sign({ userId, type: 'refresh' }, REFRESH_SECRET, { expiresIn });
 };
 
+// Cookie options helper
+const getCookieOptions = (isPWA = false) => {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const maxAge = isPWA ? 30 * 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000; // 30 days or 7 days
+
+  return {
+    httpOnly: true,
+    secure: isProduction, // Use secure cookies in production (HTTPS)
+    sameSite: isProduction ? 'strict' : 'lax',
+    maxAge,
+    path: '/'
+  };
+};
+
+// Set auth cookies helper
+const setAuthCookies = (res, token, refreshToken, isPWA = false) => {
+  const cookieOptions = getCookieOptions(isPWA);
+
+  // Set access token cookie (1 hour)
+  res.cookie('fridgy_access_token', token, {
+    ...cookieOptions,
+    maxAge: 60 * 60 * 1000 // 1 hour
+  });
+
+  // Set refresh token cookie (30 days for PWA, 7 days for web)
+  res.cookie('fridgy_refresh_token', refreshToken, cookieOptions);
+};
+
 // Verify refresh token
 const verifyRefreshToken = (token) => {
   try {
@@ -100,7 +128,10 @@ const authController = {
       const token = generateToken(newUser.id, isPWA);
       const refreshToken = generateRefreshToken(newUser.id, isPWA);
 
-      // Return success response
+      // Set HTTP-only cookies
+      setAuthCookies(res, token, refreshToken, isPWA);
+
+      // Return success response (still include tokens for backward compatibility)
       res.status(201).json({
         success: true,
         message: 'User created successfully',
@@ -167,7 +198,10 @@ const authController = {
       const token = generateToken(user.id, isPWA);
       const refreshToken = generateRefreshToken(user.id, isPWA);
 
-      // Return success response
+      // Set HTTP-only cookies
+      setAuthCookies(res, token, refreshToken, isPWA);
+
+      // Return success response (still include tokens for backward compatibility)
       res.json({
         success: true,
         message: 'Login successful',
@@ -271,6 +305,9 @@ const authController = {
       const newToken = generateToken(user.id, isPWA);
       const newRefreshToken = generateRefreshToken(user.id, isPWA);
 
+      // Set HTTP-only cookies with new tokens
+      setAuthCookies(res, newToken, newRefreshToken, isPWA);
+
       res.json({
         success: true,
         token: newToken,
@@ -306,8 +343,12 @@ const authController = {
         });
       }
 
-      // For JWT tokens, we can't actually invalidate them server-side without 
-      // implementing a blacklist. For now, we'll just return success and let 
+      // Clear auth cookies
+      res.clearCookie('fridgy_access_token', { path: '/' });
+      res.clearCookie('fridgy_refresh_token', { path: '/' });
+
+      // For JWT tokens in headers, we can't actually invalidate them server-side without
+      // implementing a blacklist. For now, we'll just return success and let
       // the client handle clearing the token.
       // In a production app, you might want to:
       // 1. Add token to a blacklist table in database

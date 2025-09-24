@@ -41,8 +41,8 @@ const getCookieOptions = (isPWA = false) => {
 
   return {
     httpOnly: true,
-    secure: isProduction, // Use secure cookies in production (HTTPS)
-    sameSite: isProduction ? 'strict' : 'lax',
+    secure: isProduction, // Must be true for sameSite: 'none'
+    sameSite: isProduction ? 'none' : 'lax', // CRITICAL: 'none' for cross-domain in production
     maxAge,
     path: '/'
   };

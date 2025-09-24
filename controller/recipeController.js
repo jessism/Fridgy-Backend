@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
 const recipeService = require('../services/recipeService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
-const tastyService = require('../services/tastyService');
 const { createClient } = require('@supabase/supabase-js');
 
 // JWT secret
@@ -127,25 +126,15 @@ const recipeController = {
         throw new Error('Recipe ID is required');
       }
       
-      let recipeDetails;
-      
-      // Check if this might be a Tasty recipe by attempting to get it from cache first
-      // Tasty recipes are cached with their original ID (could be string)
-      try {
-        console.log(`📖 [${requestId}] Attempting to get recipe from Tasty cache: ${id}`);
-        recipeDetails = await tastyService.getRecipeDetails(id);
-        console.log(`📖 [${requestId}] Found Tasty recipe: ${recipeDetails.title}`);
-      } catch (tastyError) {
-        // If not in Tasty cache, try Spoonacular
-        console.log(`📖 [${requestId}] Not a Tasty recipe, trying Spoonacular: ${tastyError.message}`);
-        
-        if (isNaN(parseInt(id))) {
-          throw new Error('Invalid recipe ID format for Spoonacular');
-        }
-        
-        recipeDetails = await recipeService.getRecipeDetails(parseInt(id));
-        console.log(`📖 [${requestId}] Found Spoonacular recipe: ${recipeDetails.title}`);
+      // Verify recipe ID is valid
+      if (isNaN(parseInt(id))) {
+        throw new Error('Invalid recipe ID format');
       }
+
+      // Get recipe details from Spoonacular
+      console.log(`📖 [${requestId}] Fetching recipe from Spoonacular: ${id}`);
+      const recipeDetails = await recipeService.getRecipeDetails(parseInt(id));
+      console.log(`📖 [${requestId}] Found recipe: ${recipeDetails.title}`);
       
       console.log(`📖 [${requestId}] Retrieved details for: ${recipeDetails.title}`);
       

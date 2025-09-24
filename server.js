@@ -1376,9 +1376,7 @@ app.listen(PORT, () => {
   console.log(`   SUPABASE_URL: ${process.env.SUPABASE_URL ? '✅ Present' : '❌ Missing'}`);
   console.log(`   JWT_SECRET: ${process.env.JWT_SECRET ? '✅ Present' : '❌ Missing'}`);
   console.log(`   SPOONACULAR_API_KEY: ${process.env.SPOONACULAR_API_KEY ? '✅ Present' : '❌ Missing'}`);
-  console.log(`   EDAMAM_APP_ID: ${process.env.EDAMAM_APP_ID ? '✅ Present' : '❌ Missing'}`);
-  console.log(`   EDAMAM_APP_KEY: ${process.env.EDAMAM_APP_KEY ? '✅ Present' : '❌ Missing'}`);
-  console.log(`   RAPIDAPI_KEY: ${process.env.RAPIDAPI_KEY ? '✅ Present (Tasty)' : '❌ Missing (Tasty)'}`);
+  console.log(`   RAPIDAPI_KEY: ${process.env.RAPIDAPI_KEY ? '✅ Present (Instagram)' : '❌ Missing (Instagram)'}`);
   console.log(`   FIREWORKS_API_KEY: ${process.env.FIREWORKS_API_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   APIFY_API_TOKEN: ${process.env.APIFY_API_TOKEN ? '✅ Present' : '❌ Missing'}`);
   console.log(`   VAPID_PUBLIC_KEY: ${process.env.VAPID_PUBLIC_KEY ? '✅ Present' : '❌ Missing'}`);

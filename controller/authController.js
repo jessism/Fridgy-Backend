@@ -21,46 +21,14 @@ const validateName = (name) => {
   return nameRegex.test(name.trim());
 };
 
-// Generate JWT token
-const generateToken = (userId, isPWA = false) => {
-  // Shorter access token, will use refresh token for long-term auth
+// Generate JWT token (1 hour expiry)
+const generateToken = (userId) => {
   return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '1h' });
 };
 
-// Generate refresh token (longer lived for PWAs)
-const generateRefreshToken = (userId, isPWA = false) => {
-  // PWAs get 30-day refresh tokens, web gets 7-day
-  const expiresIn = isPWA ? '30d' : '7d';
-  return jwt.sign({ userId, type: 'refresh' }, REFRESH_SECRET, { expiresIn });
-};
-
-// Cookie options helper
-const getCookieOptions = (isPWA = false) => {
-  const isProduction = process.env.NODE_ENV === 'production';
-  const maxAge = isPWA ? 30 * 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000; // 30 days or 7 days
-
-  return {
-    httpOnly: true,
-    secure: isProduction, // HTTPS required in production
-    sameSite: 'lax',
-    domain: isProduction ? '.trackabite.app' : undefined, // KEY CHANGE - allows cookies across all subdomains
-    maxAge,
-    path: '/'
-  };
-};
-
-// Set auth cookies helper
-const setAuthCookies = (res, token, refreshToken, isPWA = false) => {
-  const cookieOptions = getCookieOptions(isPWA);
-
-  // Set access token cookie (1 hour)
-  res.cookie('fridgy_access_token', token, {
-    ...cookieOptions,
-    maxAge: 60 * 60 * 1000 // 1 hour
-  });
-
-  // Set refresh token cookie (30 days for PWA, 7 days for web)
-  res.cookie('fridgy_refresh_token', refreshToken, cookieOptions);
+// Generate refresh token (7 days expiry)
+const generateRefreshToken = (userId) => {
+  return jwt.sign({ userId, type: 'refresh' }, REFRESH_SECRET, { expiresIn: '7d' });
 };
 
 // Verify refresh token
@@ -81,7 +49,7 @@ const authController = {
   // Sign up controller
   async signup(req, res) {
     try {
-      const { firstName, email, password, isPWA } = req.body;
+      const { firstName, email, password } = req.body;
 
       // Validation
       if (!validateName(firstName)) {
@@ -126,13 +94,10 @@ const authController = {
       });
 
       // Generate JWT and refresh tokens
-      const token = generateToken(newUser.id, isPWA);
-      const refreshToken = generateRefreshToken(newUser.id, isPWA);
+      const token = generateToken(newUser.id);
+      const refreshToken = generateRefreshToken(newUser.id);
 
-      // Set HTTP-only cookies
-      setAuthCookies(res, token, refreshToken, isPWA);
-
-      // Return success response (still include tokens for backward compatibility)
+      // Return success response with tokens
       res.status(201).json({
         success: true,
         message: 'User created successfully',
@@ -143,9 +108,7 @@ const authController = {
           createdAt: newUser.created_at
         },
         token,
-        refreshToken,
-        expiresIn: 3600, // 1 hour in seconds
-        refreshExpiresIn: isPWA ? 2592000 : 604800 // 30 days or 7 days in seconds
+        refreshToken
       });
 
     } catch (error) {
@@ -160,7 +123,7 @@ const authController = {
   // Sign in controller
   async signin(req, res) {
     try {
-      const { email, password, isPWA } = req.body;
+      const { email, password } = req.body;
 
       // Validation
       if (!validateEmail(email)) {
@@ -196,13 +159,10 @@ const authController = {
       }
 
       // Generate JWT and refresh tokens
-      const token = generateToken(user.id, isPWA);
-      const refreshToken = generateRefreshToken(user.id, isPWA);
+      const token = generateToken(user.id);
+      const refreshToken = generateRefreshToken(user.id);
 
-      // Set HTTP-only cookies
-      setAuthCookies(res, token, refreshToken, isPWA);
-
-      // Return success response (still include tokens for backward compatibility)
+      // Return success response with tokens
       res.json({
         success: true,
         message: 'Login successful',
@@ -213,9 +173,7 @@ const authController = {
           createdAt: user.created_at
         },
         token,
-        refreshToken,
-        expiresIn: 3600, // 1 hour in seconds
-        refreshExpiresIn: isPWA ? 2592000 : 604800 // 30 days or 7 days in seconds
+        refreshToken
       });
 
     } catch (error) {
@@ -247,17 +205,11 @@ const authController = {
         });
       }
 
-      // CRITICAL FOR PWA: Generate fresh tokens to refresh localStorage
-      // Detect if request is from PWA (could be passed as header or query param)
-      const isPWA = req.headers['x-pwa-request'] === 'true' || req.query.isPWA === 'true';
+      // Generate fresh tokens for session refresh
+      const newToken = generateToken(user.id);
+      const newRefreshToken = generateRefreshToken(user.id);
 
-      const newToken = generateToken(user.id, isPWA);
-      const newRefreshToken = generateRefreshToken(user.id, isPWA);
-
-      // Set fresh cookies (especially important for PWA)
-      setAuthCookies(res, newToken, newRefreshToken, isPWA);
-
-      // Return user data WITH fresh tokens for PWA persistence
+      // Return user data with fresh tokens
       res.json({
         success: true,
         user: {
@@ -266,11 +218,8 @@ const authController = {
           firstName: user.first_name,
           createdAt: user.created_at
         },
-        // Include tokens for PWA localStorage refresh
         token: newToken,
-        refreshToken: newRefreshToken,
-        expiresIn: 3600, // 1 hour in seconds
-        refreshExpiresIn: isPWA ? 2592000 : 604800 // 30 days or 7 days
+        refreshToken: newRefreshToken
       });
 
     } catch (error) {
@@ -285,7 +234,7 @@ const authController = {
   // Refresh token controller
   async refreshToken(req, res) {
     try {
-      const { refreshToken, isPWA } = req.body;
+      const { refreshToken } = req.body;
 
       if (!refreshToken) {
         return res.status(401).json({
@@ -315,18 +264,13 @@ const authController = {
       }
 
       // Generate new tokens
-      const newToken = generateToken(user.id, isPWA);
-      const newRefreshToken = generateRefreshToken(user.id, isPWA);
-
-      // Set HTTP-only cookies with new tokens
-      setAuthCookies(res, newToken, newRefreshToken, isPWA);
+      const newToken = generateToken(user.id);
+      const newRefreshToken = generateRefreshToken(user.id);
 
       res.json({
         success: true,
         token: newToken,
         refreshToken: newRefreshToken,
-        expiresIn: 3600, // 1 hour in seconds
-        refreshExpiresIn: isPWA ? 2592000 : 604800, // 30 days or 7 days
         user: {
           id: user.id,
           email: user.email,
@@ -347,20 +291,7 @@ const authController = {
   // Logout controller
   async logout(req, res) {
     try {
-      const token = req.headers.authorization?.replace('Bearer ', '');
-      
-      if (!token) {
-        return res.status(400).json({
-          success: false,
-          error: 'No token provided'
-        });
-      }
-
-      // Clear auth cookies
-      res.clearCookie('fridgy_access_token', { path: '/' });
-      res.clearCookie('fridgy_refresh_token', { path: '/' });
-
-      // For JWT tokens in headers, we can't actually invalidate them server-side without
+      // For JWT tokens, we can't actually invalidate them server-side without
       // implementing a blacklist. For now, we'll just return success and let
       // the client handle clearing the token.
       // In a production app, you might want to:

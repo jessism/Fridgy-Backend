@@ -5,11 +5,11 @@ const { createClient } = require('@supabase/supabase-js');
 const getSupabaseClient = () => {
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
+
   if (!supabaseUrl || !supabaseKey) {
     throw new Error('Supabase configuration missing');
   }
-  
+
   return createClient(supabaseUrl, supabaseKey);
 };
 
@@ -17,21 +17,14 @@ const getSupabaseClient = () => {
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 
 const authenticateToken = async (req, res, next) => {
-  const requestId = Math.random().toString(36).substring(7);
-
   try {
-    console.log(`🔐 [${requestId}] Authentication request for ${req.method} ${req.path}`);
-
-    // Check for token in cookies first (preferred for persistence)
-    let token = req.cookies?.fridgy_access_token;
-
-    // Fall back to Authorization header for backward compatibility
-    if (!token) {
-      token = req.headers.authorization?.replace('Bearer ', '');
-    }
+    // Get token from Authorization header only
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith('Bearer ')
+      ? authHeader.replace('Bearer ', '')
+      : null;
 
     if (!token) {
-      console.log(`❌ [${requestId}] No token provided (checked cookies and headers)`);
       return res.status(401).json({
         success: false,
         error: 'Access token required'
@@ -40,8 +33,7 @@ const authenticateToken = async (req, res, next) => {
 
     // Verify JWT token
     const decoded = jwt.verify(token, JWT_SECRET);
-    console.log(`🔐 [${requestId}] Token decoded, userId: ${decoded.userId}`);
-    
+
     // Get user data from database
     const supabase = getSupabaseClient();
     const { data: user, error } = await supabase
@@ -51,7 +43,6 @@ const authenticateToken = async (req, res, next) => {
       .single();
 
     if (error || !user) {
-      console.log(`❌ [${requestId}] User not found in database:`, error?.message || 'No user returned');
       return res.status(401).json({
         success: false,
         error: 'Invalid token'
@@ -64,11 +55,10 @@ const authenticateToken = async (req, res, next) => {
       email: user.email,
       firstName: user.first_name
     };
-    
-    console.log(`✅ [${requestId}] Authentication successful for user: ${user.email}`);
+
     next();
   } catch (error) {
-    console.error(`❌ [${requestId}] Authentication error:`, error.message);
+    console.error('Authentication error:', error.message);
     return res.status(401).json({
       success: false,
       error: 'Invalid token'
@@ -76,4 +66,4 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-module.exports = { authenticateToken }; 
+module.exports = { authenticateToken };

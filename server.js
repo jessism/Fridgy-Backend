@@ -4,7 +4,6 @@ dotenv.config();
 
 const express = require('express');
 const cors = require('cors');
-const cookieParser = require('cookie-parser');
 const { createClient } = require('@supabase/supabase-js');
 const OpenAI = require('openai');
 const multer = require('multer');
@@ -46,7 +45,6 @@ const corsOptions = {
       'http://localhost:3000',
       'http://localhost:3001',
       'http://192.168.1.72:3000',
-      'https://fridgy-frontend.vercel.app',
       'https://trackabite.vercel.app',
       'https://trackabite.app',
       'https://www.trackabite.app' // Added www subdomain support
@@ -75,16 +73,13 @@ const corsOptions = {
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  exposedHeaders: ['Set-Cookie'],
   optionsSuccessStatus: 200
 };
 
 // Middleware
 app.use(cors(corsOptions));
-app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));  // Increased limit for larger payloads
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));  // Increased limit for form data
 

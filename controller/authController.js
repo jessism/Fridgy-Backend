@@ -26,9 +26,9 @@ const generateToken = (userId) => {
   return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '1h' });
 };
 
-// Generate refresh token (7 days expiry)
+// Generate refresh token (30 days expiry)
 const generateRefreshToken = (userId) => {
-  return jwt.sign({ userId, type: 'refresh' }, REFRESH_SECRET, { expiresIn: '7d' });
+  return jwt.sign({ userId, type: 'refresh' }, REFRESH_SECRET, { expiresIn: '30d' });
 };
 
 // Verify refresh token

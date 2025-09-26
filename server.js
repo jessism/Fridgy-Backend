@@ -48,7 +48,8 @@ const corsOptions = {
       'http://192.168.1.72:3000',
       'https://fridgy-frontend.vercel.app',
       'https://trackabite.vercel.app',
-      'https://trackabite.app'
+      'https://trackabite.app',
+      'https://www.trackabite.app' // Added www subdomain support
     ];
 
     // Get additional allowed origins from environment

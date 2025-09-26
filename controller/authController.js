@@ -42,7 +42,8 @@ const getCookieOptions = (isPWA = false) => {
   return {
     httpOnly: true,
     secure: isProduction, // HTTPS required in production
-    sameSite: 'lax', // Back to 'lax' since proxy makes it same-domain
+    sameSite: 'lax',
+    domain: isProduction ? '.trackabite.app' : undefined, // KEY CHANGE - allows cookies across all subdomains
     maxAge,
     path: '/'
   };
@@ -229,27 +230,34 @@ const authController = {
   // Get current user controller
   async getCurrentUser(req, res) {
     try {
-      const token = req.headers.authorization?.replace('Bearer ', '');
-      
-      if (!token) {
+      // User already verified by middleware - req.user is set
+      if (!req.user || !req.user.id) {
         return res.status(401).json({
           success: false,
-          error: 'No token provided'
+          error: 'User not authenticated'
         });
       }
 
-      // Verify JWT token
-      const decoded = jwt.verify(token, JWT_SECRET);
-      
-      // Get user data
-      const user = await authService.findUserById(decoded.userId);
+      // Get fresh user data
+      const user = await authService.findUserById(req.user.id);
       if (!user) {
-        return res.status(401).json({
+        return res.status(404).json({
           success: false,
-          error: 'Invalid token'
+          error: 'User not found'
         });
       }
 
+      // CRITICAL FOR PWA: Generate fresh tokens to refresh localStorage
+      // Detect if request is from PWA (could be passed as header or query param)
+      const isPWA = req.headers['x-pwa-request'] === 'true' || req.query.isPWA === 'true';
+
+      const newToken = generateToken(user.id, isPWA);
+      const newRefreshToken = generateRefreshToken(user.id, isPWA);
+
+      // Set fresh cookies (especially important for PWA)
+      setAuthCookies(res, newToken, newRefreshToken, isPWA);
+
+      // Return user data WITH fresh tokens for PWA persistence
       res.json({
         success: true,
         user: {
@@ -257,14 +265,19 @@ const authController = {
           email: user.email,
           firstName: user.first_name,
           createdAt: user.created_at
-        }
+        },
+        // Include tokens for PWA localStorage refresh
+        token: newToken,
+        refreshToken: newRefreshToken,
+        expiresIn: 3600, // 1 hour in seconds
+        refreshExpiresIn: isPWA ? 2592000 : 604800 // 30 days or 7 days
       });
 
     } catch (error) {
       console.error('Get user error:', error);
-      res.status(401).json({
+      res.status(500).json({
         success: false,
-        error: 'Invalid token'
+        error: 'Server error while fetching user'
       });
     }
   },

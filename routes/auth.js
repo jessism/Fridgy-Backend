@@ -1,5 +1,6 @@
 const express = require('express');
 const authController = require('../controller/authController');
+const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -9,8 +10,8 @@ router.post('/signup', authController.signup);
 // Sign in endpoint
 router.post('/signin', authController.signin);
 
-// Get current user endpoint
-router.get('/me', authController.getCurrentUser);
+// Get current user endpoint - NOW WITH AUTH MIDDLEWARE!
+router.get('/me', authenticateToken, authController.getCurrentUser);
 
 // Refresh token endpoint
 router.post('/refresh', authController.refreshToken);

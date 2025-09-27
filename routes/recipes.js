@@ -424,12 +424,63 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req
       processingTime: result.processingTime
     });
 
-    // Prepare recipe data (but don't save yet - let frontend confirm)
+    // Download and store images permanently before returning
+    console.log('[MultiModal] Downloading and storing images permanently...');
+
+    // Generate a unique recipe ID for this import (will be used for filenames)
+    const tempRecipeId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    // Download the main image
+    let permanentImageUrl = null;
+    const primaryImageUrl = result.recipe.image || apifyData.images?.[0]?.url;
+
+    if (primaryImageUrl && primaryImageUrl.startsWith('http')) {
+      console.log('[MultiModal] Downloading primary image:', primaryImageUrl.substring(0, 100) + '...');
+      permanentImageUrl = await apifyService.downloadInstagramImage(
+        primaryImageUrl,
+        tempRecipeId,
+        userId,
+        apifyData
+      );
+
+      if (permanentImageUrl) {
+        console.log('[MultiModal] Primary image saved to Supabase:', permanentImageUrl);
+      } else {
+        console.log('[MultiModal] Failed to download primary image, using original URL');
+        permanentImageUrl = primaryImageUrl;
+      }
+    }
+
+    // Download additional images if available
+    const permanentImageUrls = [];
+    if (apifyData.images && apifyData.images.length > 0) {
+      console.log(`[MultiModal] Processing ${apifyData.images.length} additional images...`);
+
+      for (let i = 0; i < Math.min(apifyData.images.length, 5); i++) { // Limit to 5 images
+        const imgUrl = apifyData.images[i]?.url || apifyData.images[i];
+        if (imgUrl && imgUrl.startsWith('http') && imgUrl !== primaryImageUrl) {
+          const savedUrl = await apifyService.downloadInstagramImage(
+            imgUrl,
+            `${tempRecipeId}-${i}`,
+            userId,
+            apifyData
+          );
+
+          if (savedUrl) {
+            permanentImageUrls.push(savedUrl);
+            console.log(`[MultiModal] Additional image ${i + 1} saved`);
+          }
+        }
+      }
+    }
+
+    // Prepare recipe data with permanent image URLs
     const sanitizedRecipe = sanitizeRecipeData({
       ...result.recipe,
       source_url: url,
       source_author: apifyData.author?.username,
-      image: result.recipe.image || apifyData.images?.[0]?.url
+      image: permanentImageUrl || result.recipe.image || apifyData.images?.[0]?.url,
+      image_urls: permanentImageUrls.length > 0 ? permanentImageUrls : undefined
     });
 
     // Analyze nutrition for the recipe

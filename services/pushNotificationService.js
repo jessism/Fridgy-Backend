@@ -248,6 +248,91 @@ class PushNotificationService {
       throw error;
     }
   }
+
+  // Send a daily reminder notification
+  async sendDailyReminder(userId, reminderType, config) {
+    const emoji = config.emoji || '📱';
+    const message = config.message || "Check your Trackabite app!";
+
+    // Determine URL based on reminder type
+    let url = '/inventory';
+    if (reminderType === 'meal_planning') {
+      url = '/mealplans';
+    } else if (reminderType === 'shopping_reminder') {
+      url = '/shopping-lists';
+    } else if (reminderType === 'dinner_prep' || reminderType === 'breakfast_reminder' || reminderType === 'lunch_reminder') {
+      url = '/recipes';
+    }
+
+    const payload = {
+      title: `${emoji} Trackabite Reminder`,
+      body: message,
+      icon: '/logo192.png',
+      badge: '/logo192.png',
+      tag: `daily-reminder-${reminderType}`,
+      data: {
+        url,
+        type: 'daily-reminder',
+        reminderType
+      },
+      requireInteraction: false,
+      vibrate: [200, 100, 200]
+    };
+
+    return await this.sendToUser(userId, payload);
+  }
+
+  // Get user's daily reminder preferences
+  async getUserDailyReminders(userId) {
+    try {
+      const { data, error } = await supabase
+        .from('notification_preferences')
+        .select('daily_reminders, timezone')
+        .eq('user_id', userId)
+        .single();
+
+      if (error && error.code !== 'PGRST116') throw error;
+
+      // Return defaults if no preferences exist
+      return data?.daily_reminders || {
+        inventory_check: {
+          enabled: true,
+          time: '17:30',
+          message: "See what's in your fridge",
+          emoji: '🥗'
+        }
+      };
+    } catch (error) {
+      console.error('Error fetching daily reminders:', error);
+      return {
+        inventory_check: {
+          enabled: true,
+          time: '17:30',
+          message: "See what's in your fridge",
+          emoji: '🥗'
+        }
+      };
+    }
+  }
+
+  // Update daily reminder preferences
+  async updateDailyReminders(userId, dailyReminders) {
+    try {
+      const { error } = await supabase
+        .from('notification_preferences')
+        .upsert({
+          user_id: userId,
+          daily_reminders: dailyReminders,
+          updated_at: new Date().toISOString()
+        });
+
+      if (error) throw error;
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating daily reminders:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = new PushNotificationService();

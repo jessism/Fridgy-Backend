@@ -155,4 +155,57 @@ router.post('/check-subscription', authenticateToken, async (req, res) => {
   }
 });
 
+// Get daily reminder preferences
+router.get('/daily-reminders', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const dailyReminders = await pushNotificationService.getUserDailyReminders(userId);
+    res.json({ success: true, dailyReminders });
+  } catch (error) {
+    console.error('Error fetching daily reminders:', error);
+    res.status(500).json({ error: 'Failed to fetch daily reminders' });
+  }
+});
+
+// Update daily reminder preferences
+router.put('/daily-reminders', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { dailyReminders } = req.body;
+
+    if (!dailyReminders) {
+      return res.status(400).json({ error: 'Daily reminders configuration required' });
+    }
+
+    await pushNotificationService.updateDailyReminders(userId, dailyReminders);
+    res.json({ success: true, message: 'Daily reminders updated successfully' });
+  } catch (error) {
+    console.error('Error updating daily reminders:', error);
+    res.status(500).json({ error: 'Failed to update daily reminders' });
+  }
+});
+
+// Test a specific daily reminder
+router.post('/test-daily-reminder', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { reminderType } = req.body;
+
+    // Get current daily reminders config
+    const dailyReminders = await pushNotificationService.getUserDailyReminders(userId);
+    const config = dailyReminders[reminderType];
+
+    if (!config) {
+      return res.status(400).json({ error: 'Invalid reminder type' });
+    }
+
+    // Send the test reminder
+    await pushNotificationService.sendDailyReminder(userId, reminderType, config);
+    res.json({ success: true, message: `Test ${reminderType} reminder sent` });
+  } catch (error) {
+    console.error('Test daily reminder error:', error);
+    res.status(500).json({ error: 'Failed to send test daily reminder' });
+  }
+});
+
 module.exports = router;

@@ -29,10 +29,11 @@ class ExpiryNotificationScheduler {
       await this.checkAndSendExpiryNotifications();
     });
 
-    // Also run every 6 hours for users in different timezones
-    this.timezoneTask = cron.schedule('0 */6 * * *', async () => {
-      console.log('Running timezone-aware expiry notification check...');
+    // Run every 30 minutes for timezone-aware notifications and daily reminders
+    this.timezoneTask = cron.schedule('*/30 * * * *', async () => {
+      console.log('Running timezone-aware checks (expiry + daily reminders)...');
       await this.checkAndSendTimezoneAwareNotifications();
+      await this.checkAndSendDailyReminders();
     });
 
     this.isRunning = true;
@@ -289,6 +290,146 @@ class ExpiryNotificationScheduler {
       }
     } catch (error) {
       console.error('Error in timezone-aware notifications:', error);
+    }
+  }
+
+  // Check and send daily reminders
+  async checkAndSendDailyReminders() {
+    try {
+      console.log('Checking for daily reminders to send...');
+
+      // Get all users with daily reminders enabled
+      const { data: preferences, error } = await supabase
+        .from('notification_preferences')
+        .select('*')
+        .eq('enabled', true);
+
+      if (error || !preferences) {
+        console.error('Error fetching preferences for daily reminders:', error);
+        return;
+      }
+
+      const currentTime = moment();
+      let remindersChecked = 0;
+      let remindersSent = 0;
+
+      for (const pref of preferences) {
+        const userTime = moment.tz(pref.timezone || 'America/Los_Angeles');
+        const dailyReminders = pref.daily_reminders || {};
+
+        // Check each type of daily reminder
+        for (const [reminderType, config] of Object.entries(dailyReminders)) {
+          if (!config.enabled) continue;
+
+          // Check if it's a weekly reminder (has a day property)
+          if (config.day) {
+            const currentDay = userTime.format('dddd');
+            if (currentDay.toLowerCase() !== config.day.toLowerCase()) continue;
+          }
+
+          // Parse the reminder time
+          const [hours, minutes] = (config.time || '17:30').split(':').map(Number);
+
+          // Check if current time is within the 30-minute window for this reminder
+          const currentHour = userTime.hour();
+          const currentMinute = userTime.minute();
+
+          if (currentHour === hours && currentMinute >= minutes && currentMinute < minutes + 30) {
+            remindersChecked++;
+
+            // Check if we haven't already sent this reminder today
+            const { data: existingLog } = await supabase
+              .from('daily_reminder_logs')
+              .select('id')
+              .eq('user_id', pref.user_id)
+              .eq('reminder_type', reminderType)
+              .eq('sent_date', moment().format('YYYY-MM-DD'))
+              .single();
+
+            if (!existingLog) {
+              // Send the reminder
+              const sent = await this.sendDailyReminder(
+                pref.user_id,
+                reminderType,
+                config.message || "Check your Trackabite app!",
+                config.emoji || '📱'
+              );
+
+              if (sent) {
+                remindersSent++;
+                // Log that we sent this reminder
+                await supabase
+                  .from('daily_reminder_logs')
+                  .insert({
+                    user_id: pref.user_id,
+                    reminder_type: reminderType,
+                    sent_date: moment().format('YYYY-MM-DD'),
+                    success: true
+                  });
+
+                console.log(`Sent ${reminderType} reminder to user ${pref.user_id}`);
+              }
+            }
+          }
+        }
+      }
+
+      if (remindersChecked > 0) {
+        console.log(`Daily reminders: Checked ${remindersChecked}, Sent ${remindersSent}`);
+      }
+    } catch (error) {
+      console.error('Error in checkAndSendDailyReminders:', error);
+    }
+  }
+
+  // Send a daily reminder notification
+  async sendDailyReminder(userId, reminderType, message, emoji = '📱') {
+    try {
+      let url = '/inventory';
+
+      // Customize URL based on reminder type
+      if (reminderType === 'meal_planning') {
+        url = '/mealplans';
+      } else if (reminderType === 'shopping_reminder') {
+        url = '/shopping-lists';
+      } else if (reminderType === 'dinner_prep' || reminderType === 'breakfast_reminder' || reminderType === 'lunch_reminder') {
+        url = '/recipes';
+      }
+
+      const payload = {
+        title: `${emoji} Trackabite Reminder`,
+        body: message,
+        icon: '/logo192.png',
+        badge: '/logo192.png',
+        tag: `daily-reminder-${reminderType}`,
+        data: {
+          url,
+          type: 'daily-reminder',
+          reminderType
+        },
+        requireInteraction: false,
+        vibrate: [200, 100, 200]
+      };
+
+      const results = await pushNotificationService.sendToUser(userId, payload);
+
+      // Log to notification_logs as well
+      await supabase
+        .from('notification_logs')
+        .insert({
+          user_id: userId,
+          notification_type: 'daily-reminder',
+          reminder_type: reminderType,
+          title: payload.title,
+          body: payload.body,
+          data: payload.data,
+          success: results.some(r => r.success)
+        });
+
+      return results.some(r => r.success);
+    } catch (error) {
+      console.error(`Error sending daily reminder ${reminderType} to user ${userId}:`, error);
+      return false;
     }
   }
 

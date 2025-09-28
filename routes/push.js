@@ -23,17 +23,28 @@ router.get('/vapid-public-key', (req, res) => {
 // Subscribe to push notifications
 router.post('/subscribe', authenticateToken, async (req, res) => {
   try {
-    console.log('Push subscription request from user:', req.user.id, req.user.email);
+    console.log('=== PUSH SUBSCRIPTION REQUEST ===');
+    console.log('User:', req.user ? `${req.user.id} (${req.user.email})` : 'NO USER');
+    console.log('Headers:', {
+      authorization: req.headers.authorization ? 'Present' : 'Missing',
+      contentType: req.headers['content-type']
+    });
+
     const { subscription } = req.body;
     const userId = req.user.id;
 
-    console.log('Subscription object received:', JSON.stringify(subscription, null, 2));
+    console.log('Subscription object received:', subscription ? 'Yes' : 'No');
+    if (subscription) {
+      console.log('Subscription keys:', Object.keys(subscription));
+      console.log('Endpoint:', subscription.endpoint ? subscription.endpoint.substring(0, 50) + '...' : 'Missing');
+    }
 
     if (!subscription) {
       console.error('No subscription data provided');
       return res.status(400).json({
         success: false,
-        message: 'Subscription data required'
+        message: 'Subscription data required',
+        details: 'The subscription object was not provided in the request body'
       });
     }
 

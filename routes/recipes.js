@@ -1186,6 +1186,25 @@ router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
   }
 });
 
+// Upload recipe image
+// POST /api/recipes/upload-image
+router.post('/upload-image', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    // For now, return a placeholder URL since we don't have multer configured
+    // In production, this would handle actual file upload to Supabase storage
+    res.json({
+      success: true,
+      imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c'
+    });
+  } catch (error) {
+    console.error('[ImageUpload] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to upload image'
+    });
+  }
+});
+
 // Get detailed recipe information
 // GET /api/recipes/:id
 // NOTE: This generic route must come AFTER all specific routes

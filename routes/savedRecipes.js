@@ -106,8 +106,16 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
       query = query.eq('source_type', 'scanned');
     } else if (filter === 'edited') {
       query = query.eq('user_edited', true);
+    } else if (filter === 'imported') {
+      // Filter for imported recipes (exclude manual/uploaded)
+      query = query.neq('source_type', 'manual')
+                   .neq('import_method', 'manual')
+                   .neq('source_author', 'Me');
+    } else if (filter === 'uploaded') {
+      // Filter for uploaded/manual recipes
+      query = query.or('source_type.eq.manual,import_method.eq.manual,source_author.eq.Me,source_type.eq.scanned,source_type.eq.voice,source_type.eq.user_created');
     }
-    
+
     // Search by title or tags
     if (search) {
       query = query.or(`title.ilike.%${search}%,cuisines.cs.{${search}},dishTypes.cs.{${search}}`);

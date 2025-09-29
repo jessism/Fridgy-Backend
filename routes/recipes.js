@@ -1,4 +1,5 @@
 const express = require('express');
+const multer = require('multer');
 const recipeController = require('../controller/recipeController');
 const authMiddleware = require('../middleware/auth');
 const recipeService = require('../services/recipeService');
@@ -12,6 +13,23 @@ const { getServiceClient } = require('../config/supabase');
 const { validateShortcutImport, sanitizeRecipeData } = require('../middleware/validation');
 
 const router = express.Router();
+
+// Configure multer for recipe image uploads
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit for recipe photos
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept only image files
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'), false);
+    }
+  }
+});
 
 // Initialize services
 const supabase = getServiceClient();
@@ -1188,19 +1206,81 @@ router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
 
 // Upload recipe image
 // POST /api/recipes/upload-image
-router.post('/upload-image', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/upload-image', authMiddleware.authenticateToken, upload.single('image'), async (req, res) => {
   try {
-    // For now, return a placeholder URL since we don't have multer configured
-    // In production, this would handle actual file upload to Supabase storage
+    const userId = req.user?.userId || req.user?.id;
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No image file provided'
+      });
+    }
+
+    console.log('[Recipe Image Upload] Starting upload for user:', userId);
+    console.log('[Recipe Image Upload] File size:', req.file.size, 'bytes');
+    console.log('[Recipe Image Upload] File type:', req.file.mimetype);
+
+    // Create filename with timestamp for uniqueness
+    const timestamp = Date.now();
+    const randomId = Math.random().toString(36).substring(7);
+    const fileName = `${userId}/manual/${timestamp}_${randomId}.jpg`;
+
+    console.log('[Recipe Image Upload] Uploading to user-recipe-photos bucket:', fileName);
+
+    // Upload to Supabase Storage - user-recipe-photos bucket
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('user-recipe-photos')
+      .upload(fileName, req.file.buffer, {
+        contentType: req.file.mimetype || 'image/jpeg',
+        upsert: false
+      });
+
+    if (uploadError) {
+      console.error('[Recipe Image Upload] Storage upload error:', uploadError);
+
+      // If bucket doesn't exist, try to create it
+      if (uploadError.message && uploadError.message.includes('not found')) {
+        console.log('[Recipe Image Upload] Bucket not found, creating user-recipe-photos bucket...');
+
+        // Note: Bucket creation requires admin permissions
+        // This should be done via Supabase dashboard or migration
+        return res.status(500).json({
+          success: false,
+          error: 'Storage bucket not configured. Please contact support.',
+          details: 'user-recipe-photos bucket needs to be created'
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to upload image to storage',
+        details: uploadError.message
+      });
+    }
+
+    // Get public URL for the uploaded image
+    const { data: urlData } = supabase.storage
+      .from('user-recipe-photos')
+      .getPublicUrl(fileName);
+
+    const imageUrl = urlData.publicUrl;
+
+    console.log('[Recipe Image Upload] Upload successful');
+    console.log('[Recipe Image Upload] Public URL:', imageUrl);
+
     res.json({
       success: true,
-      imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c'
+      imageUrl: imageUrl,
+      fileName: fileName
     });
+
   } catch (error) {
-    console.error('[ImageUpload] Error:', error);
+    console.error('[Recipe Image Upload] Error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to upload image'
+      error: 'Failed to upload image',
+      details: error.message
     });
   }
 });

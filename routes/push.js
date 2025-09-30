@@ -7,15 +7,37 @@ const testScheduler = require('../services/testNotificationScheduler');
 // Get VAPID public key
 router.get('/vapid-public-key', (req, res) => {
   const publicKey = process.env.VAPID_PUBLIC_KEY;
-  console.log('VAPID public key requested, key exists:', !!publicKey);
+
+  console.log('[VAPID] Public key requested:', {
+    origin: req.headers.origin,
+    referer: req.headers.referer,
+    userAgent: req.headers['user-agent'],
+    keyExists: !!publicKey,
+    keyLength: publicKey ? publicKey.length : 0
+  });
+
+  // Add CORS headers for production domains
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'http://192.168.1.72:3000',
+    'https://trackabite.app',
+    'https://www.trackabite.app'
+  ];
+
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
 
   if (!publicKey) {
-    console.error('VAPID_PUBLIC_KEY not found in environment variables!');
+    console.error('[VAPID] ERROR: VAPID_PUBLIC_KEY not found in environment variables!');
     return res.status(500).json({
       error: 'VAPID key not configured on server'
     });
   }
 
+  console.log('[VAPID] Sending public key successfully');
   res.json({
     publicKey: publicKey
   });
@@ -26,9 +48,11 @@ router.post('/subscribe', authenticateToken, async (req, res) => {
   try {
     console.log('=== PUSH SUBSCRIPTION REQUEST ===');
     console.log('User:', req.user ? `${req.user.id} (${req.user.email})` : 'NO USER');
+    console.log('Origin:', req.headers.origin);
     console.log('Headers:', {
       authorization: req.headers.authorization ? 'Present' : 'Missing',
-      contentType: req.headers['content-type']
+      contentType: req.headers['content-type'],
+      origin: req.headers.origin
     });
 
     const { subscription } = req.body;

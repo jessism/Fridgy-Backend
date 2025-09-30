@@ -22,20 +22,22 @@ class TestNotificationScheduler {
       // Stop existing job if any
       this.stopTestNotifications(userId);
 
-      // Get user info
+      // Get user info - use first_name like other parts of the app
       const { data: user, error } = await supabase
         .from('users')
-        .select('name')
+        .select('first_name, email')
         .eq('id', userId)
         .single();
 
       if (error) {
         console.error('[Test Scheduler] Error fetching user:', error);
-        throw new Error('Failed to fetch user information');
+        console.error('[Test Scheduler] User ID attempted:', userId);
+        console.log('[Test Scheduler] Using default name due to database error');
       }
 
-      const userName = user?.name || 'there';
-      console.log(`[Test Scheduler] User name: ${userName}`);
+      // Use first_name if available, otherwise fallback to 'there'
+      const userName = user?.first_name || 'there';
+      console.log(`[Test Scheduler] User name resolved as: ${userName}`);
 
       // Send immediate notification
       await this.sendImmediateTest(userId, userName);
@@ -64,7 +66,7 @@ class TestNotificationScheduler {
         console.log(`[Test Scheduler] Sending scheduled notification: ${message.body}`);
 
         try {
-          const results = await pushNotificationService.sendNotificationToUser(userId, message);
+          const results = await pushNotificationService.sendToUser(userId, message);
           const successful = results.filter(r => r.success).length;
           const failed = results.filter(r => !r.success).length;
           console.log(`[Test Scheduler] Notification results: ${successful} sent, ${failed} failed`);
@@ -126,13 +128,14 @@ class TestNotificationScheduler {
     console.log(`[Test Scheduler] Sending immediate test: ${message.body}`);
 
     try {
-      const results = await pushNotificationService.sendNotificationToUser(userId, message);
+      const results = await pushNotificationService.sendToUser(userId, message);
       const successful = results.filter(r => r.success).length;
       console.log(`[Test Scheduler] Immediate notification sent to ${successful} device(s)`);
       return results;
     } catch (error) {
       console.error('[Test Scheduler] Error sending immediate notification:', error);
-      throw error;
+      // Don't throw - just return empty results to allow the scheduled notifications to continue
+      return [];
     }
   }
 

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const pushNotificationService = require('../services/pushNotificationService');
+const testScheduler = require('../services/testNotificationScheduler');
 
 // Get VAPID public key
 router.get('/vapid-public-key', (req, res) => {
@@ -216,6 +217,65 @@ router.post('/test-daily-reminder', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Test daily reminder error:', error);
     res.status(500).json({ error: 'Failed to send test daily reminder' });
+  }
+});
+
+// Start 5-minute test notifications
+router.post('/test/start', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    console.log(`[Push Route] Starting 5-minute test for user ${userId}`);
+
+    const result = await testScheduler.startTestNotifications(userId);
+    res.json(result);
+  } catch (error) {
+    console.error('Error starting test notifications:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to start test notifications'
+    });
+  }
+});
+
+// Stop test notifications
+router.post('/test/stop', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    console.log(`[Push Route] Stopping test for user ${userId}`);
+
+    const stopped = testScheduler.stopTestNotifications(userId);
+
+    res.json({
+      success: true,
+      message: stopped ? 'Test notifications stopped' : 'No active test found'
+    });
+  } catch (error) {
+    console.error('Error stopping test notifications:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to stop test notifications'
+    });
+  }
+});
+
+// Check test status
+router.get('/test/status', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const isRunning = testScheduler.isTestRunning(userId);
+    const nextTime = isRunning ? testScheduler.getNextFiveMinuteMark() : null;
+
+    res.json({
+      success: true,
+      isRunning,
+      nextTime
+    });
+  } catch (error) {
+    console.error('Error checking test status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check test status'
+    });
   }
 });
 

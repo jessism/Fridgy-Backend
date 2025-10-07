@@ -261,26 +261,47 @@ class ApifyInstagramService {
     // Extract images - enhanced for video content and reels
     const images = [];
 
-    // Priority order for image extraction (especially important for reels/videos)
-    const imageUrlCandidates = [
-      data.displayUrl,           // Primary display image
-      data.thumbnailUrl,         // Video thumbnail
-      data.videoThumbnail,       // Alternative video thumbnail
-      data.imageUrl,             // Single image URL
-      data.coverPhotoUrl,        // Cover photo for videos
-      data.previewImageUrl       // Preview image
-    ];
+    // PRIORITY 1: Look for Apify proxied URLs first (these don't expire and work reliably!)
+    console.log('[ApifyInstagram] Searching for Apify proxy URLs in raw response...');
+    const responseString = JSON.stringify(data);
+    const apifyProxyMatch = responseString.match(/https:\/\/images\.apifyusercontent\.com\/[^"]+/);
 
-    // Try each candidate URL with enhanced validation
-    for (const imageUrl of imageUrlCandidates) {
-      if (imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('http')) {
-        // Additional validation for Instagram image URLs
-        if (this.isValidImageUrl(imageUrl)) {
-          images.push({ url: imageUrl });
-          console.log(`[ApifyInstagram] Found valid image URL: ${imageUrl.substring(0, 100)}...`);
-          break; // Use first valid image found
-        } else {
-          console.log(`[ApifyInstagram] Invalid image URL rejected: ${imageUrl.substring(0, 100)}...`);
+    if (apifyProxyMatch) {
+      const apifyProxyUrl = apifyProxyMatch[0];
+      console.log('[ApifyInstagram] ✅ Found Apify proxy URL (permanent, non-expiring):', apifyProxyUrl.substring(0, 100) + '...');
+      images.push({
+        url: apifyProxyUrl,
+        isApifyProxy: true // Flag to indicate this is a reliable permanent URL
+      });
+    }
+
+    // PRIORITY 2: If no Apify proxy URL found, fall back to Instagram CDN URLs
+    if (images.length === 0) {
+      console.log('[ApifyInstagram] No Apify proxy URLs found, trying Instagram CDN URLs...');
+
+      const imageUrlCandidates = [
+        data.displayUrl,           // Primary display image
+        data.thumbnailUrl,         // Video thumbnail
+        data.videoThumbnail,       // Alternative video thumbnail
+        data.imageUrl,             // Single image URL
+        data.coverPhotoUrl,        // Cover photo for videos
+        data.previewImageUrl       // Preview image
+      ];
+
+      // Try each candidate URL with enhanced validation
+      for (const imageUrl of imageUrlCandidates) {
+        if (imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('http')) {
+          // Additional validation for Instagram image URLs
+          if (this.isValidImageUrl(imageUrl)) {
+            images.push({
+              url: imageUrl,
+              isApifyProxy: false // Instagram CDN URL - will expire
+            });
+            console.log(`[ApifyInstagram] Found Instagram CDN URL (may expire): ${imageUrl.substring(0, 100)}...`);
+            break; // Use first valid image found
+          } else {
+            console.log(`[ApifyInstagram] Invalid image URL rejected: ${imageUrl.substring(0, 100)}...`);
+          }
         }
       }
     }
@@ -298,7 +319,10 @@ class ApifyInstagramService {
           const firstImage = imageArray[0];
           const imageUrl = typeof firstImage === 'string' ? firstImage : firstImage?.url;
           if (imageUrl && imageUrl.startsWith('http') && this.isValidImageUrl(imageUrl)) {
-            images.push({ url: imageUrl });
+            images.push({
+              url: imageUrl,
+              isApifyProxy: imageUrl.includes('apifyusercontent.com')
+            });
             console.log(`[ApifyInstagram] Found valid image URL from array: ${imageUrl.substring(0, 100)}...`);
             break;
           } else if (imageUrl) {
@@ -550,48 +574,51 @@ class ApifyInstagramService {
       console.log('[ApifyInstagram] Recipe ID:', recipeId);
       console.log('[ApifyInstagram] User ID:', userId);
 
-      // Enhanced debugging: analyze the URL we're trying to download
-      if (apifyData) {
-        console.log('[ApifyInstagram] === APIFY DATA DEBUG ===');
-        console.log('[ApifyInstagram] displayUrl:', typeof apifyData.displayUrl === 'string' ? apifyData.displayUrl.substring(0, 150) + '...' : apifyData.displayUrl);
-        console.log('[ApifyInstagram] images array length:', apifyData.images?.length || 0);
-        console.log('[ApifyInstagram] images[0]:', typeof apifyData.images?.[0] === 'string' ? apifyData.images[0].substring(0, 150) + '...' : apifyData.images?.[0]);
-        console.log('[ApifyInstagram] videoUrl:', !!apifyData.videoUrl);
+      // Check if this is an Apify proxy URL (reliable, non-expiring)
+      const isApifyProxy = imageUrl.includes('apifyusercontent.com');
+      console.log('[ApifyInstagram] Is Apify proxy URL:', isApifyProxy);
 
-        // Look for any Apify proxied URLs in the response
-        const responseString = JSON.stringify(apifyData);
-        if (responseString.includes('apifyusercontent.com')) {
-          console.log('[ApifyInstagram] ⚠️ FOUND APIFY PROXIED URL IN RESPONSE!');
-          const apifyMatch = responseString.match(/https:\/\/images\.apifyusercontent\.com\/[^"]+/);
-          if (apifyMatch) {
-            console.log('[ApifyInstagram] Apify proxied URL found:', apifyMatch[0]);
-          }
-        } else {
-          console.log('[ApifyInstagram] ❌ No Apify proxied URLs found in response');
-        }
-      }
+      // Prepare fetch options based on URL type
+      const fetchOptions = {
+        timeout: 30000 // 30 second timeout
+      };
 
-      // Download image from Instagram with enhanced error handling
-      const response = await fetch(imageUrl, {
-        headers: {
+      // Only add Instagram-specific headers if it's an Instagram CDN URL
+      if (!isApifyProxy) {
+        console.log('[ApifyInstagram] Using Instagram-specific headers for CDN URL');
+        fetchOptions.headers = {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
           'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
           'Cache-Control': 'no-cache',
           'Referer': 'https://www.instagram.com/'
-        },
-        timeout: 30000 // 30 second timeout
-      });
+        };
+      } else {
+        console.log('[ApifyInstagram] Using simple headers for Apify proxy URL');
+        fetchOptions.headers = {
+          'Accept': 'image/*,*/*;q=0.8'
+        };
+      }
+
+      // Download image with appropriate error handling
+      const response = await fetch(imageUrl, fetchOptions);
 
       if (!response.ok) {
         console.error('[ApifyInstagram] Failed to download image:', response.status, response.statusText);
+        console.error('[ApifyInstagram] URL type:', isApifyProxy ? 'Apify Proxy' : 'Instagram CDN');
+
         if (response.status === 403) {
-          console.error('[ApifyInstagram] Access forbidden - Instagram may be blocking this request');
+          if (isApifyProxy) {
+            console.error('[ApifyInstagram] ⚠️ Apify proxy URL blocked - this should not happen!');
+          } else {
+            console.error('[ApifyInstagram] ⚠️ Instagram CDN blocked request (expected) - falling back to original URL');
+          }
         } else if (response.status === 404) {
           console.error('[ApifyInstagram] Image not found - URL may have expired');
         } else if (response.status >= 500) {
-          console.error('[ApifyInstagram] Server error - Instagram service may be down');
+          console.error('[ApifyInstagram] Server error - service may be down');
         }
+        console.log('[ApifyInstagram] ========== END IMAGE DOWNLOAD DEBUG ==========');
         return null;
       }
 

@@ -462,10 +462,12 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req
       );
 
       if (permanentImageUrl) {
-        console.log('[MultiModal] Primary image saved to Supabase:', permanentImageUrl);
+        console.log('[MultiModal] ✅ Primary image saved to Supabase:', permanentImageUrl);
       } else {
-        console.log('[MultiModal] Failed to download primary image, using original URL');
-        permanentImageUrl = primaryImageUrl;
+        console.log('[MultiModal] ⚠️ Failed to download primary image - will use placeholder');
+        console.log('[MultiModal] Original URL was:', primaryImageUrl?.substring(0, 100) + '...');
+        // DO NOT save expiring Instagram URLs - use null to trigger placeholder
+        permanentImageUrl = null;
       }
     }
 
@@ -486,18 +488,28 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req
 
           if (savedUrl) {
             permanentImageUrls.push(savedUrl);
-            console.log(`[MultiModal] Additional image ${i + 1} saved`);
+            console.log(`[MultiModal] ✅ Additional image ${i + 1} saved`);
+          } else {
+            console.log(`[MultiModal] ⚠️ Failed to save additional image ${i + 1}`);
           }
         }
       }
     }
 
-    // Prepare recipe data with permanent image URLs
+    // Use placeholder image if permanent download failed
+    const PLACEHOLDER_IMAGE = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
+    const finalImageUrl = permanentImageUrl || PLACEHOLDER_IMAGE;
+
+    if (!permanentImageUrl) {
+      console.log('[MultiModal] ⚠️ Using placeholder image - original download failed');
+    }
+
+    // Prepare recipe data with permanent image URLs only
     const sanitizedRecipe = sanitizeRecipeData({
       ...result.recipe,
       source_url: url,
       source_author: apifyData.author?.username,
-      image: permanentImageUrl || result.recipe.image || apifyData.images?.[0]?.url,
+      image: finalImageUrl,
       image_urls: permanentImageUrls.length > 0 ? permanentImageUrls : undefined
     });
 

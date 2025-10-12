@@ -5,7 +5,7 @@ const InstagramExtractor = require('../services/instagramExtractor');
 const RecipeAIExtractor = require('../services/recipeAIExtractor');
 const ApifyInstagramService = require('../services/apifyInstagramService');
 const MultiModalExtractor = require('../services/multiModalExtractor');
-const PushNotificationService = require('../services/pushNotificationService');
+const pushService = require('../services/pushNotificationService');
 const authMiddleware = require('../middleware/auth');
 const { getServiceClient } = require('../config/supabase');
 const { shortcutImportLimiter } = require('../middleware/rateLimiter');
@@ -18,7 +18,6 @@ const instagramExtractor = new InstagramExtractor();
 const recipeAI = new RecipeAIExtractor();
 const apifyService = new ApifyInstagramService();
 const multiModalExtractor = new MultiModalExtractor();
-const pushService = new PushNotificationService();
 
 // POST /api/shortcuts/import - Main import endpoint for shortcuts
 // Uses multi-modal extraction (Apify + Gemini video analysis) for complete recipe details

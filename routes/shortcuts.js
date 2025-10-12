@@ -39,11 +39,11 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
     // Validate and get user from token
     const { data: tokenData, error: tokenError } = await supabase
       .from('shortcut_tokens')
-      .select('user_id, usage_count, daily_usage_count, daily_usage_reset')
+      .select('user_id, usage_count, daily_usage_count, daily_usage_reset, daily_limit')
       .eq('token', token)
       .eq('is_active', true)
       .single();
-    
+
     if (tokenError || !tokenData) {
       console.log('[Shortcuts] Invalid token:', token);
       return res.status(401).json({
@@ -51,9 +51,9 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
         error: 'Invalid or expired token. Please reinstall shortcut.'
       });
     }
-    
-    // Check daily limits
-    const dailyLimit = parseInt(process.env.MAX_RECIPES_PER_DAY_FREE) || 5;
+
+    // Check daily limits - use user's custom limit if set, otherwise use default
+    const dailyLimit = tokenData.daily_limit || parseInt(process.env.MAX_RECIPES_PER_DAY_FREE) || 5;
     const now = new Date();
     const resetTime = tokenData.daily_usage_reset ? new Date(tokenData.daily_usage_reset) : now;
     

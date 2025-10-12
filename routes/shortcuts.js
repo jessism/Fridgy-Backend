@@ -3,6 +3,8 @@ const router = express.Router();
 const crypto = require('crypto');
 const InstagramExtractor = require('../services/instagramExtractor');
 const RecipeAIExtractor = require('../services/recipeAIExtractor');
+const ApifyInstagramService = require('../services/apifyInstagramService');
+const MultiModalExtractor = require('../services/multiModalExtractor');
 const authMiddleware = require('../middleware/auth');
 const { getServiceClient } = require('../config/supabase');
 const { shortcutImportLimiter } = require('../middleware/rateLimiter');
@@ -13,6 +15,8 @@ const supabase = getServiceClient();
 
 const instagramExtractor = new InstagramExtractor();
 const recipeAI = new RecipeAIExtractor();
+const apifyService = new ApifyInstagramService();
+const multiModalExtractor = new MultiModalExtractor();
 
 // POST /api/shortcuts/import - Main import endpoint for shortcuts
 router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req, res) => {
@@ -69,37 +73,37 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
       tokenData.daily_usage_count = 0;
     }
     
-    // Extract Instagram content
-    console.log(`[Shortcuts] Extracting from URL: ${url}`);
-    const instagramData = await instagramExtractor.extractFromUrl(url);
-    
-    console.log('[Shortcuts] Instagram extraction result:', {
-      success: instagramData.success,
-      hasCaption: !!instagramData.caption,
-      captionLength: instagramData.caption?.length || 0,
-      captionPreview: instagramData.caption?.substring(0, 200),
-      imageCount: instagramData.images?.length || 0,
-      hashtags: instagramData.hashtags
-    });
-    
-    // Use provided caption if extraction failed
-    if (!instagramData.success && caption) {
-      console.log('[Shortcuts] Using provided caption as fallback');
-      instagramData.caption = caption;
-      instagramData.success = true;
+    // Extract Instagram content using Apify (multi-modal approach)
+    console.log(`[Shortcuts] Extracting from URL with multi-modal: ${url}`);
+    const apifyData = await apifyService.extractFromUrl(url, tokenData.user_id);
+
+    if (!apifyData.success) {
+      console.log('[Shortcuts] Apify extraction failed:', apifyData.error);
+      return res.status(400).json({
+        success: false,
+        error: apifyData.error || 'Failed to extract Instagram content',
+        limitExceeded: apifyData.limitExceeded,
+        isTimeout: apifyData.isTimeout || false
+      });
     }
-    
-    // Extract recipe using AI
-    console.log('[Shortcuts] Extracting recipe with AI...');
-    const aiResult = await recipeAI.extractFromInstagramData(instagramData);
-    
-    console.log('[Shortcuts] AI extraction result:', {
+
+    console.log('[Shortcuts] Apify extraction result:', {
+      hasCaption: !!apifyData.caption,
+      hasVideo: !!apifyData.videoUrl,
+      imageCount: apifyData.images?.length || 0,
+      author: apifyData.author?.username
+    });
+
+    // Use multi-modal extractor for unified analysis
+    console.log('[Shortcuts] Starting multi-modal analysis...');
+    const aiResult = await multiModalExtractor.extractWithAllModalities(apifyData);
+
+    console.log('[Shortcuts] Multi-modal extraction result:', {
       success: aiResult.success,
       confidence: aiResult.confidence,
       title: aiResult.recipe?.title,
       ingredientCount: aiResult.recipe?.extendedIngredients?.length,
-      notes: aiResult.extractionNotes,
-      missingInfo: aiResult.missingInfo
+      sourcesUsed: aiResult.sourcesUsed
     });
     
     // More lenient handling - accept partial recipes with warnings
@@ -146,32 +150,83 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
       }
     }
     
-    // Transform recipe to match RecipeDetailModal format
+    // Download and store images permanently
+    console.log('[Shortcuts] Downloading and storing images...');
+    const tempRecipeId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    let permanentImageUrl = null;
+    const primaryImageUrl = aiResult.recipe.image || apifyData.images?.[0]?.url;
+
+    if (primaryImageUrl && primaryImageUrl.startsWith('http')) {
+      console.log('[Shortcuts] Downloading primary image...');
+      permanentImageUrl = await apifyService.downloadInstagramImage(
+        primaryImageUrl,
+        tempRecipeId,
+        tokenData.user_id,
+        apifyData
+      );
+
+      if (permanentImageUrl) {
+        console.log('[Shortcuts] ✅ Image saved:', permanentImageUrl);
+      } else {
+        console.log('[Shortcuts] ⚠️ Image download failed - using placeholder');
+        permanentImageUrl = null;
+      }
+    }
+
+    const PLACEHOLDER_IMAGE = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
+    const finalImageUrl = permanentImageUrl || PLACEHOLDER_IMAGE;
+
     // Sanitize and transform recipe data
     const sanitizedRecipe = sanitizeRecipeData({
       ...aiResult.recipe,
-      sourceUrl: url,
-      sourceAuthor: instagramData.author?.username,
-      sourceAuthorImage: instagramData.author?.profilePic,
-      image: aiResult.recipe.image || instagramData.images?.[0]?.url || instagramData.images?.[0]
+      source_url: url,
+      source_author: apifyData.author?.username,
+      source_author_image: apifyData.author?.profilePic,
+      image: finalImageUrl
     });
     
     const transformedRecipe = {
       user_id: tokenData.user_id,
-      ...sanitizedRecipe,
-      
-      // Additional arrays that might be present
-      cuisines: aiResult.recipe.cuisines || [],
-      dishTypes: aiResult.recipe.dishTypes || [],
-      diets: aiResult.recipe.diets || [],
-      
-      // Metadata
+      source_type: 'instagram',
+      source_url: url,
+      import_method: 'ios_shortcut',
+
+      // Core recipe data
+      title: sanitizedRecipe.title || 'Recipe from Instagram',
+      summary: sanitizedRecipe.summary || '',
+      image: sanitizedRecipe.image,
+
+      // Recipe details
+      extendedIngredients: sanitizedRecipe.extendedIngredients || [],
+      analyzedInstructions: sanitizedRecipe.analyzedInstructions || [],
+
+      // Time and servings
+      readyInMinutes: sanitizedRecipe.readyInMinutes,
+      cookingMinutes: sanitizedRecipe.cookingMinutes,
+      servings: sanitizedRecipe.servings || 4,
+
+      // Dietary attributes
+      vegetarian: sanitizedRecipe.vegetarian || false,
+      vegan: sanitizedRecipe.vegan || false,
+      glutenFree: sanitizedRecipe.glutenFree || false,
+      dairyFree: sanitizedRecipe.dairyFree || false,
+
+      // Additional arrays
+      cuisines: sanitizedRecipe.cuisines || [],
+      dishTypes: sanitizedRecipe.dishTypes || [],
+      diets: sanitizedRecipe.diets || [],
+
+      // Extraction metadata
       extraction_confidence: aiResult.confidence,
-      extraction_notes: aiResult.extractionNotes,
+      extraction_notes: aiResult.extractionNotes || `Multi-modal extraction via iOS shortcut`,
       missing_info: aiResult.missingInfo || [],
       ai_model_used: 'gemini-2.0-flash',
-      
-      // Nutrition is null for imported recipes initially
+
+      // Source attribution
+      source_author: sanitizedRecipe.source_author,
+      source_author_image: sanitizedRecipe.source_author_image,
+
+      // Nutrition
       nutrition: null
     };
     
@@ -197,15 +252,23 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
       })
       .eq('token', token);
     
-    console.log('[Shortcuts] Recipe saved successfully:', savedRecipe.id);
-    
+    console.log('[Shortcuts] Recipe saved successfully:', {
+      id: savedRecipe.id,
+      title: savedRecipe.title,
+      hasImage: !!savedRecipe.image,
+      ingredientCount: savedRecipe.extendedIngredients?.length,
+      extractionMethod: 'multi-modal'
+    });
+
     // Return success response for shortcut
     res.json({
       success: true,
       recipe: {
         id: savedRecipe.id,
         title: savedRecipe.title,
-        confidence: aiResult.confidence
+        image: savedRecipe.image,
+        confidence: aiResult.confidence,
+        ingredientCount: savedRecipe.extendedIngredients?.length || 0
       },
       message: savedRecipe.title // This shows in notification
     });

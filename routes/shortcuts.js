@@ -75,7 +75,27 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
         .eq('token', token);
       tokenData.daily_usage_count = 0;
     }
-    
+
+    // Send immediate push notification to provide instant feedback
+    try {
+      console.log('[Shortcuts] Sending immediate import notification...');
+      await pushService.sendToUser(tokenData.user_id, {
+        title: '📥 Importing Recipe',
+        body: 'Analyzing Instagram post...',
+        icon: '/logo192.png',
+        badge: '/logo192.png',
+        tag: 'recipe-importing',
+        data: {
+          url: '/recipe-import?importing=true'
+        },
+        requireInteraction: false
+      });
+      console.log('[Shortcuts] Immediate notification sent');
+    } catch (pushError) {
+      console.error('[Shortcuts] Failed to send immediate notification:', pushError);
+      // Continue anyway
+    }
+
     // Extract Instagram content using Apify (multi-modal approach)
     console.log(`[Shortcuts] Extracting from URL with multi-modal: ${url}`);
     const apifyData = await apifyService.extractFromUrl(url, tokenData.user_id);

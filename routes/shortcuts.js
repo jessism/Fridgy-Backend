@@ -5,6 +5,7 @@ const InstagramExtractor = require('../services/instagramExtractor');
 const RecipeAIExtractor = require('../services/recipeAIExtractor');
 const ApifyInstagramService = require('../services/apifyInstagramService');
 const MultiModalExtractor = require('../services/multiModalExtractor');
+const PushNotificationService = require('../services/pushNotificationService');
 const authMiddleware = require('../middleware/auth');
 const { getServiceClient } = require('../config/supabase');
 const { shortcutImportLimiter } = require('../middleware/rateLimiter');
@@ -17,6 +18,7 @@ const instagramExtractor = new InstagramExtractor();
 const recipeAI = new RecipeAIExtractor();
 const apifyService = new ApifyInstagramService();
 const multiModalExtractor = new MultiModalExtractor();
+const pushService = new PushNotificationService();
 
 // POST /api/shortcuts/import - Main import endpoint for shortcuts
 router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req, res) => {
@@ -259,6 +261,31 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
       ingredientCount: savedRecipe.extendedIngredients?.length,
       extractionMethod: 'multi-modal'
     });
+
+    // Send push notification to user's devices
+    try {
+      console.log('[Shortcuts] Sending push notification to user...');
+      await pushService.sendToUser(tokenData.user_id, {
+        title: '✅ Recipe Saved!',
+        body: savedRecipe.title || 'Your Instagram recipe has been imported',
+        icon: savedRecipe.image || '/logo192.png',
+        badge: '/logo192.png',
+        tag: 'recipe-import',
+        data: {
+          url: '/saved-recipes',
+          recipeId: savedRecipe.id
+        },
+        requireInteraction: false,
+        actions: [
+          { action: 'view', title: 'View Recipe' },
+          { action: 'dismiss', title: 'Dismiss' }
+        ]
+      });
+      console.log('[Shortcuts] Push notification sent successfully');
+    } catch (pushError) {
+      console.error('[Shortcuts] Failed to send push notification:', pushError);
+      // Don't fail the import if push fails
+    }
 
     // Return success response for shortcut
     res.json({

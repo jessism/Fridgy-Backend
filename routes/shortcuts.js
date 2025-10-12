@@ -21,6 +21,8 @@ const multiModalExtractor = new MultiModalExtractor();
 const pushService = new PushNotificationService();
 
 // POST /api/shortcuts/import - Main import endpoint for shortcuts
+// Uses multi-modal extraction (Apify + Gemini video analysis) for complete recipe details
+// Updated: January 2025 - Enhanced with full video/image analysis for better accuracy
 router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req, res) => {
   try {
     const { url, token, caption } = req.body;

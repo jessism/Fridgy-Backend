@@ -86,7 +86,7 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
         badge: '/logo192.png',
         tag: 'recipe-importing',
         data: {
-          url: '/recipe-import?importing=true'
+          url: '/import?importing=true'
         },
         requireInteraction: false
       });

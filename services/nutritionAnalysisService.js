@@ -3,7 +3,8 @@ const fetch = require('node-fetch');
 class NutritionAnalysisService {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
-    this.model = 'google/gemini-2.0-flash-exp:free'; // Use free model first
+    // Use stable model that's confirmed working
+    this.model = 'google/gemini-2.0-flash-001'; // Stable model
     this.fallbackModel = 'google/gemini-flash-1.5-8b'; // Paid fallback
   }
 
@@ -15,13 +16,22 @@ class NutritionAnalysisService {
   async analyzeRecipeNutrition(recipe) {
     try {
       console.log('[NutritionAnalysis] Starting nutrition analysis for:', recipe.title);
+      console.log('[NutritionAnalysis] Recipe source type:', recipe.source_type || 'unknown');
+      console.log('[NutritionAnalysis] Recipe has extendedIngredients:', !!recipe.extendedIngredients);
 
       // Extract ingredients for analysis
       const ingredients = this.extractIngredientList(recipe);
       const servings = recipe.servings || 4;
 
+      console.log('[NutritionAnalysis] Extracted ingredients:', {
+        count: ingredients.length,
+        servings: servings,
+        firstIngredient: ingredients[0]
+      });
+
       if (!ingredients || ingredients.length === 0) {
-        console.log('[NutritionAnalysis] No ingredients found to analyze');
+        console.log('[NutritionAnalysis] ❌ No ingredients found to analyze');
+        console.log('[NutritionAnalysis] Recipe object keys:', Object.keys(recipe));
         return null;
       }
 
@@ -59,18 +69,57 @@ class NutritionAnalysisService {
   extractIngredientList(recipe) {
     const ingredients = [];
 
-    // Handle extended ingredients format (from Instagram imports)
+    // Handle extended ingredients format (from Instagram imports and other sources)
     if (recipe.extendedIngredients && Array.isArray(recipe.extendedIngredients)) {
-      recipe.extendedIngredients.forEach(ing => {
-        ingredients.push({
-          amount: ing.amount || 1,
-          unit: ing.unit || '',
-          name: ing.name || ing.original || '',
-          original: ing.original || `${ing.amount || ''} ${ing.unit || ''} ${ing.name || ''}`.trim()
-        });
+      console.log('[NutritionAnalysis] Processing extendedIngredients array:', recipe.extendedIngredients.length, 'items');
+
+      recipe.extendedIngredients.forEach((ing, index) => {
+        // Handle both object and string formats
+        if (typeof ing === 'string') {
+          // Simple string ingredient (common in Instagram recipes)
+          ingredients.push({
+            amount: '',
+            unit: '',
+            name: ing,
+            original: ing
+          });
+          console.log(`[NutritionAnalysis] Ingredient ${index + 1} (string):`, ing);
+        } else if (typeof ing === 'object') {
+          // Object format ingredient
+          const ingredient = {
+            amount: ing.amount || ing.measures?.us?.amount || '',
+            unit: ing.unit || ing.measures?.us?.unitShort || '',
+            name: ing.name || ing.originalName || ing.nameClean || '',
+            original: ing.original || ing.originalString || `${ing.amount || ''} ${ing.unit || ''} ${ing.name || ''}`.trim()
+          };
+
+          // Only add if we have at least a name or original text
+          if (ingredient.name || ingredient.original) {
+            ingredients.push(ingredient);
+            console.log(`[NutritionAnalysis] Ingredient ${index + 1} (object):`, ingredient.original);
+          }
+        }
       });
+    } else if (recipe.ingredients && Array.isArray(recipe.ingredients)) {
+      // Fallback: handle simple ingredients array
+      console.log('[NutritionAnalysis] Processing simple ingredients array:', recipe.ingredients.length, 'items');
+      recipe.ingredients.forEach((ing, index) => {
+        if (typeof ing === 'string') {
+          ingredients.push({
+            amount: '',
+            unit: '',
+            name: ing,
+            original: ing
+          });
+          console.log(`[NutritionAnalysis] Simple ingredient ${index + 1}:`, ing);
+        }
+      });
+    } else {
+      console.log('[NutritionAnalysis] No recognizable ingredient format found');
+      console.log('[NutritionAnalysis] Recipe keys:', Object.keys(recipe));
     }
 
+    console.log('[NutritionAnalysis] Total ingredients extracted:', ingredients.length);
     return ingredients;
   }
 
@@ -173,12 +222,19 @@ The percentages should add up to 100. Calculate them based on:
       });
 
       if (!response.ok) {
-        // Try fallback model if free model fails
-        if (this.model === 'google/gemini-2.0-flash-exp:free') {
-          console.log('[NutritionAnalysis] Free model failed, trying paid fallback...');
+        const errorData = await response.text();
+        console.error('[NutritionAnalysis] AI API error:', response.status);
+        console.error('[NutritionAnalysis] Error details:', errorData);
+
+        // Try fallback model if primary model fails
+        // No need to check specific model name, just try fallback on any failure
+        console.log('[NutritionAnalysis] Primary model failed, trying fallback...');
+        try {
           return await this.callAIWithFallback(prompt);
+        } catch (fallbackError) {
+          console.error('[NutritionAnalysis] Fallback also failed:', fallbackError.message);
+          throw new Error(`AI API error: ${response.status}`)
         }
-        throw new Error(`AI API error: ${response.status}`);
       }
 
       const data = await response.json();

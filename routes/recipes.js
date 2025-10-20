@@ -515,20 +515,34 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req
 
     // Analyze nutrition for the recipe
     console.log('[MultiModal] Analyzing nutrition for extracted recipe...');
+    console.log('[MultiModal] Recipe has ingredients:', {
+      count: sanitizedRecipe.extendedIngredients?.length || 0,
+      sample: sanitizedRecipe.extendedIngredients?.[0]
+    });
+
     try {
       const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(sanitizedRecipe);
       if (nutritionData) {
-        console.log('[MultiModal] Nutrition analysis successful:', {
+        console.log('[MultiModal] ✅ Nutrition analysis successful:', {
           calories: nutritionData.perServing?.calories?.amount,
-          confidence: nutritionData.confidence
+          protein: nutritionData.perServing?.protein?.amount,
+          carbs: nutritionData.perServing?.carbohydrates?.amount,
+          fat: nutritionData.perServing?.fat?.amount,
+          confidence: nutritionData.confidence,
+          isAIEstimated: nutritionData.isAIEstimated
         });
         sanitizedRecipe.nutrition = nutritionData;
       } else {
-        console.log('[MultiModal] Nutrition analysis returned no data');
+        console.log('[MultiModal] ⚠️ Nutrition analysis returned no data');
+        console.log('[MultiModal] This could be due to:');
+        console.log('  - No ingredients found in recipe');
+        console.log('  - API key not configured');
+        console.log('  - API service error');
         sanitizedRecipe.nutrition = null;
       }
     } catch (nutritionError) {
-      console.error('[MultiModal] Nutrition analysis failed:', nutritionError);
+      console.error('[MultiModal] ❌ Nutrition analysis failed:', nutritionError.message);
+      console.error('[MultiModal] Full error:', nutritionError);
       // Don't fail the extraction if nutrition analysis fails
       sanitizedRecipe.nutrition = null;
     }
@@ -1102,6 +1116,7 @@ router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
     console.log('[RecipeSave] Recipe title:', recipe?.title);
     console.log('[RecipeSave] Import method:', import_method);
     console.log('[RecipeSave] Source author:', recipe?.source_author || 'NOT PROVIDED');
+    console.log('[RecipeSave] Recipe image URL:', recipe?.image || 'NO IMAGE PROVIDED');
 
     // Validate recipe data
     if (!recipe || !recipe.title) {
@@ -1160,25 +1175,39 @@ router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
 
     // Check if nutrition already exists or needs analysis
     if (recipe.nutrition) {
-      console.log('[RecipeSave] Recipe already has nutrition data');
+      console.log('[RecipeSave] Recipe already has nutrition data:', {
+        hasNutrition: true,
+        isAIEstimated: recipe.nutrition.isAIEstimated,
+        calories: recipe.nutrition.perServing?.calories?.amount,
+        source: import_method
+      });
       recipeToSave.nutrition = recipe.nutrition;
     } else {
       // Analyze nutrition for the recipe using the original recipe object
-      console.log('[RecipeSave] Analyzing nutrition for recipe...');
+      console.log('[RecipeSave] Recipe missing nutrition data, analyzing...', {
+        source: import_method,
+        sourceType: source_url?.includes('instagram') ? 'instagram' : 'web',
+        ingredientCount: recipe.extendedIngredients?.length || 0
+      });
+
       try {
         const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(recipe);
         if (nutritionData) {
-          console.log('[RecipeSave] Nutrition analysis successful:', {
+          console.log('[RecipeSave] ✅ Nutrition analysis successful:', {
             calories: nutritionData.perServing?.calories?.amount,
-            confidence: nutritionData.confidence
+            protein: nutritionData.perServing?.protein?.amount,
+            carbs: nutritionData.perServing?.carbohydrates?.amount,
+            fat: nutritionData.perServing?.fat?.amount,
+            confidence: nutritionData.confidence,
+            isAIEstimated: nutritionData.isAIEstimated
           });
           recipeToSave.nutrition = nutritionData;
         } else {
-          console.log('[RecipeSave] Nutrition analysis returned no data');
+          console.log('[RecipeSave] ⚠️ Nutrition analysis returned no data');
           recipeToSave.nutrition = null;
         }
       } catch (nutritionError) {
-        console.error('[RecipeSave] Nutrition analysis failed:', nutritionError);
+        console.error('[RecipeSave] ❌ Nutrition analysis failed:', nutritionError.message);
         // Don't fail the import if nutrition analysis fails
         recipeToSave.nutrition = null;
       }
@@ -1200,6 +1229,7 @@ router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
     }
 
     console.log('[RecipeSave] Recipe saved successfully:', savedRecipe.id);
+    console.log('[RecipeSave] Saved recipe image URL:', savedRecipe.image || 'NO IMAGE IN SAVED RECIPE');
 
     res.json({
       success: true,
@@ -1232,6 +1262,9 @@ router.post('/upload-image', authMiddleware.authenticateToken, upload.single('im
     console.log('[Recipe Image Upload] Starting upload for user:', userId);
     console.log('[Recipe Image Upload] File size:', req.file.size, 'bytes');
     console.log('[Recipe Image Upload] File type:', req.file.mimetype);
+
+    // Check if bucket exists and is public
+    console.log('[Recipe Image Upload] Checking bucket configuration...');
 
     // Create filename with timestamp for uniqueness
     const timestamp = Date.now();
@@ -1280,6 +1313,14 @@ router.post('/upload-image', authMiddleware.authenticateToken, upload.single('im
 
     console.log('[Recipe Image Upload] Upload successful');
     console.log('[Recipe Image Upload] Public URL:', imageUrl);
+
+    // Verify the URL format
+    if (!imageUrl || imageUrl === 'null' || imageUrl === 'undefined') {
+      console.error('[Recipe Image Upload] WARNING: Invalid public URL generated');
+      console.error('[Recipe Image Upload] URL Data:', urlData);
+    } else if (!imageUrl.startsWith('http')) {
+      console.error('[Recipe Image Upload] WARNING: URL does not start with http:', imageUrl);
+    }
 
     res.json({
       success: true,

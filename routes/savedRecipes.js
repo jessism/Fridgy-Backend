@@ -129,7 +129,26 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
     if (error) throw error;
     
     console.log(`[SavedRecipes] Found ${data?.length || 0} recipes`);
-    
+
+    // Debug: Log image URLs for uploaded/manual recipes
+    const uploadedRecipes = (data || []).filter(recipe => {
+      const sourceType = recipe.source_type?.toLowerCase();
+      return sourceType === 'manual' ||
+             recipe.import_method === 'manual' ||
+             recipe.source_author === 'Me';
+    });
+
+    if (uploadedRecipes.length > 0) {
+      console.log('[SavedRecipes] Checking image URLs in uploaded recipes:');
+      uploadedRecipes.forEach(recipe => {
+        console.log(`[SavedRecipes] Recipe "${recipe.title}":`, {
+          id: recipe.id,
+          hasImage: !!recipe.image,
+          imageUrl: recipe.image || 'NO IMAGE'
+        });
+      });
+    }
+
     res.json({
       recipes: data || [],
       total: count || 0,

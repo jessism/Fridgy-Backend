@@ -102,9 +102,9 @@ class AIRecipeService {
   }
 
   // Generate recipes using Gemini 2.0 Flash (adapted from existing food analysis)
-  async generateRecipes(inventory, preferences, questionnaire = {}) {
+  async generateRecipes(inventory, preferences, questionnaire = {}, retryAttempt = 0) {
     const requestId = Math.random().toString(36).substring(7);
-    
+
     try {
       console.log(`\n🤖 =============== AI RECIPE GENERATION START ===============`);
       console.log(`🤖 REQUEST ID: ${requestId}`);
@@ -153,8 +153,19 @@ class AIRecipeService {
       const fruits = inventory.filter(i => i.category === 'Fruits').map(i => i.item_name);
       const dairy = inventory.filter(i => i.category === 'Dairy').map(i => i.item_name);
       const grains = inventory.filter(i => i.category === 'Grains' || i.category === 'Pasta').map(i => i.item_name);
-      
-      const recipePrompt = `You are an expert chef creating personalized recipes for a home cook. You MUST follow these rules in STRICT PRIORITY ORDER.
+
+      // Make prompt stronger on retries
+      const retryWarning = retryAttempt > 0 ? `
+⚠️⚠️⚠️ CRITICAL WARNING - ATTEMPT ${retryAttempt + 1} ⚠️⚠️⚠️
+Your previous recipes were REJECTED for using ingredients NOT in the inventory.
+This is your ${retryAttempt === 1 ? 'SECOND' : 'FINAL'} attempt.
+YOU MUST ONLY USE THE EXACT INGREDIENTS LISTED BELOW.
+DO NOT SUGGEST: chicken, beef, pork, tilapia, cod, turkey, lamb, or ANY protein not listed.
+⚠️⚠️⚠️ FAILURE TO COMPLY WILL RESULT IN REJECTION ⚠️⚠️⚠️
+
+` : '';
+
+      const recipePrompt = `${retryWarning}You are an expert chef creating personalized recipes for a home cook. You MUST follow these rules in STRICT PRIORITY ORDER.
 
 🔴 CRITICAL CONSTRAINTS - VIOLATION WILL CAUSE REJECTION:
 
@@ -166,9 +177,9 @@ ${inventoryText}
    Available Fruits: ${fruits.length > 0 ? fruits.join(', ') : 'NONE'}
    Available Dairy: ${dairy.length > 0 ? dairy.join(', ') : 'NONE'}
    
-   ⚠️ CRITICAL: If salmon is the only protein, ALL 3 recipes MUST use salmon
-   ⚠️ CRITICAL: Do NOT suggest chicken/beef/tilapia if they're not listed above
-   ⚠️ CRITICAL: Every main ingredient MUST be from the list above
+   ⚠️ CRITICAL: You can ONLY use the proteins listed above. If no proteins listed, make vegetarian.
+   ⚠️ CRITICAL: FORBIDDEN - Do NOT suggest ANY of these if not in the list: chicken, beef, pork, tilapia, cod, turkey, lamb, fish, seafood
+   ⚠️ CRITICAL: Every main ingredient MUST be from the inventory list above. NO EXCEPTIONS.
 
 2. ALLERGIES & RESTRICTIONS - NEVER VIOLATE:
    ${allergiesText !== 'None' ? `❌ NEVER USE: ${allergiesText} - User is ALLERGIC!` : ''}
@@ -210,6 +221,11 @@ THINK STEP BY STEP:
 2. What vegetables? ${vegetables.length > 0 ? vegetables.join(', ') : 'None available'}
 3. Can I make ${questionnaire.meal_type} with these? YES - proceed
 4. Will it be ${vibeText}? Make sure it matches
+
+BEFORE RETURNING YOUR ANSWER:
+- Review each recipe's main ingredients
+- Confirm EVERY protein/meat is from: ${proteins.length > 0 ? proteins.join(', ') : 'NONE (vegetarian only)'}
+- If you included chicken/beef/pork/tilapia/fish and they're NOT in the list above, DELETE that recipe and create a new one
 
 Return ONLY a valid JSON array with exactly 3 recipes in this format:
 [
@@ -355,7 +371,13 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
         }
         
         // Check for forbidden ingredients (proteins not in inventory)
-        const forbiddenProteins = ['chicken', 'beef', 'pork', 'tilapia', 'cod', 'turkey', 'lamb'];
+        const forbiddenProteins = [
+          'chicken', 'beef', 'pork', 'tilapia', 'cod', 'turkey', 'lamb',
+          'salmon', 'tuna', 'shrimp', 'crab', 'lobster', 'fish', 'steak',
+          'bacon', 'sausage', 'ham', 'duck', 'venison', 'veal', 'goat',
+          'prawns', 'scallops', 'mussels', 'clams', 'oysters', 'squid',
+          'halibut', 'trout', 'bass', 'mahi', 'snapper', 'grouper'
+        ];
         const availableProteins = inventory
           .filter(item => item.category === 'Protein' || item.category === 'Meat')
           .map(item => item.item_name.toLowerCase());
@@ -372,8 +394,11 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
       if (validationIssues.length > 0) {
         console.error(`❌ [${requestId}] Recipe validation failed with ${validationIssues.length} issues:`);
         validationIssues.forEach(issue => console.error(`   - ${issue}`));
-        // Log but don't fail - let the recipes through but monitor the issue
-        console.warn(`⚠️  [${requestId}] Proceeding despite validation issues - AI needs improvement`);
+
+        // Throw error to trigger retry
+        const errorMsg = `Recipe validation failed (attempt ${retryAttempt + 1}): ${validationIssues.join('; ')}`;
+        console.error(`❌ [${requestId}] ${errorMsg}`);
+        throw new Error(errorMsg);
       } else {
         console.log(`✅ [${requestId}] All recipes validated successfully!`);
       }
@@ -467,11 +492,39 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
         };
       }
 
-      // Generate new recipes with questionnaire data
+      // Generate new recipes with questionnaire data and retry logic
       console.log(`🚀 [${requestId}] No cache found, generating new recipes...`);
-      const recipes = await this.generateRecipes(inventory, preferences, questionnaire);
-      
-      // Cache the recipes (without images initially) 
+
+      let recipes = null;
+      const maxRetries = 3;
+      let lastError = null;
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          console.log(`🔄 [${requestId}] Generation attempt ${attempt + 1} of ${maxRetries}...`);
+          recipes = await this.generateRecipes(inventory, preferences, questionnaire, attempt);
+          console.log(`✅ [${requestId}] Recipe generation successful on attempt ${attempt + 1}`);
+          break; // Success, exit retry loop
+        } catch (error) {
+          lastError = error;
+          console.error(`❌ [${requestId}] Attempt ${attempt + 1} failed: ${error.message}`);
+
+          if (attempt === maxRetries - 1) {
+            console.error(`💥 [${requestId}] All ${maxRetries} attempts failed. Giving up.`);
+            throw new Error(`Recipe generation failed after ${maxRetries} attempts. The AI is not respecting inventory constraints. Last error: ${lastError.message}`);
+          } else {
+            console.log(`🔄 [${requestId}] Retrying with stronger constraints...`);
+            // Small delay before retry
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+      }
+
+      if (!recipes) {
+        throw new Error('Recipe generation failed - no recipes generated');
+      }
+
+      // Cache the recipes (without images initially)
       const cachedData = await this.cacheRecipes(userId, contentHash, recipes, [], questionnaire);
       
       const duration = Date.now() - startTime;

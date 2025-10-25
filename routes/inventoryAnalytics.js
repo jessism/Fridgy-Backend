@@ -1,6 +1,7 @@
 const express = require('express');
 const inventoryAnalyticsController = require('../controller/inventoryAnalyticsController');
 const { authenticateToken } = require('../middleware/auth');
+const { requirePremium } = require('../middleware/checkLimits');
 
 const router = express.Router();
 
@@ -14,11 +15,11 @@ router.get('/health', (req, res) => {
   });
 });
 
-// Debug endpoint to check authentication and basic data
-router.get('/debug', authenticateToken, inventoryAnalyticsController.debugAnalytics);
+// Debug endpoint to check authentication and basic data (PREMIUM ONLY)
+router.get('/debug', authenticateToken, requirePremium, inventoryAnalyticsController.debugAnalytics);
 
-// Get inventory usage analytics for authenticated user
+// Get inventory usage analytics for authenticated user (PREMIUM ONLY)
 // Supports query parameter: ?days=30 (7, 30, or 90)
-router.get('/usage', authenticateToken, inventoryAnalyticsController.getUsageAnalytics);
+router.get('/usage', authenticateToken, requirePremium, inventoryAnalyticsController.getUsageAnalytics);
 
 module.exports = router;

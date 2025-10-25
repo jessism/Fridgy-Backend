@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/auth');
+const { checkShoppingListLimit, checkJoinedListLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 
 // Initialize Supabase
 const supabase = createClient(
@@ -76,7 +77,7 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
 });
 
 // POST /api/shopping-lists - Create new list
-router.post('/', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/', authMiddleware.authenticateToken, checkShoppingListLimit, async (req, res) => {
   try {
     const { name, color, items } = req.body;
     const userId = req.user.id;
@@ -137,6 +138,10 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
         .from('shopping_list_items')
         .insert(itemsToInsert);
     }
+
+    // Increment usage counter for owned lists
+    await incrementUsageCounter(userId, 'owned_shopping_lists');
+    console.log('[ShoppingLists] Usage counter incremented for owned list');
 
     res.json({ success: true, list });
   } catch (error) {
@@ -257,6 +262,10 @@ router.delete('/:id', authMiddleware.authenticateToken, async (req, res) => {
       .eq('id', id);
 
     if (error) throw error;
+
+    // Decrement usage counter for owned lists
+    await decrementUsageCounter(userId, 'owned_shopping_lists');
+    console.log('[ShoppingLists] Usage counter decremented for deleted owned list');
 
     res.json({ success: true });
   } catch (error) {
@@ -610,7 +619,7 @@ router.post('/:id/share', authMiddleware.authenticateToken, async (req, res) => 
 });
 
 // GET /api/shopping-lists/join/:shareCode - Join list via share code
-router.get('/join/:shareCode', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/join/:shareCode', authMiddleware.authenticateToken, checkJoinedListLimit, async (req, res) => {
   try {
     const { shareCode } = req.params;
     const userId = req.user.id;
@@ -664,6 +673,12 @@ router.get('/join/:shareCode', authMiddleware.authenticateToken, async (req, res
         user_name: userName,
         action: 'joined_list'
       });
+
+    // Increment usage counter for joined lists (only if not owner)
+    if (list.owner_id !== userId) {
+      await incrementUsageCounter(userId, 'joined_shopping_lists');
+      console.log('[ShoppingLists] Usage counter incremented for joined list');
+    }
 
     res.json({
       success: true,

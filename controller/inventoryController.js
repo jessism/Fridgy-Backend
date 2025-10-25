@@ -1,5 +1,6 @@
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
+const { incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 
 // Initialize Supabase client function
 const getSupabaseClient = () => {
@@ -110,7 +111,13 @@ const inventoryController = {
       
       console.log(`📦 [${requestId}] Successfully created ${insertedItems ? insertedItems.length : 0} items`);
       console.log(`📦 [${requestId}] Inserted items:`, insertedItems);
-      
+
+      // Increment usage counter for each item created
+      for (let i = 0; i < insertedItems.length; i++) {
+        await incrementUsageCounter(userId, 'grocery_items');
+      }
+      console.log(`📦 [${requestId}] Usage counter incremented by ${insertedItems.length}`);
+
       res.json({
         success: true,
         message: `Successfully created ${insertedItems.length} items`,
@@ -338,7 +345,11 @@ const inventoryController = {
       }
       
       console.log(`🗑️ [${requestId}] Soft deleted item:`, deletedItem);
-      
+
+      // Decrement usage counter
+      await decrementUsageCounter(userId, 'grocery_items');
+      console.log(`🗑️ [${requestId}] Usage counter decremented`);
+
       res.json({
         success: true,
         message: 'Item deleted successfully',

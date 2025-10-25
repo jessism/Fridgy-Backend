@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const authService = require('../services/authService');
+const { createDefaultRecipe } = require('../services/defaultRecipe');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -96,6 +97,11 @@ const authController = {
       // Generate JWT and refresh tokens
       const token = generateToken(newUser.id);
       const refreshToken = generateRefreshToken(newUser.id);
+
+      // Create default welcome recipe for new user (non-blocking)
+      createDefaultRecipe(newUser.id).catch(err => {
+        console.error('[Signup] Failed to create default recipe for new user:', newUser.id, err);
+      });
 
       // Return success response with tokens
       res.status(201).json({

@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const recipeController = require('../controller/recipeController');
 const authMiddleware = require('../middleware/auth');
+const { checkImportedRecipeLimit, incrementUsageCounter } = require('../middleware/checkLimits');
 const recipeService = require('../services/recipeService');
 const InstagramExtractor = require('../services/instagramExtractor');
 const RecipeAIExtractor = require('../services/recipeAIExtractor');
@@ -9,6 +10,7 @@ const ApifyInstagramService = require('../services/apifyInstagramService');
 const ProgressiveExtractor = require('../services/progressiveExtractor');
 const MultiModalExtractor = require('../services/multiModalExtractor');
 const NutritionAnalysisService = require('../services/nutritionAnalysisService');
+const NutritionExtractor = require('../services/nutritionExtractor');
 const { getServiceClient } = require('../config/supabase');
 const { validateShortcutImport, sanitizeRecipeData } = require('../middleware/validation');
 
@@ -38,6 +40,7 @@ const recipeAI = new RecipeAIExtractor();
 const apifyService = new ApifyInstagramService();
 const multiModalExtractor = new MultiModalExtractor();
 const nutritionAnalysis = new NutritionAnalysisService();
+const nutritionExtractor = new NutritionExtractor();
 
 /**
  * Recipe Routes
@@ -66,7 +69,7 @@ router.get('/health/keys', (req, res) => {
 
 // Import recipe from Instagram URL (Web flow for authenticated users)
 // POST /api/recipes/import-instagram
-router.post('/import-instagram', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/import-instagram', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
   try {
     const { url, manualCaption } = req.body;
     const userId = req.user?.userId || req.user?.id;
@@ -299,23 +302,44 @@ router.post('/import-instagram', authMiddleware.authenticateToken, async (req, r
       source_author_image: sanitizedRecipe.source_author_image
     };
 
-    // Analyze nutrition for the recipe
-    console.log('[RecipeImport] Analyzing nutrition for recipe...');
+    // Get nutrition - first try extracting from caption, then fall back to AI estimation
+    console.log('[RecipeImport] Getting nutrition for recipe...');
     try {
-      const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(recipeToSave);
-      if (nutritionData) {
-        console.log('[RecipeImport] Nutrition analysis successful:', {
+      let nutritionData = null;
+
+      // STEP 1: Try to extract nutrition from caption (if creator provided it)
+      console.log('[RecipeImport] Step 1: Checking caption for nutrition info...');
+      const extractedNutrition = await nutritionExtractor.extractFromCaption(instagramData.caption);
+
+      if (extractedNutrition && extractedNutrition.found) {
+        console.log('[RecipeImport] ✅ Found nutrition in caption from creator!');
+        nutritionData = nutritionExtractor.formatNutritionData(extractedNutrition);
+        console.log('[RecipeImport] Extracted nutrition:', {
           calories: nutritionData.perServing?.calories?.amount,
-          confidence: nutritionData.confidence
+          protein: nutritionData.perServing?.protein?.amount,
+          source: 'creator',
+          isAIEstimated: false
         });
-        recipeToSave.nutrition = nutritionData;
       } else {
-        console.log('[RecipeImport] Nutrition analysis returned no data');
-        recipeToSave.nutrition = null;
+        // STEP 2: Fall back to AI estimation from ingredients
+        console.log('[RecipeImport] Step 2: No nutrition in caption, estimating from ingredients...');
+        nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(recipeToSave);
+
+        if (nutritionData) {
+          console.log('[RecipeImport] ✅ Nutrition estimation successful:', {
+            calories: nutritionData.perServing?.calories?.amount,
+            confidence: nutritionData.confidence
+          });
+        } else {
+          console.log('[RecipeImport] ⚠️ Nutrition estimation returned no data');
+        }
       }
+
+      recipeToSave.nutrition = nutritionData;
+
     } catch (nutritionError) {
-      console.error('[RecipeImport] Nutrition analysis failed:', nutritionError);
-      // Don't fail the import if nutrition analysis fails
+      console.error('[RecipeImport] ❌ Nutrition processing failed:', nutritionError);
+      // Don't fail the import if nutrition processing fails
       recipeToSave.nutrition = null;
     }
 
@@ -361,6 +385,10 @@ router.post('/import-instagram', authMiddleware.authenticateToken, async (req, r
       downloadedImageUrl: standardDownloadedImageUrl?.substring(0, 100) + '...'
     });
 
+    // Increment usage counter
+    await incrementUsageCounter(userId, 'imported_recipes');
+    console.log('[RecipeImport] Usage counter incremented for user:', userId);
+
     res.json({
       success: true,
       recipe: savedRecipe,
@@ -378,7 +406,7 @@ router.post('/import-instagram', authMiddleware.authenticateToken, async (req, r
 
 // NEW: Multi-modal extraction endpoint (unified caption + video + audio analysis)
 // POST /api/recipes/multi-modal-extract
-router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
   try {
     const { url } = req.body;
     const userId = req.user?.userId || req.user?.id;
@@ -513,37 +541,56 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req
       image_urls: permanentImageUrls.length > 0 ? permanentImageUrls : undefined
     });
 
-    // Analyze nutrition for the recipe
-    console.log('[MultiModal] Analyzing nutrition for extracted recipe...');
+    // Get nutrition - first try extracting from caption, then fall back to AI estimation
+    console.log('[MultiModal] Getting nutrition for extracted recipe...');
     console.log('[MultiModal] Recipe has ingredients:', {
       count: sanitizedRecipe.extendedIngredients?.length || 0,
       sample: sanitizedRecipe.extendedIngredients?.[0]
     });
 
     try {
-      const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(sanitizedRecipe);
-      if (nutritionData) {
-        console.log('[MultiModal] ✅ Nutrition analysis successful:', {
+      let nutritionData = null;
+
+      // STEP 1: Try to extract nutrition from caption (if creator provided it)
+      console.log('[MultiModal] Step 1: Checking caption for nutrition info...');
+      const extractedNutrition = await nutritionExtractor.extractFromCaption(apifyData.caption);
+
+      if (extractedNutrition && extractedNutrition.found) {
+        console.log('[MultiModal] ✅ Found nutrition in caption from creator!');
+        nutritionData = nutritionExtractor.formatNutritionData(extractedNutrition);
+        console.log('[MultiModal] Extracted nutrition:', {
           calories: nutritionData.perServing?.calories?.amount,
           protein: nutritionData.perServing?.protein?.amount,
           carbs: nutritionData.perServing?.carbohydrates?.amount,
           fat: nutritionData.perServing?.fat?.amount,
-          confidence: nutritionData.confidence,
-          isAIEstimated: nutritionData.isAIEstimated
+          source: 'creator',
+          isAIEstimated: false
         });
-        sanitizedRecipe.nutrition = nutritionData;
       } else {
-        console.log('[MultiModal] ⚠️ Nutrition analysis returned no data');
-        console.log('[MultiModal] This could be due to:');
-        console.log('  - No ingredients found in recipe');
-        console.log('  - API key not configured');
-        console.log('  - API service error');
-        sanitizedRecipe.nutrition = null;
+        // STEP 2: Fall back to AI estimation from ingredients
+        console.log('[MultiModal] Step 2: No nutrition in caption, estimating from ingredients...');
+        nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(sanitizedRecipe);
+
+        if (nutritionData) {
+          console.log('[MultiModal] ✅ Nutrition estimation successful:', {
+            calories: nutritionData.perServing?.calories?.amount,
+            protein: nutritionData.perServing?.protein?.amount,
+            carbs: nutritionData.perServing?.carbohydrates?.amount,
+            fat: nutritionData.perServing?.fat?.amount,
+            confidence: nutritionData.confidence,
+            isAIEstimated: nutritionData.isAIEstimated
+          });
+        } else {
+          console.log('[MultiModal] ⚠️ Nutrition estimation returned no data');
+        }
       }
+
+      sanitizedRecipe.nutrition = nutritionData;
+
     } catch (nutritionError) {
-      console.error('[MultiModal] ❌ Nutrition analysis failed:', nutritionError.message);
+      console.error('[MultiModal] ❌ Nutrition processing failed:', nutritionError.message);
       console.error('[MultiModal] Full error:', nutritionError);
-      // Don't fail the extraction if nutrition analysis fails
+      // Don't fail the extraction if nutrition processing fails
       sanitizedRecipe.nutrition = null;
     }
 
@@ -569,7 +616,7 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req
 
 // Import recipe from Instagram URL using Apify (Premium flow with video analysis)
 // POST /api/recipes/import-instagram-apify
-router.post('/import-instagram-apify', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/import-instagram-apify', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
   try {
     const { url } = req.body;
     const userId = req.user?.userId || req.user?.id;
@@ -1003,23 +1050,44 @@ router.post('/import-instagram-apify', authMiddleware.authenticateToken, async (
       video_view_count: recipeToSave.video_view_count
     });
 
-    // Analyze nutrition for the recipe
-    console.log('[ApifyImport] Analyzing nutrition for recipe...');
+    // Get nutrition - first try extracting from caption, then fall back to AI estimation
+    console.log('[ApifyImport] Getting nutrition for recipe...');
     try {
-      const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(recipeToSave);
-      if (nutritionData) {
-        console.log('[ApifyImport] Nutrition analysis successful:', {
+      let nutritionData = null;
+
+      // STEP 1: Try to extract nutrition from caption (if creator provided it)
+      console.log('[ApifyImport] Step 1: Checking caption for nutrition info...');
+      const extractedNutrition = await nutritionExtractor.extractFromCaption(apifyData.caption);
+
+      if (extractedNutrition && extractedNutrition.found) {
+        console.log('[ApifyImport] ✅ Found nutrition in caption from creator!');
+        nutritionData = nutritionExtractor.formatNutritionData(extractedNutrition);
+        console.log('[ApifyImport] Extracted nutrition:', {
           calories: nutritionData.perServing?.calories?.amount,
-          confidence: nutritionData.confidence
+          protein: nutritionData.perServing?.protein?.amount,
+          source: 'creator',
+          isAIEstimated: false
         });
-        recipeToSave.nutrition = nutritionData;
       } else {
-        console.log('[ApifyImport] Nutrition analysis returned no data');
-        recipeToSave.nutrition = null;
+        // STEP 2: Fall back to AI estimation from ingredients
+        console.log('[ApifyImport] Step 2: No nutrition in caption, estimating from ingredients...');
+        nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(recipeToSave);
+
+        if (nutritionData) {
+          console.log('[ApifyImport] ✅ Nutrition estimation successful:', {
+            calories: nutritionData.perServing?.calories?.amount,
+            confidence: nutritionData.confidence
+          });
+        } else {
+          console.log('[ApifyImport] ⚠️ Nutrition estimation returned no data');
+        }
       }
+
+      recipeToSave.nutrition = nutritionData;
+
     } catch (nutritionError) {
-      console.error('[ApifyImport] Nutrition analysis failed:', nutritionError);
-      // Don't fail the import if nutrition analysis fails
+      console.error('[ApifyImport] ❌ Nutrition processing failed:', nutritionError);
+      // Don't fail the import if nutrition processing fails
       recipeToSave.nutrition = null;
     }
 
@@ -1053,6 +1121,10 @@ router.post('/import-instagram-apify', authMiddleware.authenticateToken, async (
       confidence: aiResult.confidence,
       method: aiResult.extractionMethod
     });
+
+    // Increment usage counter
+    await incrementUsageCounter(userId, 'imported_recipes');
+    console.log('[ApifyImport] Usage counter incremented for user:', userId);
 
     res.json({
       success: true,
@@ -1230,6 +1302,10 @@ router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
 
     console.log('[RecipeSave] Recipe saved successfully:', savedRecipe.id);
     console.log('[RecipeSave] Saved recipe image URL:', savedRecipe.image || 'NO IMAGE IN SAVED RECIPE');
+
+    // Increment usage counter
+    await incrementUsageCounter(userId, 'imported_recipes');
+    console.log('[RecipeSave] Usage counter incremented for user:', userId);
 
     res.json({
       success: true,

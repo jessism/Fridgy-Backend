@@ -1,6 +1,7 @@
 const express = require('express');
 const aiRecipeController = require('../controller/aiRecipeController');
 const authMiddleware = require('../middleware/auth');
+const { requirePremium } = require('../middleware/checkLimits');
 
 const router = express.Router();
 
@@ -13,8 +14,8 @@ const router = express.Router();
 router.get('/health', aiRecipeController.healthCheck);
 
 // Generate AI recipes based on user's inventory and preferences
-// POST /api/ai-recipes/generate
-router.post('/generate', authMiddleware.authenticateToken, aiRecipeController.generateRecipes);
+// POST /api/ai-recipes/generate (PREMIUM ONLY)
+router.post('/generate', authMiddleware.authenticateToken, requirePremium, aiRecipeController.generateRecipes);
 
 // Get cached recipes for faster loading
 // GET /api/ai-recipes/cached

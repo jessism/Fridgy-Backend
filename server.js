@@ -25,6 +25,8 @@ const shortcutsRoutes = require('./routes/shortcuts');
 const savedRecipesRoutes = require('./routes/savedRecipes');
 const shoppingListsRoutes = require('./routes/shoppingLists');
 const pushRoutes = require('./routes/push');
+const webhookRoutes = require('./routes/webhooks');
+const subscriptionRoutes = require('./routes/subscriptions');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -80,11 +82,17 @@ const corsOptions = {
 
 // Middleware
 app.use(cors(corsOptions));
+
+// IMPORTANT: Webhook route MUST come BEFORE express.json() middleware
+// Stripe webhooks require raw body for signature verification
+app.use('/api/webhooks', webhookRoutes);
+
 app.use(express.json({ limit: '10mb' }));  // Increased limit for larger payloads
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));  // Increased limit for form data
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/inventory-analytics', inventoryAnalyticsRoutes);
 app.use('/api/recipes', recipeRoutes);

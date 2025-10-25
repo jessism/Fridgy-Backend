@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
+const { checkUploadedRecipeLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
@@ -9,7 +10,7 @@ const supabase = createClient(
 );
 
 // POST /api/saved-recipes - Create a new saved recipe
-router.post('/', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/', authMiddleware.authenticateToken, checkUploadedRecipeLimit, async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id;
     const recipeData = req.body;
@@ -26,24 +27,24 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
       summary: recipeData.summary || recipeData.description || '',
       image: recipeData.image || null,
 
-      // Match RecipeDetailModal structure - Use quoted names for PostgreSQL
-      '"extendedIngredients"': recipeData.extendedIngredients || [],
-      '"analyzedInstructions"': recipeData.analyzedInstructions || [],
+      // Match RecipeDetailModal structure - camelCase columns
+      extendedIngredients: recipeData.extendedIngredients || [],
+      analyzedInstructions: recipeData.analyzedInstructions || [],
 
-      // Time and servings - Use quoted names for case-sensitive columns
-      '"readyInMinutes"': recipeData.readyInMinutes || null,
-      '"cookingMinutes"': recipeData.cookingMinutes || null,
+      // Time and servings - camelCase columns
+      readyInMinutes: recipeData.readyInMinutes || null,
+      cookingMinutes: recipeData.cookingMinutes || null,
       servings: recipeData.servings || 4,
 
-      // Dietary attributes - Use quoted names for case-sensitive columns
+      // Dietary attributes - camelCase columns
       vegetarian: recipeData.vegetarian || false,
       vegan: recipeData.vegan || false,
-      '"glutenFree"': recipeData.glutenFree || false,
-      '"dairyFree"': recipeData.dairyFree || false,
+      glutenFree: recipeData.glutenFree || false,
+      dairyFree: recipeData.dairyFree || false,
 
-      // Metadata - Use quoted names for case-sensitive columns
+      // Metadata - camelCase columns
       cuisines: recipeData.cuisines || [],
-      '"dishTypes"': recipeData.dishTypes || [],
+      dishTypes: recipeData.dishTypes || [],
 
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -62,6 +63,10 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
     }
 
     console.log(`[SavedRecipes] Recipe created successfully with ID: ${data.id}`);
+
+    // Increment usage counter
+    await incrementUsageCounter(userId, 'uploaded_recipes');
+    console.log(`[SavedRecipes] Usage counter incremented for user ${userId}`);
 
     res.json({
       success: true,
@@ -237,17 +242,33 @@ router.delete('/:id', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user?.userId || req.user?.id;
-    
+
     console.log(`[SavedRecipes] Deleting recipe ${id} for user ${userId}`);
-    
+
+    // Get recipe first to know its source_type for usage decrement
+    const { data: recipe } = await supabase
+      .from('saved_recipes')
+      .select('source_type')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single();
+
     const { error } = await supabase
       .from('saved_recipes')
       .delete()
       .eq('id', id)
       .eq('user_id', userId);
-    
+
     if (error) throw error;
-    
+
+    // Decrement appropriate counter based on source_type
+    if (recipe?.source_type === 'instagram') {
+      await decrementUsageCounter(userId, 'imported_recipes');
+    } else {
+      await decrementUsageCounter(userId, 'uploaded_recipes');
+    }
+    console.log(`[SavedRecipes] Usage counter decremented`);
+
     res.json({ success: true, message: 'Recipe deleted successfully' });
     
   } catch (error) {

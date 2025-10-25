@@ -79,7 +79,8 @@ async function createCheckoutSession(userId, email, priceId = null, promoCode = 
           quantity: 1,
         },
       ],
-      return_url: `${process.env.FRONTEND_URL}/subscription-success?session_id={CHECKOUT_SESSION_ID}`,
+      // Use relative URL to keep navigation within PWA (avoids opening Safari on iOS)
+      return_url: `${process.env.FRONTEND_URL}/subscription-success?session_id={CHECKOUT_SESSION_ID}&pwa=true`,
       customer_email: email,
       client_reference_id: userId,
       metadata: {

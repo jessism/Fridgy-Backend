@@ -80,7 +80,7 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
     try {
       console.log('[Shortcuts] Sending immediate import notification...');
       await pushService.sendToUser(tokenData.user_id, {
-        title: '📥 Importing Recipe',
+        title: 'Importing Recipe',
         body: 'Analyzing Instagram post...',
         icon: '/logo192.png',
         badge: '/logo192.png',
@@ -102,6 +102,24 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
 
     if (!apifyData.success) {
       console.log('[Shortcuts] Apify extraction failed:', apifyData.error);
+
+      // Send failure notification to user
+      try {
+        await pushService.sendToUser(tokenData.user_id, {
+          title: 'Import Failed',
+          body: apifyData.error || 'Could not access Instagram post. Please try again.',
+          icon: '/logo192.png',
+          badge: '/logo192.png',
+          tag: 'recipe-import-failed',
+          data: {
+            url: '/import'
+          },
+          requireInteraction: false
+        });
+      } catch (pushError) {
+        console.error('[Shortcuts] Failed to send error notification:', pushError);
+      }
+
       return res.status(400).json({
         success: false,
         error: apifyData.error || 'Failed to extract Instagram content',
@@ -138,8 +156,8 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
         console.log('[Shortcuts] Attempting to save partial recipe extraction');
         
         // Update the recipe title if we have caption info
-        if (instagramData.caption) {
-          const firstLine = instagramData.caption.split('\n')[0].substring(0, 100);
+        if (apifyData.caption) {
+          const firstLine = apifyData.caption.split('\n')[0].substring(0, 100);
           if (firstLine && firstLine.length > 5) {
             aiResult.recipe.title = firstLine.replace(/[🍝🌟✨🥗🍕🍔]/g, '').trim() || "Recipe from Instagram";
           }
@@ -155,18 +173,35 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
         if (aiResult.extractionNotes) {
           errorMessage += `: ${aiResult.extractionNotes}`;
         }
-        if (!instagramData.caption || instagramData.caption.length < 50) {
+        if (!apifyData.caption || apifyData.caption.length < 50) {
           errorMessage = 'No recipe content found. The Instagram post may not contain a recipe or the caption could not be extracted.';
         }
-        
+
+        // Send failure notification to user
+        try {
+          await pushService.sendToUser(tokenData.user_id, {
+            title: 'Import Failed',
+            body: errorMessage,
+            icon: '/logo192.png',
+            badge: '/logo192.png',
+            tag: 'recipe-import-failed',
+            data: {
+              url: '/import'
+            },
+            requireInteraction: false
+          });
+        } catch (pushError) {
+          console.error('[Shortcuts] Failed to send error notification:', pushError);
+        }
+
         return res.status(400).json({
           success: false,
           error: errorMessage,
           details: {
             extractionNotes: aiResult.extractionNotes,
             missingInfo: aiResult.missingInfo,
-            captionFound: !!instagramData.caption,
-            captionLength: instagramData.caption?.length,
+            captionFound: !!apifyData.caption,
+            captionLength: apifyData.caption?.length,
             confidence: aiResult.confidence
           }
         });
@@ -287,7 +322,7 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
     try {
       console.log('[Shortcuts] Sending push notification to user...');
       await pushService.sendToUser(tokenData.user_id, {
-        title: '✅ Recipe Saved!',
+        title: 'Recipe Saved',
         body: savedRecipe.title || 'Your Instagram recipe has been imported',
         icon: savedRecipe.image || '/logo192.png',
         badge: '/logo192.png',
@@ -323,6 +358,24 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
     
   } catch (error) {
     console.error('[Shortcuts] Import error:', error);
+
+    // Send failure notification to user
+    try {
+      await pushService.sendToUser(tokenData.user_id, {
+        title: 'Import Failed',
+        body: 'Something went wrong. Please try again.',
+        icon: '/logo192.png',
+        badge: '/logo192.png',
+        tag: 'recipe-import-failed',
+        data: {
+          url: '/import'
+        },
+        requireInteraction: false
+      });
+    } catch (pushError) {
+      console.error('[Shortcuts] Failed to send error notification:', pushError);
+    }
+
     res.status(500).json({
       success: false,
       error: 'Failed to import recipe. Please try again.'

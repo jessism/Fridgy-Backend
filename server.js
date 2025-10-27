@@ -237,13 +237,19 @@ const analyzeGroceryImages = async (images) => {
             TODAY'S DATE: ${new Date().toISOString().split('T')[0]}
             
             CATEGORIES - Choose the most appropriate category for each item:
-            - Dairy (milk, cheese, yogurt, butter, cream, etc.)
+            - Dairy (ALL dairy products from animals: regular milk, chocolate milk, flavored milk, cheese, yogurt, drinkable yogurt, kefir, butter, cream, sour cream, cottage cheese, eggs, eggnog, etc.)
             - Fruits (apples, bananas, dragon fruit, berries, citrus, etc.)
             - Vegetables (lettuce, carrots, tomatoes, peppers, onions, etc.)
             - Protein (meat, fish, eggs, beans, nuts, tofu, etc.)
             - Fats and oils (cooking oil, olive oil, avocado oil, coconut oil, etc.)
             - Grains (bread, rice, pasta, cereal, oats, quinoa, etc.)
+            - Beverages (NON-DAIRY drinks only: orange juice, apple juice, cranberry juice, soda, water bottles, energy drinks, sports drinks, almond milk, oat milk, soy milk, coconut milk, cold brew coffee, iced coffee, hot coffee, pumpkin cream cold brew, lattes, cappuccinos, iced tea, hot tea, lemonade, smoothies, etc.)
             - Other (for items that don't fit the above categories)
+
+            IMPORTANT RULES:
+            1. If it comes from a cow/goat/animal dairy source (even if drinkable), categorize as Dairy. Only non-dairy drinks go in Beverages.
+            2. Coffee drinks (cold brew, iced coffee, lattes, cappuccinos, etc.) are ALWAYS Beverages, even if they contain cream or milk.
+            3. Tea drinks (iced tea, hot tea, bubble tea, etc.) are ALWAYS Beverages.
             
             WEIGHT ESTIMATION GUIDE (per item):
             - Chicken breast: 6 oz each

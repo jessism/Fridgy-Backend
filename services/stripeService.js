@@ -79,8 +79,10 @@ async function createCheckoutSession(userId, email, priceId = null, promoCode = 
           quantity: 1,
         },
       ],
-      // Use relative URL to keep navigation within PWA (avoids opening Safari on iOS)
-      return_url: `${process.env.FRONTEND_URL}/subscription-success?session_id={CHECKOUT_SESSION_ID}&pwa=true`,
+      // IMPORTANT: return_url is now only a fallback for edge cases
+      // Normal flow will NOT trigger this because onComplete handles it in CheckoutModal
+      // But we keep it in case JavaScript fails or user refreshes during checkout
+      return_url: `${process.env.FRONTEND_URL}/subscription-success?session_id={CHECKOUT_SESSION_ID}&fallback=true`,
       customer_email: email,
       client_reference_id: userId,
       metadata: {

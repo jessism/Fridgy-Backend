@@ -8,19 +8,24 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 /**
  * Get or create a Stripe customer for a user
  * @param {Object} user - User object with id, email, firstName
- * @param {Object} db - Database connection
  * @returns {Promise<string>} Stripe customer ID
  */
-async function getOrCreateCustomer(user, db) {
+async function getOrCreateCustomer(user) {
   try {
-    // Check if user already has a Stripe customer ID
-    const result = await db.query(
-      'SELECT stripe_customer_id FROM subscriptions WHERE user_id = $1',
-      [user.id]
-    );
+    const { getServiceClient } = require('../config/supabase');
+    const supabase = getServiceClient();
 
-    if (result.rows.length > 0 && result.rows[0].stripe_customer_id) {
-      return result.rows[0].stripe_customer_id;
+    // Check if user already has a Stripe customer ID
+    const { data: subscription, error: fetchError } = await supabase
+      .from('subscriptions')
+      .select('stripe_customer_id')
+      .eq('user_id', user.id)
+      .single();
+
+    // If found and has customer ID, return it
+    if (!fetchError && subscription && subscription.stripe_customer_id) {
+      console.log('[StripeService] Found existing customer:', subscription.stripe_customer_id);
+      return subscription.stripe_customer_id;
     }
 
     // Create new Stripe customer
@@ -35,27 +40,133 @@ async function getOrCreateCustomer(user, db) {
 
     console.log('[StripeService] Created customer:', customer.id, 'for user:', user.id);
 
-    // Store customer ID
-    await db.query(`
-      INSERT INTO subscriptions (user_id, stripe_customer_id)
-      VALUES ($1, $2)
-      ON CONFLICT (user_id) DO UPDATE SET stripe_customer_id = $2
-    `, [user.id, customer.id]);
+    // Store customer ID in subscriptions table
+    const { error: upsertError } = await supabase
+      .from('subscriptions')
+      .upsert({
+        user_id: user.id,
+        stripe_customer_id: customer.id,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id' });
+
+    if (upsertError) {
+      console.error('[StripeService] Error storing customer ID:', upsertError);
+      // Don't throw - customer was created in Stripe, we can continue
+    }
 
     return customer.id;
   } catch (error) {
-    console.error('[StripeService] Error creating customer:', error);
+    console.error('[StripeService] Error in getOrCreateCustomer:', error);
     throw error;
   }
 }
 
 /**
- * Create a Stripe Checkout Session for subscription signup
+ * Create a Stripe Subscription Intent for Payment Element
+ * Uses payment_behavior: 'default_incomplete' for frontend confirmation
+ * @param {string} userId - User ID
+ * @param {string} email - User email
+ * @param {string|null} promoCode - Optional promo code
+ * @returns {Promise<Object>} { subscriptionId, clientSecret }
+ */
+async function createSubscriptionIntent(userId, email, promoCode = null) {
+  try {
+    const priceId = process.env.STRIPE_PRICE_ID;
+
+    if (!priceId) {
+      throw new Error('STRIPE_PRICE_ID not configured in environment variables');
+    }
+
+    // Get or create Stripe customer
+    const customerId = await getOrCreateCustomer({ id: userId, email });
+
+    const subscriptionData = {
+      customer: customerId,
+      items: [{ price: priceId }],
+      payment_behavior: 'default_incomplete', // Payment pending until frontend confirms
+      payment_settings: {
+        save_default_payment_method: 'on_subscription' // Save card for renewals
+      },
+      expand: ['latest_invoice.payment_intent'], // Get PaymentIntent for clientSecret
+      trial_period_days: 7, // 7-day free trial
+      metadata: {
+        user_id: userId,
+        promo_code: promoCode || null
+      }
+    };
+
+    // If promo code provided, validate and apply
+    if (promoCode) {
+      const { getServiceClient } = require('../config/supabase');
+      const supabase = getServiceClient();
+
+      const { data: promo, error: promoError } = await supabase
+        .from('promo_codes')
+        .select('stripe_coupon_id')
+        .eq('code', promoCode)
+        .eq('active', true)
+        .single();
+
+      if (!promoError && promo && promo.stripe_coupon_id) {
+        subscriptionData.coupon = promo.stripe_coupon_id;
+        console.log('[StripeService] Applied promo code:', promoCode);
+      }
+    }
+
+    // Create subscription (will be in 'incomplete' status until payment confirms)
+    const subscription = await stripe.subscriptions.create(subscriptionData);
+
+    console.log('[StripeService] Created subscription intent:', subscription.id, 'for user:', userId);
+    console.log('[StripeService] Subscription status:', subscription.status);
+
+    // For TRIAL subscriptions, Stripe creates a SetupIntent (not PaymentIntent)
+    // This is because there's no charge during trial - just card verification
+    if (subscription.pending_setup_intent) {
+      console.log('[StripeService] Trial subscription - using SetupIntent:', subscription.pending_setup_intent);
+
+      // Retrieve the SetupIntent to get its client_secret
+      const setupIntent = await stripe.setupIntents.retrieve(subscription.pending_setup_intent);
+
+      console.log('[StripeService] ✅ SetupIntent retrieved, client_secret ready');
+
+      return {
+        subscriptionId: subscription.id,
+        clientSecret: setupIntent.client_secret,
+        requiresSetup: true, // Flag to indicate this is a SetupIntent
+        isTrial: true
+      };
+    }
+
+    // For NON-TRIAL subscriptions (immediate charge), use PaymentIntent
+    if (subscription.latest_invoice?.payment_intent?.client_secret) {
+      console.log('[StripeService] Non-trial subscription - using PaymentIntent');
+
+      return {
+        subscriptionId: subscription.id,
+        clientSecret: subscription.latest_invoice.payment_intent.client_secret,
+        requiresSetup: false,
+        isTrial: false
+      };
+    }
+
+    // If we get here, something unexpected happened
+    throw new Error('No SetupIntent or PaymentIntent found in subscription');
+
+  } catch (error) {
+    console.error('[StripeService] Error creating subscription intent:', error);
+    throw error;
+  }
+}
+
+/**
+ * Create a Stripe Checkout Session (LEGACY - for backwards compatibility)
  * @param {string} userId - User ID
  * @param {string} email - User email
  * @param {string} priceId - Stripe price ID
  * @param {string|null} promoCode - Optional promo code
- * @returns {Promise<Object>} Checkout session with URL
+ * @param {string|null} returnUrl - Return URL for cancellation
+ * @returns {Promise<Object>} Checkout session
  */
 async function createCheckoutSession(userId, email, priceId = null, promoCode = null, returnUrl = null) {
   try {
@@ -65,61 +176,55 @@ async function createCheckoutSession(userId, email, priceId = null, promoCode = 
       throw new Error('STRIPE_PRICE_ID not configured in environment variables');
     }
 
-    // Use provided returnUrl or default to home
-    const cancelPath = returnUrl || '/home';
-    const cancelUrl = `${process.env.FRONTEND_URL}${cancelPath}`;
+    // Get or create Stripe customer
+    const customerId = await getOrCreateCustomer({ id: userId, email });
 
     const sessionConfig = {
-      ui_mode: 'embedded', // Embedded checkout for in-app payments
+      ui_mode: 'embedded',
       mode: 'subscription',
       payment_method_types: ['card'],
-      line_items: [
-        {
-          price: actualPriceId,
-          quantity: 1,
-        },
-      ],
-      // IMPORTANT: return_url is now only a fallback for edge cases
-      // Normal flow will NOT trigger this because onComplete handles it in CheckoutModal
-      // But we keep it in case JavaScript fails or user refreshes during checkout
+      line_items: [{
+        price: actualPriceId,
+        quantity: 1,
+      }],
       return_url: `${process.env.FRONTEND_URL}/subscription-success?session_id={CHECKOUT_SESSION_ID}&fallback=true`,
-      customer_email: email,
+      customer: customerId,
       client_reference_id: userId,
-      metadata: {
-        user_id: userId,
-      },
+      metadata: { user_id: userId },
       subscription_data: {
         trial_period_days: 7,
-        metadata: {
-          user_id: userId,
-        },
+        metadata: { user_id: userId },
       },
-      allow_promotion_codes: true // Allow users to enter promo codes
+      allow_promotion_codes: true
     };
 
-    // If promo code provided, add it
+    // Apply promo code if provided
     if (promoCode) {
-      // Validate promo code exists in our database
-      const db = require('../config/database');
-      const promoResult = await db.query(
-        'SELECT stripe_coupon_id FROM promo_codes WHERE code = $1 AND active = true',
-        [promoCode]
-      );
+      const { getServiceClient } = require('../config/supabase');
+      const supabase = getServiceClient();
 
-      if (promoResult.rows.length > 0 && promoResult.rows[0].stripe_coupon_id) {
+      const { data: promo, error: promoError } = await supabase
+        .from('promo_codes')
+        .select('stripe_coupon_id')
+        .eq('code', promoCode)
+        .eq('active', true)
+        .single();
+
+      if (!promoError && promo && promo.stripe_coupon_id) {
         sessionConfig.discounts = [{
-          coupon: promoResult.rows[0].stripe_coupon_id,
+          coupon: promo.stripe_coupon_id,
         }];
+        console.log('[StripeService] Applied promo code:', promoCode);
       }
     }
 
     const session = await stripe.checkout.sessions.create(sessionConfig);
 
-    console.log('[StripeService] Created checkout session:', session.id, 'for user:', userId);
+    console.log('[StripeService] Created checkout session (legacy):', session.id);
 
     return {
       sessionId: session.id,
-      clientSecret: session.client_secret, // For embedded checkout
+      clientSecret: session.client_secret,
     };
   } catch (error) {
     console.error('[StripeService] Error creating checkout session:', error);
@@ -269,7 +374,8 @@ async function createPromoCoupon(promoData) {
 
 module.exports = {
   getOrCreateCustomer,
-  createCheckoutSession,
+  createCheckoutSession, // Keep for backwards compatibility
+  createSubscriptionIntent, // NEW: For Payment Element
   createPortalSession,
   cancelSubscription,
   reactivateSubscription,

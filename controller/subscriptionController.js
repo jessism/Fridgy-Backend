@@ -370,9 +370,208 @@ async function applyPromoCode(req, res) {
   }
 }
 
+/**
+ * Create subscription intent for Payment Element
+ * POST /api/subscriptions/create-subscription-intent
+ */
+async function createSubscriptionIntent(req, res) {
+  try {
+    const userId = req.user.id || req.user.userId;
+    const email = req.user.email;
+    const { promoCode } = req.body;
+
+    // Check if user already has active subscription
+    const existing = await subscriptionService.getUserSubscription(userId);
+    if (existing && (existing.status === 'active' || existing.status === 'trialing')) {
+      return res.status(400).json({
+        success: false,
+        error: 'ALREADY_SUBSCRIBED',
+        message: 'You already have an active subscription'
+      });
+    }
+
+    // Create subscription intent
+    const intent = await stripeService.createSubscriptionIntent(userId, email, promoCode);
+
+    res.json({
+      success: true,
+      subscriptionId: intent.subscriptionId,
+      clientSecret: intent.clientSecret,
+      requiresSetup: intent.requiresSetup // Pass through the flag
+    });
+  } catch (error) {
+    console.error('[SubscriptionController] Error creating subscription intent:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create subscription intent',
+      message: error.message
+    });
+  }
+}
+
+/**
+ * Confirm subscription after successful payment
+ * IMMEDIATELY activates user (doesn't wait for webhook!)
+ * POST /api/subscriptions/confirm-subscription
+ */
+async function confirmSubscription(req, res) {
+  try {
+    console.log('========================================');
+    console.log('=== CONFIRM SUBSCRIPTION START ===');
+    console.log('========================================');
+
+    const { paymentIntentId, subscriptionId } = req.body;
+    const userId = req.user.id || req.user.userId;
+    const email = req.user.email;
+
+    console.log('Request body:', { paymentIntentId, subscriptionId });
+    console.log('User:', { userId, email });
+
+    if (!paymentIntentId || !subscriptionId) {
+      console.log('❌ Missing required fields');
+      return res.status(400).json({
+        error: 'Payment intent ID and subscription ID are required'
+      });
+    }
+
+    console.log(`\n--- STEP 1: Verify with Stripe ---`);
+
+    // CRITICAL: Verify with Stripe FIRST before activating user
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    let isVerified = false;
+
+    try {
+      // Try SetupIntent first (for trial subscriptions)
+      console.log('Trying to retrieve SetupIntent:', paymentIntentId);
+      const setupIntent = await stripe.setupIntents.retrieve(paymentIntentId);
+      isVerified = setupIntent.status === 'succeeded';
+      console.log(`✅ SetupIntent status: ${setupIntent.status}, verified: ${isVerified}`);
+    } catch (setupError) {
+      console.log('SetupIntent not found, trying PaymentIntent...');
+      // If not a SetupIntent, try PaymentIntent (for non-trial subscriptions)
+      try {
+        const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+        isVerified = paymentIntent.status === 'succeeded';
+        console.log(`✅ PaymentIntent status: ${paymentIntent.status}, verified: ${isVerified}`);
+      } catch (paymentError) {
+        console.error(`❌ Invalid intent ID ${paymentIntentId}:`, paymentError.message);
+        return res.status(400).json({
+          error: 'Invalid payment intent ID'
+        });
+      }
+    }
+
+    // SECURITY: Only proceed if Stripe confirms success
+    if (!isVerified) {
+      console.log(`❌ STEP 1 FAILED: Payment not verified in Stripe`);
+      return res.status(400).json({
+        error: 'Payment not confirmed. Please try again.'
+      });
+    }
+
+    console.log(`✅ STEP 1 COMPLETE: Payment verified with Stripe`);
+    console.log(`\n--- STEP 2: Update Users Table ---`);
+
+    // NOW safe to activate - Update user tier
+    const { getServiceClient } = require('../config/supabase');
+    const supabase = getServiceClient();
+
+    console.log('Updating user tier to premium...');
+    const { error: userError } = await supabase
+      .from('users')
+      .update({ tier: 'premium' })
+      .eq('id', userId);
+
+    if (userError) {
+      console.error('❌ Error updating user tier:', userError);
+      throw userError;
+    }
+    console.log('✅ STEP 2 COMPLETE: User tier updated to premium');
+
+    // IMMEDIATE ACTIVATION - Create/update subscription record
+    console.log(`\n--- STEP 3: Upsert Subscription Record ---`);
+    const trialStart = new Date();
+    const trialEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    const subscriptionData = {
+      user_id: userId,
+      stripe_subscription_id: subscriptionId,
+      tier: 'premium',
+      status: 'trialing',
+      trial_start: trialStart.toISOString(),
+      trial_end: trialEnd.toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    console.log('Upserting subscription with data:', subscriptionData);
+    console.log('Using onConflict: user_id');
+
+    const { error: subError } = await supabase
+      .from('subscriptions')
+      .upsert(subscriptionData, { onConflict: 'user_id' });
+
+    if (subError) {
+      console.error('❌ STEP 3 FAILED: Error upserting subscription:', subError);
+      console.error('Error code:', subError.code);
+      console.error('Error details:', subError.details);
+      console.error('Error message:', subError.message);
+      throw subError;
+    }
+
+    console.log(`✅ STEP 3 COMPLETE: Subscription record upserted`);
+
+    // Verify database sync with retries (handles webhook delays)
+    console.log(`\n--- STEP 4: Verify Database Sync ---`);
+    const syncResult = await subscriptionService.verifyAndSyncDatabase(userId, subscriptionId);
+
+    console.log('Sync result:', syncResult);
+
+    if (syncResult.synced) {
+      console.log(`✅ STEP 4 COMPLETE: Database sync verified`);
+      console.log('========================================');
+      console.log('=== CONFIRM SUBSCRIPTION SUCCESS ===');
+      console.log('========================================\n');
+      res.json({
+        success: true,
+        message: 'Subscription activated successfully'
+      });
+    } else {
+      console.warn(`⚠️ STEP 4 PARTIAL: Sync verification failed but user is activated`);
+      console.warn('Sync error:', syncResult.error);
+      console.log('========================================');
+      console.log('=== CONFIRM SUBSCRIPTION PARTIAL ===');
+      console.log('========================================\n');
+      // User is still activated, just couldn't verify
+      res.json({
+        success: false,
+        requiresSupport: true,
+        error: syncResult.error,
+        message: 'Payment received, activation pending. Please contact support if access is not granted within 5 minutes.'
+      });
+    }
+  } catch (error) {
+    console.error('========================================');
+    console.error('=== CONFIRM SUBSCRIPTION FAILED ===');
+    console.error('========================================');
+    console.error('Error:', error);
+    console.error('Error message:', error.message);
+    console.error('Error code:', error.code);
+    console.error('Stack trace:', error.stack);
+    console.error('========================================\n');
+    res.status(500).json({
+      success: false,
+      error: 'Failed to confirm subscription',
+      message: error.message
+    });
+  }
+}
+
 module.exports = {
   getStatus,
   createCheckout,
+  createSubscriptionIntent, // NEW
+  confirmSubscription, // NEW
   createPortalSession,
   cancelSubscription,
   reactivateSubscription,

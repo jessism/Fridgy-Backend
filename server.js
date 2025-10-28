@@ -244,6 +244,7 @@ const analyzeGroceryImages = async (images) => {
             - Fats and oils (cooking oil, olive oil, avocado oil, coconut oil, etc.)
             - Grains (bread, rice, pasta, cereal, oats, quinoa, etc.)
             - Beverages (NON-DAIRY drinks only: orange juice, apple juice, cranberry juice, soda, water bottles, energy drinks, sports drinks, almond milk, oat milk, soy milk, coconut milk, cold brew coffee, iced coffee, hot coffee, pumpkin cream cold brew, lattes, cappuccinos, iced tea, hot tea, lemonade, smoothies, etc.)
+            - Seasonings (ALL seasonings, herbs, spices, and condiments - both wet and dry: fresh basil, oregano, thyme, rosemary, cilantro, parsley, dried herbs, cumin, paprika, cinnamon, garlic powder, onion powder, black pepper, red pepper flakes, soy sauce, ketchup, mustard, hot sauce, mayo, salt, sugar, honey, vinegar, etc.)
             - Other (for items that don't fit the above categories)
 
             IMPORTANT RULES:

@@ -19,10 +19,24 @@ router.get('/status', subscriptionController.getStatus);
 
 /**
  * POST /api/subscriptions/create-checkout
- * Create Stripe Checkout session to start trial/subscription
+ * Create Stripe Checkout session to start trial/subscription (DEPRECATED - use create-subscription-intent)
  * Body: { promoCode?: string }
  */
 router.post('/create-checkout', subscriptionController.createCheckout);
+
+/**
+ * POST /api/subscriptions/create-subscription-intent
+ * Create Stripe Subscription Intent for Payment Element (NEW - recommended)
+ * Body: { promoCode?: string }
+ */
+router.post('/create-subscription-intent', subscriptionController.createSubscriptionIntent);
+
+/**
+ * POST /api/subscriptions/confirm-subscription
+ * Confirm subscription after successful payment (immediate activation)
+ * Body: { paymentIntentId: string, subscriptionId: string }
+ */
+router.post('/confirm-subscription', subscriptionController.confirmSubscription);
 
 /**
  * POST /api/subscriptions/create-portal-session

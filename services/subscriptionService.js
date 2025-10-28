@@ -455,6 +455,92 @@ async function getSubscriptionMetrics() {
   }
 }
 
+/**
+ * Verify database is synced with expected subscription state
+ * Retries with exponential backoff to handle webhook delays
+ * @param {string} userId - User ID
+ * @param {string} expectedSubscriptionId - Expected Stripe subscription ID
+ * @param {number} maxRetries - Maximum retry attempts (default 3)
+ * @returns {Promise<Object>} { synced: boolean, user?: Object, subscription?: Object, error?: string }
+ */
+async function verifyAndSyncDatabase(userId, expectedSubscriptionId, maxRetries = 3) {
+  const supabase = getServiceClient();
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[SubscriptionService] Sync verification attempt ${attempt}/${maxRetries} for user ${userId}`);
+
+      // Fetch fresh user data
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('id, tier, email')
+        .eq('id', userId)
+        .single();
+
+      if (userError) {
+        console.error(`[SubscriptionService] Error fetching user on attempt ${attempt}:`, userError);
+        throw userError;
+      }
+
+      if (!user) {
+        return { synced: false, error: 'User not found in database' };
+      }
+
+      // Fetch subscription data
+      const { data: subscription, error: subError } = await supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (subError && subError.code !== 'PGRST116') { // PGRST116 = no rows
+        console.error(`[SubscriptionService] Error fetching subscription on attempt ${attempt}:`, subError);
+        throw subError;
+      }
+
+      // Check if database is fully synced
+      const tierIsPremium = user.tier === 'premium' || user.tier === 'grandfathered';
+      const hasSubscriptionId = subscription && subscription.stripe_subscription_id === expectedSubscriptionId;
+      const statusIsValid = subscription && (subscription.status === 'trialing' || subscription.status === 'active');
+
+      if (tierIsPremium && hasSubscriptionId && statusIsValid) {
+        console.log(`✅ Database fully synced for user ${userId} on attempt ${attempt}`);
+        return { synced: true, user, subscription };
+      }
+
+      // Log what's missing
+      if (!tierIsPremium) {
+        console.warn(`⚠️ User ${userId} tier is '${user.tier}', expected 'premium'`);
+      }
+      if (!hasSubscriptionId) {
+        console.warn(`⚠️ User ${userId} subscriptionId is '${subscription?.stripe_subscription_id || 'null'}', expected '${expectedSubscriptionId}'`);
+      }
+      if (!statusIsValid) {
+        console.warn(`⚠️ User ${userId} subscription status is '${subscription?.status || 'null'}', expected 'trialing' or 'active'`);
+      }
+
+      // If not last attempt, wait with exponential backoff
+      if (attempt < maxRetries) {
+        const delay = 2000 * Math.pow(2, attempt - 1); // 2s, 4s, 8s
+        console.log(`Sync not complete, retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    } catch (error) {
+      console.error(`[SubscriptionService] Error in sync attempt ${attempt}:`, error);
+      if (attempt === maxRetries) {
+        return { synced: false, error: error.message };
+      }
+      // Continue to next retry on error
+    }
+  }
+
+  // All retries exhausted
+  return {
+    synced: false,
+    error: 'Database sync verification failed after all retry attempts'
+  };
+}
+
 module.exports = {
   getUserSubscription,
   upsertSubscription,
@@ -466,4 +552,5 @@ module.exports = {
   isPremium,
   getActiveSubscriptions,
   getSubscriptionMetrics,
+  verifyAndSyncDatabase,
 };

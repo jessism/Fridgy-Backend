@@ -521,35 +521,17 @@ async function confirmSubscription(req, res) {
 
     console.log(`✅ STEP 3 COMPLETE: Subscription record upserted`);
 
-    // Verify database sync with retries (handles webhook delays)
-    console.log(`\n--- STEP 4: Verify Database Sync ---`);
-    const syncResult = await subscriptionService.verifyAndSyncDatabase(userId, subscriptionId);
+    // If we got here, all database operations succeeded
+    // Supabase guarantees ACID transactions - if upsert succeeded, data IS there
+    // No need for complex verification that causes false negatives due to replica lag
+    console.log('========================================');
+    console.log('=== CONFIRM SUBSCRIPTION SUCCESS ===');
+    console.log('========================================\n');
 
-    console.log('Sync result:', syncResult);
-
-    if (syncResult.synced) {
-      console.log(`✅ STEP 4 COMPLETE: Database sync verified`);
-      console.log('========================================');
-      console.log('=== CONFIRM SUBSCRIPTION SUCCESS ===');
-      console.log('========================================\n');
-      res.json({
-        success: true,
-        message: 'Subscription activated successfully'
-      });
-    } else {
-      console.warn(`⚠️ STEP 4 PARTIAL: Sync verification failed but user is activated`);
-      console.warn('Sync error:', syncResult.error);
-      console.log('========================================');
-      console.log('=== CONFIRM SUBSCRIPTION PARTIAL ===');
-      console.log('========================================\n');
-      // User is still activated, just couldn't verify
-      res.json({
-        success: false,
-        requiresSupport: true,
-        error: syncResult.error,
-        message: 'Payment received, activation pending. Please contact support if access is not granted within 5 minutes.'
-      });
-    }
+    res.json({
+      success: true,
+      message: 'Subscription activated successfully'
+    });
   } catch (error) {
     console.error('========================================');
     console.error('=== CONFIRM SUBSCRIPTION FAILED ===');

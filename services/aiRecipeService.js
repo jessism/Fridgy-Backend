@@ -47,6 +47,7 @@ class AIRecipeService {
         vibe: questionnaire.vibe || '',
         cuisine_preference: questionnaire.cuisine_preference || '',
         dietary_considerations: questionnaire.dietary_considerations?.sort() || [],
+        ingredient_usage_preference: questionnaire.ingredient_usage_preference || 'use_most',
         additional_notes: questionnaire.additional_notes || ''
       },
       date: today
@@ -142,10 +143,11 @@ class AIRecipeService {
       const cookingTimeText = this.getCookingTimeDescription(questionnaire.cooking_time);
       const vibeText = this.getVibeDescription(questionnaire.vibe);
       const cuisinePreferenceText = this.getCuisineDescription(questionnaire.cuisine_preference);
-      const dietaryConsiderationsText = questionnaire.dietary_considerations?.length ? 
+      const dietaryConsiderationsText = questionnaire.dietary_considerations?.length ?
         questionnaire.dietary_considerations.join(', ') : 'None';
       const additionalNotesText = questionnaire.additional_notes || 'None';
       const servingSizeText = questionnaire.serving_size || 2; // Default to 2 if not provided
+      const ingredientUsagePreference = questionnaire.ingredient_usage_preference || 'use_most';
 
       // Group inventory by category for clearer understanding
       const proteins = inventory.filter(i => i.category === 'Protein' || i.category === 'Meat').map(i => i.item_name);
@@ -200,13 +202,7 @@ ${inventoryText}
    - Skill Level: ${timePreferenceText}
    ${dietaryConsiderationsText !== 'None' ? `- Today's Considerations: ${dietaryConsiderationsText}` : ''}
 
-🟢 PANTRY STAPLES - You MAY assume these are available:
-   - Basic seasonings: salt, pepper, garlic powder, onion powder
-   - Oils/fats: olive oil, vegetable oil, butter, cooking spray
-   - Common liquids: water, milk, cream, broth
-   - Basic items: flour, sugar, eggs, breadcrumbs
-   - Common acids: vinegar, lemon juice, soy sauce
-   - Dried herbs: oregano, basil, thyme, paprika
+${this.getIngredientUsageSection(ingredientUsagePreference)}
 
 VALIDATION BEFORE RETURNING:
 □ Each recipe uses at least 2-3 MAIN ingredients from the fridge inventory
@@ -631,6 +627,68 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
       'mediterranean': 'Mediterranean cuisine with olive oil and fresh herbs'
     };
     return descriptions[cuisine] || 'Any cuisine style';
+  }
+
+  getIngredientUsageSection(preference) {
+    const sections = {
+      'only_inventory': `🟢 PANTRY STAPLES - You MAY assume these are available:
+   - Basic seasonings: salt, pepper, sugar
+   - Oils/fats: butter, olive oil, vegetable oil, cooking spray
+   - Water
+
+🔴🔴🔴 CRITICAL - USER SELECTED "ONLY MY LOGGED INGREDIENTS" MODE:
+   ❌ DO NOT assume eggs, milk, cream, flour, or ANY other ingredients
+   ❌ DO NOT assume bread, rice, pasta, noodles, or any starches
+   ❌ DO NOT assume garlic, onions, ginger, or any fresh produce (unless logged)
+   ❌ DO NOT assume soy sauce, vinegar, lemon juice, or any condiments
+   ❌ DO NOT assume garlic powder, onion powder, or any spices beyond salt & pepper
+   ❌ DO NOT assume broth, stock, or bouillon
+   ❌ DO NOT assume breadcrumbs, cornstarch, or baking ingredients
+
+   ✅ ONLY USE: Items explicitly in their inventory + salt/pepper/sugar/butter/oil/water
+
+   ⚠️ USER CHOSE STRICT MODE - THEY WANT RECIPES WITH EXACTLY WHAT THEY LOGGED
+   ⚠️ If eggs needed, they MUST be in the inventory list above
+   ⚠️ If recipe needs something not logged, CREATE A DIFFERENT RECIPE`,
+
+      'use_most': `🟢 PANTRY STAPLES - You MAY assume these are available:
+   - Basic seasonings: salt, pepper, sugar, garlic powder, onion powder, paprika
+   - Oils/fats: olive oil, vegetable oil, butter, cooking spray
+   - Common liquids: water, milk, cream
+   - Basic items: flour, eggs
+   - Common condiments: soy sauce, vinegar, lemon juice, mustard
+   - Dried herbs: oregano, basil, thyme, parsley
+
+🟡 MODERATE MODE - USER SELECTED "USE MOST LOGGED INGREDIENTS":
+   ✅ You can use the pantry staples above even if not logged
+   ✅ Recipes should feature 3-4+ items from their logged inventory
+   ❌ DO NOT assume bread, rice, pasta, or major starches (unless logged)
+   ❌ DO NOT assume ANY proteins not in their logged inventory
+   ❌ DO NOT assume fresh produce like onions, garlic, ginger (unless logged)
+   ❌ DO NOT assume specialty cheeses or ingredients
+
+   📌 Their logged ingredients should be the STARS of the recipe
+   📌 Pantry staples are supporting roles only`,
+
+      'fully_flexible': `🟢 PANTRY STAPLES - You MAY assume these are available:
+   - Basic seasonings: salt, pepper, garlic powder, onion powder, paprika, cumin, etc.
+   - Oils/fats: olive oil, vegetable oil, butter, cooking spray
+   - Common liquids: water, milk, cream, broth, stock
+   - Basic items: flour, sugar, eggs, breadcrumbs
+   - Common acids: vinegar, lemon juice, soy sauce, lime juice
+   - Dried herbs: oregano, basil, thyme, paprika, parsley
+   - Common starches: You can suggest bread, rice, pasta if needed for recipe
+
+🟢 CREATIVE MODE - USER SELECTED "SUGGEST ANY INGREDIENTS":
+   ✅ You have freedom to suggest additional ingredients for great recipes
+   ✅ Can suggest proteins, vegetables, starches to complement their inventory
+   ✅ Try to incorporate 2-3+ items from their logged inventory when possible
+   ✅ Mark suggested additions with "from_inventory": false
+
+   🎨 Focus on creating delicious, inspiring recipes that showcase possibilities`
+    };
+
+    return sections[preference] || sections['use_most'];
   }
 }
 

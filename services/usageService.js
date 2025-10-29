@@ -135,6 +135,42 @@ async function checkLimit(userId, feature) {
       throw new Error('User not found');
     }
 
+    let tier = userData.tier || 'free';
+
+    // SAFEGUARD: Check if user has active subscription but tier is 'free'
+    // This handles cases where webhooks failed or were delayed
+    if (tier === 'free') {
+      const { data: subscription, error: subError } = await supabase
+        .from('subscriptions')
+        .select('tier, status')
+        .eq('user_id', userId)
+        .single();
+
+      if (subError && subError.code !== 'PGRST116') {
+        console.error('[UsageService] Error checking subscription:', subError);
+        // Don't throw - proceed with free tier to avoid blocking user
+      } else if (subscription && (subscription.status === 'active' || subscription.status === 'trialing')) {
+        // User has active subscription but tier is out of sync - fix it!
+        console.warn(`[UsageService] TIER MISMATCH DETECTED for user ${userId}: users.tier='${tier}' but subscription.tier='${subscription.tier}' and status='${subscription.status}'`);
+        console.warn(`[UsageService] Auto-syncing tier to '${subscription.tier}'`);
+
+        const { error: updateError } = await supabase
+          .from('users')
+          .update({ tier: subscription.tier })
+          .eq('id', userId);
+
+        if (updateError) {
+          console.error('[UsageService] Failed to auto-sync tier:', updateError);
+          // Don't throw - continue with subscription tier for this request
+        } else {
+          console.log(`[UsageService] ✅ Auto-synced tier to '${subscription.tier}' for user ${userId}`);
+        }
+
+        // Use the subscription tier for this check
+        tier = subscription.tier;
+      }
+    }
+
     // Get usage limits directly (not via relation)
     const { data: usageLimits, error: usageError } = await supabase
       .from('usage_limits')
@@ -147,7 +183,6 @@ async function checkLimit(userId, feature) {
       throw usageError;
     }
 
-    const tier = userData.tier || 'free';
     const limits = getLimitsForTier(tier);
     const usage = usageLimits || {};
     const current = usage[`${feature}_count`] || 0;

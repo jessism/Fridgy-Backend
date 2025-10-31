@@ -1,5 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
+const NutritionAnalysisService = require('./nutritionAnalysisService');
+const nutritionAnalysisService = new NutritionAnalysisService();
 
 // Helper function to get Supabase client
 const getSupabaseClient = () => {
@@ -398,6 +400,91 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
       } else {
         console.log(`✅ [${requestId}] All recipes validated successfully!`);
       }
+
+      // ========== CHECKPOINT: ABOUT TO START NUTRITION ENRICHMENT ==========
+      console.log(`\n🔬🔬🔬 [${requestId}] ========== CHECKPOINT: STARTING NUTRITION ENRICHMENT ==========`);
+      console.log(`🔬 [${requestId}] Number of recipes to enrich: ${recipes.length}`);
+      console.log(`🔬 [${requestId}] First recipe title: ${recipes[0]?.title}`);
+      console.log(`🔬 [${requestId}] First recipe has ${recipes[0]?.ingredients?.length || 0} ingredients`);
+      console.log(`🔬🔬🔬 [${requestId}] ================================================================\n`);
+
+      // Step: Enrich recipes with nutrition data using dedicated service
+      console.log(`🍎 [${requestId}] Enriching recipes with nutrition data...`);
+      for (let i = 0; i < recipes.length; i++) {
+        const recipe = recipes[i];
+        try {
+          console.log(`🍎 [${requestId}] Analyzing nutrition for Recipe ${i + 1}: "${recipe.title}"...`);
+
+          // Transform AI recipe format to nutrition service format
+          // AI recipes have {item: "chicken", amount: "1 cup", from_inventory: true}
+          // Service expects: {name: "chicken", amount: "1", unit: "cup", original: "1 cup chicken"}
+          const recipeForNutrition = {
+            title: recipe.title,
+            servings: recipe.servings || 2,
+            extendedIngredients: recipe.ingredients?.map(ing => ({
+              name: ing.item || ing.name || '',
+              original: `${ing.amount || ''} ${ing.item || ''}`.trim(),
+              amount: ing.amount || '',
+              unit: '',
+              // Add measures format for compatibility
+              measures: {
+                us: {
+                  amount: ing.amount || '',
+                  unitShort: ''
+                }
+              }
+            })) || [],
+            instructions: recipe.instructions || []
+          };
+
+          console.log(`🍎 [${requestId}] Recipe for nutrition has ${recipeForNutrition.extendedIngredients.length} ingredients`);
+
+          // Use the same nutrition service that imported recipes use
+          const nutrition = await nutritionAnalysisService.analyzeRecipeNutrition(recipeForNutrition);
+
+          if (nutrition) {
+            recipes[i].nutrition = nutrition;
+            console.log(`✅ [${requestId}] Recipe ${i + 1} nutrition added: ${nutrition.perServing?.calories?.amount || 'N/A'} calories`);
+          } else {
+            console.warn(`⚠️  [${requestId}] Recipe ${i + 1} nutrition analysis returned null - using zero fallback`);
+            // Provide default nutrition structure instead of null
+            recipes[i].nutrition = {
+              perServing: {
+                calories: { amount: 0, unit: 'kcal', percentOfDailyNeeds: 0 },
+                protein: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+                carbohydrates: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+                fat: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+                fiber: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+                sugar: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+                sodium: { amount: 0, unit: 'mg', percentOfDailyNeeds: 0 }
+              },
+              caloricBreakdown: { percentProtein: 0, percentFat: 0, percentCarbs: 0 },
+              isAIEstimated: false,
+              confidence: 0,
+              estimationNotes: 'Nutrition data unavailable'
+            };
+          }
+        } catch (error) {
+          console.error(`❌ [${requestId}] Failed to analyze nutrition for Recipe ${i + 1} ("${recipe.title}"): ${error.message}`);
+          // Provide default nutrition structure instead of null
+          recipes[i].nutrition = {
+            perServing: {
+              calories: { amount: 0, unit: 'kcal', percentOfDailyNeeds: 0 },
+              protein: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+              carbohydrates: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+              fat: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+              fiber: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+              sugar: { amount: 0, unit: 'g', percentOfDailyNeeds: 0 },
+              sodium: { amount: 0, unit: 'mg', percentOfDailyNeeds: 0 }
+            },
+            caloricBreakdown: { percentProtein: 0, percentFat: 0, percentCarbs: 0 },
+            isAIEstimated: false,
+            confidence: 0,
+            estimationNotes: 'Error calculating nutrition'
+          };
+        }
+      }
+      console.log(`✅ [${requestId}] Nutrition enrichment complete!`);
 
       console.log(`🎉 [${requestId}] Recipe generation successful!`);
       recipes.forEach((recipe, index) => {

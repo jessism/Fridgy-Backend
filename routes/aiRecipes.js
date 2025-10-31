@@ -21,6 +21,14 @@ router.post('/generate', authMiddleware.authenticateToken, requirePremium, aiRec
 // GET /api/ai-recipes/cached
 router.get('/cached', authMiddleware.authenticateToken, aiRecipeController.getCachedRecipes);
 
+// Get past AI recipe generations (history)
+// GET /api/ai-recipes/history?limit=10
+router.get('/history', authMiddleware.authenticateToken, aiRecipeController.getHistory);
+
+// Delete a specific AI recipe generation
+// DELETE /api/ai-recipes/:generationId
+router.delete('/:generationId', authMiddleware.authenticateToken, aiRecipeController.deleteGeneration);
+
 // Clear user's recipe cache (force regeneration)
 // DELETE /api/ai-recipes/cache
 router.delete('/cache', authMiddleware.authenticateToken, aiRecipeController.clearCache);

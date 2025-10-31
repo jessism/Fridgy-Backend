@@ -39,14 +39,75 @@ class ImageGenerationService {
       .substring(0, 24); // Even longer hash for better uniqueness
   }
 
+  // Upload base64 image to Supabase Storage (following Instagram pattern)
+  async uploadImageToSupabase(base64Data, recipeHash, userId) {
+    const requestId = Math.random().toString(36).substring(7);
+
+    try {
+      console.log(`📤 [${requestId}] Uploading AI recipe image to Supabase...`);
+
+      // Remove data URL prefix if present
+      const base64String = base64Data.includes(',')
+        ? base64Data.split(',')[1]
+        : base64Data;
+
+      // Convert base64 to buffer
+      const imageBuffer = Buffer.from(base64String, 'base64');
+      console.log(`📊 [${requestId}] Image buffer size: ${imageBuffer.length} bytes`);
+
+      // Check file size (limit to 10MB)
+      const maxSizeBytes = 10 * 1024 * 1024;
+      if (imageBuffer.length > maxSizeBytes) {
+        console.error(`❌ [${requestId}] Image too large: ${imageBuffer.length} bytes`);
+        throw new Error('Image file too large (max 10MB)');
+      }
+
+      // Generate unique filename
+      const timestamp = Date.now();
+      const fileName = `${userId}/ai-recipe-${recipeHash}-${timestamp}.jpg`;
+      console.log(`📝 [${requestId}] Uploading to: recipe-images/${fileName}`);
+
+      // Upload to Supabase storage (same bucket as imported recipes)
+      const supabase = getSupabaseClient();
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('recipe-images')
+        .upload(fileName, imageBuffer, {
+          contentType: 'image/jpeg',
+          cacheControl: '31536000', // 1 year cache
+          upsert: false
+        });
+
+      if (uploadError) {
+        console.error(`❌ [${requestId}] Supabase upload error:`, uploadError);
+        throw uploadError;
+      }
+
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from('recipe-images')
+        .getPublicUrl(fileName);
+
+      if (!urlData || !urlData.publicUrl) {
+        throw new Error('Failed to get public URL');
+      }
+
+      console.log(`✅ [${requestId}] Image uploaded successfully: ${urlData.publicUrl}`);
+      return urlData.publicUrl;
+
+    } catch (error) {
+      console.error(`❌ [${requestId}] Error uploading image to Supabase:`, error.message);
+      throw error;
+    }
+  }
+
   // Build optimized image prompt for food photography
   buildImagePrompt(recipeTitle, keyIngredients, cuisineType = '') {
     const ingredientsList = keyIngredients.join(', ');
     const cuisineContext = cuisineType ? `, ${cuisineType} style` : '';
-    
+
     return {
       prompt: `professional food photography, overhead shot, ${recipeTitle}, beautifully plated and garnished, made with ${ingredientsList}${cuisineContext}, natural lighting, restaurant quality presentation, modern white ceramic plate, minimal styling, photorealistic, 4K quality, editorial food styling, warm color temperature, shallow depth of field, appetizing, fresh ingredients visible, clean composition, subtle shadows, high detail textures`,
-      
+
       negative_prompt: `cartoon, illustration, anime, painting, sketch, text overlay, watermarks, logos, utensils in frame, hands, people, messy plating, plastic appearance, low quality, blurry, oversaturated, unappetizing, raw ingredients only, dark lighting, cluttered background, unrealistic colors`
     };
   }
@@ -85,9 +146,9 @@ class ImageGenerationService {
   }
 
   // Generate image using Fireworks AI (no caching - always fresh)
-  async generateImage(recipeTitle, keyIngredients, cuisineType = '') {
+  async generateImage(recipeTitle, keyIngredients, cuisineType = '', userId = null) {
     const requestId = Math.random().toString(36).substring(7);
-    
+
     try {
       console.log(`\n🎨 =============== IMAGE GENERATION START ===============`);
       console.log(`🎨 REQUEST ID: ${requestId}`);
@@ -223,9 +284,21 @@ class ImageGenerationService {
       }
 
       console.log(`🎉 [${requestId}] Image generation complete! (No caching)`);
-      console.log(`\n✅ [${requestId}] =============== IMAGE GENERATION COMPLETE ===============\n`);
-      
-      return imageUrl;
+
+      // Upload to Supabase Storage instead of returning base64
+      if (userId) {
+        console.log(`📤 [${requestId}] Uploading to Supabase Storage...`);
+        const recipeHash = this.generateRecipeHash(recipeTitle, keyIngredients);
+        const permanentUrl = await this.uploadImageToSupabase(imageUrl, recipeHash, userId);
+        console.log(`✅ [${requestId}] Permanent URL: ${permanentUrl}`);
+        console.log(`\n✅ [${requestId}] =============== IMAGE GENERATION COMPLETE ===============\n`);
+        return permanentUrl;
+      } else {
+        // Fallback: return base64 if no userId (shouldn't happen)
+        console.warn(`⚠️  [${requestId}] No userId provided, returning base64 (not recommended)`);
+        console.log(`\n✅ [${requestId}] =============== IMAGE GENERATION COMPLETE ===============\n`);
+        return imageUrl;
+      }
 
     } catch (error) {
       console.error(`\n💥 [${requestId}] ========== IMAGE GENERATION ERROR ==========`);
@@ -275,12 +348,13 @@ class ImageGenerationService {
   }
 
   // Generate images for multiple recipes in parallel
-  async generateImagesForRecipes(recipes) {
+  async generateImagesForRecipes(recipes, userId = null) {
     const requestId = Math.random().toString(36).substring(7);
     const startTime = Date.now();
-    
+
     try {
       console.log(`\n🎨 [${requestId}] Starting batch image generation for ${recipes.length} recipes...`);
+      console.log(`👤 [${requestId}] User ID: ${userId || 'not provided'}`);
       
       // Validate input
       if (!recipes || recipes.length === 0) {
@@ -306,7 +380,8 @@ class ImageGenerationService {
           const imageUrl = await this.generateImage(
             recipe.title,
             recipe.key_ingredients || [],
-            recipe.cuisine_type || 'default'
+            recipe.cuisine_type || 'default',
+            userId
           );
           
           const recipeDuration = Date.now() - recipeStartTime;

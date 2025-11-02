@@ -111,7 +111,8 @@ const authController = {
           id: newUser.id,
           email: newUser.email,
           firstName: newUser.first_name,
-          createdAt: newUser.created_at
+          createdAt: newUser.created_at,
+          hasSeenWelcomeTour: newUser.has_seen_welcome_tour || false
         },
         token,
         refreshToken
@@ -176,7 +177,8 @@ const authController = {
           id: user.id,
           email: user.email,
           firstName: user.first_name,
-          createdAt: user.created_at
+          createdAt: user.created_at,
+          hasSeenWelcomeTour: user.has_seen_welcome_tour || false
         },
         token,
         refreshToken
@@ -315,6 +317,37 @@ const authController = {
       res.status(500).json({
         success: false,
         error: 'Failed to logout'
+      });
+    }
+  },
+
+  // Mark welcome tour as completed
+  async markWelcomeTourComplete(req, res) {
+    try {
+      const userId = req.user.id;
+
+      const { data: user, error } = await supabase
+        .from('users')
+        .update({ has_seen_welcome_tour: true })
+        .eq('id', userId)
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      res.json({
+        success: true,
+        message: 'Welcome tour marked as completed',
+        hasSeenWelcomeTour: true
+      });
+
+    } catch (error) {
+      console.error('Mark welcome tour error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to update welcome tour status'
       });
     }
   }

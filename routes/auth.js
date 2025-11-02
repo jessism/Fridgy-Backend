@@ -19,4 +19,7 @@ router.post('/refresh', authController.refreshToken);
 // Logout endpoint
 router.post('/logout', authController.logout);
 
+// Mark welcome tour as completed
+router.patch('/welcome-tour/complete', authenticateToken, authController.markWelcomeTourComplete);
+
 module.exports = router; 

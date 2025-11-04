@@ -19,7 +19,7 @@ function getLimitsForTier(tier) {
       meal_logs: Infinity, // Unlimited - historical tracking shouldn't be limited
       owned_shopping_lists: 5,
       joined_shopping_lists: 1,
-      ai_recipes: 0, // Not allowed
+      ai_recipes: 3, // 3 generations per month (9 recipes total)
       analytics: false, // Not allowed
     },
     premium: {
@@ -46,6 +46,21 @@ function getLimitsForTier(tier) {
   };
 
   return limits[tier] || limits.free;
+}
+
+/**
+ * Map feature names to actual database column names
+ * Handles special cases like ai_recipes -> ai_recipe_generations_count
+ * @param {string} feature - Feature name
+ * @returns {string} Database column name
+ */
+function getColumnName(feature) {
+  const columnMapping = {
+    'ai_recipes': 'ai_recipe_generations_count',
+    // All others follow the pattern: {feature}_count
+  };
+
+  return columnMapping[feature] || `${feature}_count`;
 }
 
 /**
@@ -89,6 +104,11 @@ async function getUserUsage(userId) {
     const limits = getLimitsForTier(tier);
     const usage = usageLimits || {};
 
+    // Calculate next reset date (rolling 30 days)
+    const nextResetDate = usage.last_reset_at
+      ? new Date(new Date(usage.last_reset_at).getTime() + 30 * 24 * 60 * 60 * 1000)
+      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
     return {
       tier,
       limits,
@@ -102,6 +122,7 @@ async function getUserUsage(userId) {
         ai_recipe_generations_count: usage.ai_recipe_generations_count || 0,
       },
       last_reset_at: usage.last_reset_at,
+      next_reset_date: nextResetDate.toISOString(),
     };
   } catch (error) {
     console.error('[UsageService] Error getting user usage:', error);
@@ -184,12 +205,12 @@ async function checkLimit(userId, feature) {
     }
 
     const limits = getLimitsForTier(tier);
-    const usage = usageLimits || {};
-    const current = usage[`${feature}_count`] || 0;
+    let usage = usageLimits || {};
+    let current = usage[getColumnName(feature)] || 0;
     const limit = limits[feature];
 
-    // Special case: analytics and ai_recipes are boolean gates
-    if (feature === 'analytics' || feature === 'ai_recipes') {
+    // Special case: analytics is a boolean gate (premium only)
+    if (feature === 'analytics') {
       return {
         allowed: tier === 'premium' || tier === 'grandfathered',
         current: null,
@@ -199,11 +220,48 @@ async function checkLimit(userId, feature) {
       };
     }
 
+    // Rolling 30-day reset logic for free tier
+    if (tier === 'free' && usage.last_reset_at) {
+      const lastReset = new Date(usage.last_reset_at);
+      const daysSinceReset = (Date.now() - lastReset.getTime()) / (1000 * 60 * 60 * 24);
+
+      if (daysSinceReset >= 30) {
+        console.log(`[UsageService] Auto-resetting usage for user ${userId} (${Math.floor(daysSinceReset)} days since last reset)`);
+
+        // Reset all counters
+        const { error: resetError } = await supabase
+          .from('usage_limits')
+          .update({
+            grocery_items_count: 0,
+            imported_recipes_count: 0,
+            uploaded_recipes_count: 0,
+            owned_shopping_lists_count: 0,
+            joined_shopping_lists_count: 0,
+            ai_recipe_generations_count: 0,
+            last_reset_at: new Date().toISOString()
+          })
+          .eq('user_id', userId);
+
+        if (resetError) {
+          console.error('[UsageService] Error auto-resetting usage:', resetError);
+        } else {
+          console.log('[UsageService] ✅ Usage counters reset successfully');
+          current = 0; // Update current count after reset
+        }
+      }
+    }
+
+    // Calculate next reset date for response
+    const nextResetDate = usage.last_reset_at
+      ? new Date(new Date(usage.last_reset_at).getTime() + 30 * 24 * 60 * 60 * 1000)
+      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
     return {
       allowed: current < limit,
       current,
       limit,
       tier,
+      nextResetDate: nextResetDate.toISOString(),
     };
   } catch (error) {
     console.error('[UsageService] Error checking limit:', error);
@@ -235,9 +293,10 @@ async function incrementUsage(userId, feature) {
 
     if (!existing) {
       // Create new record with count of 1
+      const columnName = getColumnName(feature);
       const newRecord = {
         user_id: userId,
-        [`${feature}_count`]: 1
+        [columnName]: 1
       };
       const { error: insertError } = await supabase
         .from('usage_limits')
@@ -249,10 +308,11 @@ async function incrementUsage(userId, feature) {
       }
     } else {
       // Increment existing count
-      const currentCount = existing[`${feature}_count`] || 0;
+      const columnName = getColumnName(feature);
+      const currentCount = existing[columnName] || 0;
       const { error: updateError } = await supabase
         .from('usage_limits')
-        .update({ [`${feature}_count`]: currentCount + 1 })
+        .update({ [columnName]: currentCount + 1 })
         .eq('user_id', userId);
 
       if (updateError) {
@@ -277,11 +337,12 @@ async function incrementUsage(userId, feature) {
 async function decrementUsage(userId, feature) {
   try {
     const supabase = getServiceClient();
+    const columnName = getColumnName(feature);
 
     // Get current count
     const { data: existing, error: getError } = await supabase
       .from('usage_limits')
-      .select(`${feature}_count`)
+      .select(columnName)
       .eq('user_id', userId)
       .single();
 
@@ -291,12 +352,12 @@ async function decrementUsage(userId, feature) {
     }
 
     if (existing) {
-      const currentCount = existing[`${feature}_count`] || 0;
+      const currentCount = existing[columnName] || 0;
       const newCount = Math.max(0, currentCount - 1); // Never go below 0
 
       const { error: updateError } = await supabase
         .from('usage_limits')
-        .update({ [`${feature}_count`]: newCount })
+        .update({ [columnName]: newCount })
         .eq('user_id', userId);
 
       if (updateError) {

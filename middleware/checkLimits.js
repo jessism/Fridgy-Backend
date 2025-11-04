@@ -84,9 +84,12 @@ const checkShoppingListLimit = checkLimit('owned_shopping_lists');
 // Joined shopping lists limit (1 for free tier)
 const checkJoinedListLimit = checkLimit('joined_shopping_lists');
 
+// AI recipe generation limit (3 for free tier)
+const checkAIRecipeLimit = checkLimit('ai_recipes');
+
 /**
  * Premium feature gate - requires premium or grandfathered tier
- * Used for features that are completely blocked on free tier (AI recipes, analytics)
+ * Used for features that are completely blocked on free tier (analytics)
  */
 async function requirePremium(req, res, next) {
   try {
@@ -189,6 +192,7 @@ module.exports = {
   checkMealLogLimit,
   checkShoppingListLimit,
   checkJoinedListLimit,
+  checkAIRecipeLimit,
 
   // Premium feature gate
   requirePremium,

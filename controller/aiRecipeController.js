@@ -2,6 +2,7 @@ const aiRecipeService = require('../services/aiRecipeService');
 const imageGenerationService = require('../services/imageGenerationService');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
+const { incrementUsageCounter } = require('../middleware/checkLimits');
 
 // Helper function to get Supabase client
 const getSupabaseClient = () => {
@@ -58,28 +59,40 @@ const aiRecipeController = {
       // Step 1: Get user's current inventory
       console.log(`📦 [${requestId}] Step 1: Fetching user inventory...`);
       const supabase = getSupabaseClient();
-      
-      const { data: inventory, error: inventoryError } = await supabase
-        .from('fridge_items')
-        .select('*')
-        .eq('user_id', userId)
-        .order('expiration_date', { ascending: true }); // Prioritize items expiring soon
 
-      if (inventoryError) {
-        console.error(`❌ [${requestId}] Inventory fetch error:`, inventoryError);
-        throw new Error(`Failed to fetch inventory: ${inventoryError.message}`);
+      let inventory;
+
+      // Check if demo inventory is provided (for welcome tour)
+      if (req.body.demoInventory && Array.isArray(req.body.demoInventory) && req.body.demoInventory.length > 0) {
+        console.log(`🎯 [${requestId}] Using demo inventory for tour mode (${req.body.demoInventory.length} items)`);
+        inventory = req.body.demoInventory;
+      } else {
+        // Fetch real inventory from database
+        console.log(`📦 [${requestId}] Fetching real inventory from database...`);
+        const { data: inventoryData, error: inventoryError } = await supabase
+          .from('fridge_items')
+          .select('*')
+          .eq('user_id', userId)
+          .order('expiration_date', { ascending: true }); // Prioritize items expiring soon
+
+        if (inventoryError) {
+          console.error(`❌ [${requestId}] Inventory fetch error:`, inventoryError);
+          throw new Error(`Failed to fetch inventory: ${inventoryError.message}`);
+        }
+
+        if (!inventoryData || inventoryData.length === 0) {
+          console.log(`⚠️  [${requestId}] No inventory items found`);
+          return res.status(400).json({
+            success: false,
+            error: 'No inventory items found. Please add some food items to your fridge first.',
+            requestId: requestId
+          });
+        }
+
+        inventory = inventoryData;
       }
 
-      if (!inventory || inventory.length === 0) {
-        console.log(`⚠️  [${requestId}] No inventory items found`);
-        return res.status(400).json({
-          success: false,
-          error: 'No inventory items found. Please add some food items to your fridge first.',
-          requestId: requestId
-        });
-      }
-
-      console.log(`📦 [${requestId}] Found ${inventory.length} inventory items`);
+      console.log(`📦 [${requestId}] Using ${inventory.length} inventory items`);
 
       // Step 2: Get user's dietary preferences
       console.log(`🍽️  [${requestId}] Step 2: Fetching user preferences...`);
@@ -221,7 +234,12 @@ const aiRecipeController = {
 
       console.log(`🎉 [${requestId}] Recipe generation successful!`);
       console.log(`📊 [${requestId}] Generated ${response.data.recipes.length} recipes`);
-      
+
+      // Step 6: Increment usage counter (only after successful generation)
+      console.log(`📈 [${requestId}] Step 6: Incrementing AI recipe usage counter...`);
+      await incrementUsageCounter(userId, 'ai_recipes');
+      console.log(`✅ [${requestId}] Usage counter incremented`);
+
       res.json(response);
 
       console.log(`\n✅ [${requestId}] =============== REQUEST COMPLETE ===============\n`);

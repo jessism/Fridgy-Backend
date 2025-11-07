@@ -374,21 +374,31 @@ class RecipeService {
    */
   async getRecipeSuggestions(userId, options = {}) {
     const requestId = Math.random().toString(36).substring(7);
-    
+
     try {
       console.log(`\n🍽️  ================ RECIPE SUGGESTIONS START ================`);
       console.log(`🍽️  REQUEST ID: ${requestId}`);
       console.log(`🍽️  Getting suggestions for user: ${userId}`);
-      
-      // Step 1: Get user's inventory
+
+      // Step 1: Get user's inventory (or use demo inventory for tour mode)
       console.log(`📦 [${requestId}] Step 1: Fetching user inventory...`);
-      const inventory = await this.getUserInventory(userId);
-      
+
+      let inventory;
+
+      // Check if demo inventory is provided (welcome tour mode)
+      if (options.demoInventory && Array.isArray(options.demoInventory) && options.demoInventory.length > 0) {
+        console.log(`🎯 [${requestId}] Using demo inventory for tour mode (${options.demoInventory.length} items)`);
+        inventory = options.demoInventory;
+      } else {
+        // Fetch real inventory from database
+        inventory = await this.getUserInventory(userId);
+      }
+
       if (inventory.length === 0) {
         console.log(`⚠️  [${requestId}] No inventory items found for user`);
         return [];
       }
-      
+
       console.log(`📦 [${requestId}] Found ${inventory.length} inventory items`);
       
       // Step 2: Prioritize ingredients

@@ -1173,8 +1173,9 @@ router.get('/apify-usage', authMiddleware.authenticateToken, async (req, res) =>
 });
 
 // Get recipe suggestions based on user's inventory
-// GET /api/recipes/suggestions
+// GET /api/recipes/suggestions (supports both GET and POST for demo inventory)
 router.get('/suggestions', authMiddleware.authenticateToken, recipeController.getSuggestions);
+router.post('/suggestions', authMiddleware.authenticateToken, recipeController.getSuggestions);
 
 
 // Save extracted recipe (from multi-modal or other extraction methods)

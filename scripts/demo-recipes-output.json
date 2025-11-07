@@ -1,0 +1,412 @@
+{
+  "recipes": [
+    {
+      "title": "Chicken and Asparagus Spaghetti Aglio e Olio",
+      "description": "A simple yet flavorful spaghetti dish featuring tender chicken breast, fresh asparagus, and a garlicky olive oil sauce.",
+      "prep_time": "10 minutes",
+      "cook_time": "25 minutes",
+      "total_time": "35 minutes",
+      "servings": 2,
+      "difficulty": "Easy",
+      "cuisine_type": "Italian",
+      "ingredients": [
+        {
+          "item": "Spaghetti",
+          "amount": "8 oz",
+          "from_inventory": true
+        },
+        {
+          "item": "Chicken Breast",
+          "amount": "1",
+          "from_inventory": true
+        },
+        {
+          "item": "Asparagus",
+          "amount": "1 bunch",
+          "from_inventory": true
+        },
+        {
+          "item": "Olive oil",
+          "amount": "1/4 cup",
+          "from_inventory": false
+        },
+        {
+          "item": "Garlic",
+          "amount": "4 cloves",
+          "from_inventory": false
+        },
+        {
+          "item": "Red pepper flakes",
+          "amount": "1/4 tsp",
+          "from_inventory": false
+        },
+        {
+          "item": "Salt",
+          "amount": "to taste",
+          "from_inventory": false
+        },
+        {
+          "item": "Pepper",
+          "amount": "to taste",
+          "from_inventory": false
+        },
+        {
+          "item": "Parsley",
+          "amount": "2 tbsp",
+          "from_inventory": false
+        }
+      ],
+      "instructions": [
+        "Step 1: Cook spaghetti according to package directions. Reserve 1/2 cup of pasta water before draining.",
+        "Step 2: While pasta cooks, cut chicken breast into bite-sized pieces. Season with salt and pepper.",
+        "Step 3: Heat olive oil in a large skillet over medium heat. Add garlic and red pepper flakes and cook until fragrant, about 1 minute.",
+        "Step 4: Add chicken to the skillet and cook until browned and cooked through, about 5-7 minutes.",
+        "Step 5: Add asparagus to the skillet and cook until tender-crisp, about 3-5 minutes.",
+        "Step 6: Add drained spaghetti to the skillet. Toss to coat. Add reserved pasta water as needed to create a light sauce.",
+        "Step 7: Season with salt and pepper to taste. Garnish with parsley and serve immediately."
+      ],
+      "key_ingredients": [
+        "Chicken Breast",
+        "Asparagus",
+        "Spaghetti",
+        "Garlic",
+        "Olive Oil"
+      ],
+      "dietary_info": {
+        "vegetarian": false,
+        "vegan": false,
+        "gluten_free": false,
+        "dairy_free": true
+      },
+      "tips": "For a richer flavor, add a tablespoon of butter to the sauce at the end.",
+      "nutrition": {
+        "perServing": {
+          "calories": {
+            "amount": 690,
+            "unit": "kcal",
+            "percentOfDailyNeeds": 35
+          },
+          "protein": {
+            "amount": 43,
+            "unit": "g",
+            "percentOfDailyNeeds": 85
+          },
+          "carbohydrates": {
+            "amount": 75,
+            "unit": "g",
+            "percentOfDailyNeeds": 25
+          },
+          "fat": {
+            "amount": 28,
+            "unit": "g",
+            "percentOfDailyNeeds": 42
+          },
+          "saturatedFat": {
+            "amount": 4,
+            "unit": "g",
+            "percentOfDailyNeeds": 20
+          },
+          "fiber": {
+            "amount": 6,
+            "unit": "g",
+            "percentOfDailyNeeds": 24
+          },
+          "sugar": {
+            "amount": 4,
+            "unit": "g",
+            "percentOfDailyNeeds": 8
+          },
+          "sodium": {
+            "amount": 200,
+            "unit": "mg",
+            "percentOfDailyNeeds": 9
+          },
+          "cholesterol": {
+            "amount": 75,
+            "unit": "mg",
+            "percentOfDailyNeeds": 25
+          }
+        },
+        "caloricBreakdown": {
+          "percentProtein": 25,
+          "percentFat": 32,
+          "percentCarbs": 43
+        },
+        "healthScore": 70,
+        "isAIEstimated": true,
+        "confidence": 0.85,
+        "estimationNotes": "Estimates based on standard nutritional values and cooking assumptions. Chicken breast weight estimated at 200g. Asparagus estimated at 200g. Sodium is a rough estimate, as salt is 'to taste'."
+      },
+      "isDemo": true
+    },
+    {
+      "title": "Broccoli and Egg Scramble with Parmesan",
+      "description": "A quick and healthy scramble featuring broccoli florets and fluffy eggs, perfect for a light meal.",
+      "prep_time": "5 minutes",
+      "cook_time": "10 minutes",
+      "total_time": "15 minutes",
+      "servings": 2,
+      "difficulty": "Easy",
+      "cuisine_type": "American",
+      "ingredients": [
+        {
+          "item": "Eggs",
+          "amount": "3",
+          "from_inventory": true
+        },
+        {
+          "item": "Broccoli",
+          "amount": "1 head",
+          "from_inventory": true
+        },
+        {
+          "item": "Butter",
+          "amount": "1 tbsp",
+          "from_inventory": false
+        },
+        {
+          "item": "Salt",
+          "amount": "to taste",
+          "from_inventory": false
+        },
+        {
+          "item": "Pepper",
+          "amount": "to taste",
+          "from_inventory": false
+        },
+        {
+          "item": "Parmesan cheese",
+          "amount": "2 tbsp",
+          "from_inventory": false
+        }
+      ],
+      "instructions": [
+        "Step 1: Chop broccoli into small florets.",
+        "Step 2: Whisk eggs with salt and pepper in a bowl.",
+        "Step 3: Melt butter in a non-stick skillet over medium heat.",
+        "Step 4: Add broccoli to the skillet and cook until tender-crisp, about 5 minutes.",
+        "Step 5: Pour eggs into the skillet and cook, stirring occasionally, until set but still slightly moist.",
+        "Step 6: Stir in Parmesan cheese and serve immediately."
+      ],
+      "key_ingredients": [
+        "Eggs",
+        "Broccoli",
+        "Parmesan",
+        "Butter"
+      ],
+      "dietary_info": {
+        "vegetarian": true,
+        "vegan": false,
+        "gluten_free": true,
+        "dairy_free": false
+      },
+      "tips": "Add a splash of milk or cream to the eggs for a creamier scramble.",
+      "nutrition": {
+        "perServing": {
+          "calories": {
+            "amount": 228,
+            "unit": "kcal",
+            "percentOfDailyNeeds": 11
+          },
+          "protein": {
+            "amount": 16,
+            "unit": "g",
+            "percentOfDailyNeeds": 32
+          },
+          "carbohydrates": {
+            "amount": 9,
+            "unit": "g",
+            "percentOfDailyNeeds": 3
+          },
+          "fat": {
+            "amount": 15,
+            "unit": "g",
+            "percentOfDailyNeeds": 23
+          },
+          "saturatedFat": {
+            "amount": 8,
+            "unit": "g",
+            "percentOfDailyNeeds": 38
+          },
+          "fiber": {
+            "amount": 4,
+            "unit": "g",
+            "percentOfDailyNeeds": 14
+          },
+          "sugar": {
+            "amount": 3,
+            "unit": "g",
+            "percentOfDailyNeeds": 6
+          },
+          "sodium": {
+            "amount": 225,
+            "unit": "mg",
+            "percentOfDailyNeeds": 10
+          },
+          "cholesterol": {
+            "amount": 310,
+            "unit": "mg",
+            "percentOfDailyNeeds": 103
+          }
+        },
+        "caloricBreakdown": {
+          "percentProtein": 28,
+          "percentFat": 56,
+          "percentCarbs": 16
+        },
+        "healthScore": 55,
+        "isAIEstimated": true,
+        "confidence": 0.85,
+        "estimationNotes": "Estimates based on standard nutritional values and recipe guidelines. Broccoli weight estimated at 300g. Parmesan values are approximate."
+      },
+      "isDemo": true
+    },
+    {
+      "title": "Chicken and Asparagus Stir-Fry with Spaghetti Noodles",
+      "description": "A flavorful stir-fry combining chicken, asparagus, and spaghetti noodles in a savory sauce.",
+      "prep_time": "10 minutes",
+      "cook_time": "20 minutes",
+      "total_time": "30 minutes",
+      "servings": 2,
+      "difficulty": "Medium",
+      "cuisine_type": "Asian",
+      "ingredients": [
+        {
+          "item": "Chicken Breast",
+          "amount": "1",
+          "from_inventory": true
+        },
+        {
+          "item": "Asparagus",
+          "amount": "1 bunch",
+          "from_inventory": true
+        },
+        {
+          "item": "Spaghetti",
+          "amount": "4 oz",
+          "from_inventory": true
+        },
+        {
+          "item": "Soy sauce",
+          "amount": "2 tbsp",
+          "from_inventory": false
+        },
+        {
+          "item": "Vegetable oil",
+          "amount": "1 tbsp",
+          "from_inventory": false
+        },
+        {
+          "item": "Garlic powder",
+          "amount": "1/2 tsp",
+          "from_inventory": false
+        },
+        {
+          "item": "Onion powder",
+          "amount": "1/2 tsp",
+          "from_inventory": false
+        },
+        {
+          "item": "Salt",
+          "amount": "to taste",
+          "from_inventory": false
+        },
+        {
+          "item": "Pepper",
+          "amount": "to taste",
+          "from_inventory": false
+        }
+      ],
+      "instructions": [
+        "Step 1: Cook spaghetti according to package directions. Drain and set aside.",
+        "Step 2: Cut chicken breast into bite-sized pieces. Season with salt, pepper, garlic powder, and onion powder.",
+        "Step 3: Cut asparagus into 1-inch pieces.",
+        "Step 4: Heat vegetable oil in a large skillet or wok over medium-high heat.",
+        "Step 5: Add chicken to the skillet and stir-fry until browned and cooked through, about 5-7 minutes.",
+        "Step 6: Add asparagus to the skillet and stir-fry until tender-crisp, about 3-5 minutes.",
+        "Step 7: Add cooked spaghetti and soy sauce to the skillet. Toss to combine.",
+        "Step 8: Serve immediately."
+      ],
+      "key_ingredients": [
+        "Chicken Breast",
+        "Asparagus",
+        "Spaghetti",
+        "Soy Sauce"
+      ],
+      "dietary_info": {
+        "vegetarian": false,
+        "vegan": false,
+        "gluten_free": false,
+        "dairy_free": true
+      },
+      "tips": "Add a pinch of red pepper flakes for a spicy kick.",
+      "nutrition": {
+        "perServing": {
+          "calories": {
+            "amount": 380,
+            "unit": "kcal",
+            "percentOfDailyNeeds": 19
+          },
+          "protein": {
+            "amount": 33,
+            "unit": "g",
+            "percentOfDailyNeeds": 65
+          },
+          "carbohydrates": {
+            "amount": 38,
+            "unit": "g",
+            "percentOfDailyNeeds": 13
+          },
+          "fat": {
+            "amount": 13,
+            "unit": "g",
+            "percentOfDailyNeeds": 19
+          },
+          "saturatedFat": {
+            "amount": 2,
+            "unit": "g",
+            "percentOfDailyNeeds": 10
+          },
+          "fiber": {
+            "amount": 4,
+            "unit": "g",
+            "percentOfDailyNeeds": 16
+          },
+          "sugar": {
+            "amount": 4,
+            "unit": "g",
+            "percentOfDailyNeeds": 8
+          },
+          "sodium": {
+            "amount": 900,
+            "unit": "mg",
+            "percentOfDailyNeeds": 39
+          },
+          "cholesterol": {
+            "amount": 75,
+            "unit": "mg",
+            "percentOfDailyNeeds": 25
+          }
+        },
+        "caloricBreakdown": {
+          "percentProtein": 34,
+          "percentFat": 26,
+          "percentCarbs": 40
+        },
+        "healthScore": 65,
+        "isAIEstimated": true,
+        "confidence": 0.85,
+        "estimationNotes": "Estimates based on standard nutritional values and cooking assumptions. Sodium content is highly variable depending on soy sauce."
+      },
+      "isDemo": true
+    }
+  ],
+  "meta": {
+    "generatedFor": "Demo inventory: Chicken Breast, Broccoli, Eggs, Asparagus, Spaghetti",
+    "generatedAt": "2025-11-05",
+    "version": "1.0",
+    "description": "Pre-generated recipes for welcome tour demonstration. These recipes are shown to all new users during onboarding.",
+    "generatedBy": "generateDemoRecipes.js script",
+    "aiModel": "gemini-2.0-flash"
+  }
+}

@@ -39,29 +39,36 @@ const recipeController = {
    */
   async getSuggestions(req, res) {
     const requestId = Math.random().toString(36).substring(7);
-    
+
     try {
       console.log(`\n🍽️  ================ GET RECIPE SUGGESTIONS START ================`);
       console.log(`🍽️  REQUEST ID: ${requestId}`);
       console.log(`🍽️  Fetching recipe suggestions for authenticated user...`);
-      
+
       // Get user ID from JWT token
       const userId = getUserIdFromToken(req);
       console.log(`🍽️  [${requestId}] User ID: ${userId}`);
-      
+
+      // Check for demo inventory (welcome tour mode)
+      const demoInventory = req.body?.demoInventory;
+      if (demoInventory && Array.isArray(demoInventory) && demoInventory.length > 0) {
+        console.log(`🎯 [${requestId}] Using demo inventory for tour mode (${demoInventory.length} items)`);
+      }
+
       // Parse query parameters
       const {
         limit = 12,
         ranking = 1, // 1 = maximize used ingredients, 2 = minimize missing ingredients
         minMatch = 0 // Minimum match percentage filter
       } = req.query;
-      
+
       console.log(`🔧 [${requestId}] Options: limit=${limit}, ranking=${ranking}, minMatch=${minMatch}`);
-      
+
       // Get recipe suggestions from service
       const suggestions = await recipeService.getRecipeSuggestions(userId, {
         number: parseInt(limit),
-        ranking: parseInt(ranking)
+        ranking: parseInt(ranking),
+        demoInventory: demoInventory // Pass demo inventory to service
       });
       
       // Apply minimum match filter if specified

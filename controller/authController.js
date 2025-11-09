@@ -50,7 +50,7 @@ const authController = {
   // Sign up controller
   async signup(req, res) {
     try {
-      const { firstName, email, password } = req.body;
+      const { firstName, email, password, onboardingSessionId } = req.body;
 
       // Validation
       if (!validateName(firstName)) {
@@ -97,6 +97,65 @@ const authController = {
       // Generate JWT and refresh tokens
       const token = generateToken(newUser.id);
       const refreshToken = generateRefreshToken(newUser.id);
+
+      // Link onboarding payment session if provided
+      if (onboardingSessionId) {
+        try {
+          const { createClient } = require('@supabase/supabase-js');
+          // Use service key for backend operations to bypass RLS
+          const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+
+          // Get the onboarding session
+          const { data: session, error: sessionError } = await supabase
+            .from('onboarding_sessions')
+            .select('*')
+            .eq('session_id', onboardingSessionId)
+            .single();
+
+          if (session && !sessionError && session.payment_confirmed) {
+            // Link the session to the new user
+            await supabase
+              .from('onboarding_sessions')
+              .update({
+                linked_user_id: newUser.id,
+                updated_at: new Date().toISOString()
+              })
+              .eq('session_id', onboardingSessionId);
+
+            // Transfer the Stripe subscription to the user
+            if (session.stripe_customer_id && session.stripe_subscription_id) {
+              // Create subscription record for the user
+              await supabase
+                .from('subscriptions')
+                .upsert({
+                  user_id: newUser.id,
+                  stripe_customer_id: session.stripe_customer_id,
+                  stripe_subscription_id: session.stripe_subscription_id,
+                  tier: 'premium',
+                  status: 'trialing',
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString()
+                }, { onConflict: 'user_id' });
+
+              // Update Stripe customer with user email and name
+              const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+              await stripe.customers.update(session.stripe_customer_id, {
+                email: newUser.email,
+                name: newUser.first_name,
+                metadata: {
+                  user_id: newUser.id,
+                  linked: 'true'
+                }
+              });
+
+              console.log('[Signup] Successfully linked onboarding payment to user:', newUser.id);
+            }
+          }
+        } catch (linkError) {
+          console.error('[Signup] Error linking onboarding session:', linkError);
+          // Don't fail the signup if linking fails - user can contact support
+        }
+      }
 
       // Create default welcome recipe for new user (non-blocking)
       createDefaultRecipe(newUser.id).catch(err => {

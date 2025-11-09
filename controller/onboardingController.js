@@ -1,15 +1,17 @@
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // Helper function to get Supabase client
 const getSupabaseClient = () => {
   const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY; // Use service role for backend operations
+
   if (!supabaseUrl || !supabaseKey) {
     throw new Error('Supabase configuration missing');
   }
-  
+
   return createClient(supabaseUrl, supabaseKey);
 };
 
@@ -248,7 +250,7 @@ const onboardingController = {
   async skipOnboarding(req, res) {
     try {
       console.log('⏭️ Skipping onboarding...');
-      
+
       // Get user ID from JWT token (if available)
       let userId = null;
       try {
@@ -257,10 +259,10 @@ const onboardingController = {
         // User not authenticated yet, that's okay for skip
         console.log('Skipping without authentication');
       }
-      
+
       if (userId) {
         const supabase = getSupabaseClient();
-        
+
         // Save minimal onboarding data
         await supabase
           .from('user_onboarding_data')
@@ -271,17 +273,314 @@ const onboardingController = {
             primary_goal: 'skipped'
           });
       }
-      
+
       res.json({
         success: true,
         message: 'Onboarding skipped'
       });
-      
+
     } catch (error) {
       console.error('❌ Error skipping onboarding:', error);
       res.status(500).json({
         success: false,
         error: 'Failed to skip onboarding'
+      });
+    }
+  },
+
+  /**
+   * Create onboarding session for anonymous users
+   * POST /api/onboarding/create-session
+   */
+  async createOnboardingSession(req, res) {
+    try {
+      console.log('🔐 Creating onboarding session...');
+
+      const sessionId = uuidv4();
+      const expiresAt = new Date();
+      expiresAt.setHours(expiresAt.getHours() + 24); // Session expires in 24 hours
+
+      const supabase = getSupabaseClient();
+
+      // Create onboarding session
+      const { data: session, error } = await supabase
+        .from('onboarding_sessions')
+        .insert({
+          session_id: sessionId,
+          created_at: new Date().toISOString(),
+          expires_at: expiresAt.toISOString(),
+          metadata: {}
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('❌ Database error creating session:', error);
+        throw error;
+      }
+
+      console.log('✅ Onboarding session created:', sessionId);
+
+      res.json({
+        success: true,
+        sessionId: sessionId,
+        expiresAt: expiresAt.toISOString()
+      });
+
+    } catch (error) {
+      console.error('❌ Error creating onboarding session:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to create onboarding session'
+      });
+    }
+  },
+
+  /**
+   * Create payment intent for anonymous onboarding user
+   * POST /api/onboarding/create-payment-intent
+   */
+  async createPaymentIntent(req, res) {
+    try {
+      console.log('💳 Creating payment intent for onboarding...');
+
+      const { sessionId, priceId = process.env.STRIPE_PRICE_ID, isOnboarding = true } = req.body;
+
+      if (!sessionId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Session ID required'
+        });
+      }
+
+      if (!priceId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Price ID not configured'
+        });
+      }
+
+      const supabase = getSupabaseClient();
+
+      // Verify session exists and is valid
+      const { data: session, error: sessionError } = await supabase
+        .from('onboarding_sessions')
+        .select('*')
+        .eq('session_id', sessionId)
+        .single();
+
+      // Diagnostic logging
+      console.log('[Onboarding] Session lookup:', {
+        sessionId,
+        found: !!session,
+        error: sessionError?.message || sessionError?.code || null
+      });
+
+      if (sessionError || !session) {
+        console.error('[Onboarding] ❌ Session validation failed:', {
+          sessionId,
+          errorCode: sessionError?.code,
+          errorMessage: sessionError?.message,
+          errorDetails: sessionError?.details
+        });
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid or expired session'
+        });
+      }
+
+      // Check if session is expired
+      if (new Date(session.expires_at) < new Date()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Session has expired'
+        });
+      }
+
+      // Check if session already has a payment
+      if (session.stripe_subscription_id && session.payment_confirmed) {
+        return res.status(400).json({
+          success: false,
+          error: 'Session already has a completed payment'
+        });
+      }
+
+      // Create or retrieve Stripe customer for this session
+      let customerId = session.stripe_customer_id;
+
+      if (!customerId) {
+        // Create an anonymous customer in Stripe
+        const customer = await stripe.customers.create({
+          metadata: {
+            session_id: sessionId,
+            is_onboarding: 'true',
+            app: 'fridgy'
+          }
+        });
+
+        customerId = customer.id;
+
+        // Update session with customer ID
+        await supabase
+          .from('onboarding_sessions')
+          .update({
+            stripe_customer_id: customerId,
+            updated_at: new Date().toISOString()
+          })
+          .eq('session_id', sessionId);
+      }
+
+      // Create subscription with trial
+      const subscription = await stripe.subscriptions.create({
+        customer: customerId,
+        items: [{ price: priceId }],
+        payment_behavior: 'default_incomplete',
+        payment_settings: {
+          save_default_payment_method: 'on_subscription'
+        },
+        expand: ['latest_invoice.payment_intent', 'pending_setup_intent'],
+        trial_period_days: 7, // 7-day free trial
+        metadata: {
+          session_id: sessionId,
+          is_onboarding: 'true'
+        }
+      });
+
+      console.log('[Onboarding] Created subscription:', subscription.id);
+      console.log('[Onboarding] Subscription status:', subscription.status);
+
+      // Update session with subscription ID
+      await supabase
+        .from('onboarding_sessions')
+        .update({
+          stripe_subscription_id: subscription.id,
+          updated_at: new Date().toISOString()
+        })
+        .eq('session_id', sessionId);
+
+      // For TRIAL subscriptions, return SetupIntent
+      if (subscription.pending_setup_intent) {
+        // setupIntent is already expanded due to 'expand' parameter in subscription creation
+        const setupIntent = subscription.pending_setup_intent;
+
+        console.log('✅ Onboarding payment intent created (trial)');
+
+        return res.json({
+          success: true,
+          subscriptionId: subscription.id,
+          clientSecret: setupIntent.client_secret,
+          requiresSetup: true,
+          isTrial: true
+        });
+      }
+
+      // For NON-TRIAL subscriptions, return PaymentIntent
+      if (subscription.latest_invoice?.payment_intent?.client_secret) {
+        console.log('✅ Onboarding payment intent created (immediate)');
+
+        return res.json({
+          success: true,
+          subscriptionId: subscription.id,
+          clientSecret: subscription.latest_invoice.payment_intent.client_secret,
+          requiresSetup: false,
+          isTrial: false
+        });
+      }
+
+      // If we got here, subscription was created but has no payment/setup intent
+      // Log detailed information for debugging
+      console.error('[Onboarding] Subscription created but missing payment intent:', {
+        subscriptionId: subscription.id,
+        status: subscription.status,
+        hasPendingSetupIntent: !!subscription.pending_setup_intent,
+        hasLatestInvoice: !!subscription.latest_invoice,
+        hasPaymentIntent: !!subscription.latest_invoice?.payment_intent
+      });
+
+      throw new Error(`Subscription created (${subscription.status}) but missing payment intent. Please contact support.`);
+
+    } catch (error) {
+      console.error('❌ Error creating payment intent:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to create payment intent',
+        message: error.message
+      });
+    }
+  },
+
+  /**
+   * Confirm payment completion for onboarding session
+   * POST /api/onboarding/confirm-payment
+   */
+  async confirmOnboardingPayment(req, res) {
+    try {
+      console.log('✅ Confirming onboarding payment...');
+
+      const { sessionId, paymentIntentId, subscriptionId } = req.body;
+
+      if (!sessionId || !subscriptionId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Session ID and subscription ID required'
+        });
+      }
+
+      const supabase = getSupabaseClient();
+
+      // Verify session
+      const { data: session, error: sessionError } = await supabase
+        .from('onboarding_sessions')
+        .select('*')
+        .eq('session_id', sessionId)
+        .eq('stripe_subscription_id', subscriptionId)
+        .single();
+
+      if (sessionError || !session) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid session or subscription'
+        });
+      }
+
+      // Verify payment status with Stripe
+      const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+      if (subscription.status === 'trialing' || subscription.status === 'active') {
+        // Payment confirmed, update session
+        await supabase
+          .from('onboarding_sessions')
+          .update({
+            payment_confirmed: true,
+            updated_at: new Date().toISOString()
+          })
+          .eq('session_id', sessionId);
+
+        console.log('✅ Onboarding payment confirmed for session:', sessionId);
+
+        res.json({
+          success: true,
+          message: 'Payment confirmed',
+          subscription: {
+            id: subscription.id,
+            status: subscription.status,
+            trial_end: subscription.trial_end
+          }
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          error: 'Payment not confirmed',
+          status: subscription.status
+        });
+      }
+
+    } catch (error) {
+      console.error('❌ Error confirming payment:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to confirm payment',
+        message: error.message
       });
     }
   }

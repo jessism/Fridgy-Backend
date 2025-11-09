@@ -451,15 +451,14 @@ const inventoryController = {
 // Helper function to estimate maximum realistic servings from inventory
 const estimateMaxServingsFromInventory = (inventory) => {
   const totalItems = inventory.length;
-  
+
   // Simple heuristic based on total number of ingredients
   if (totalItems === 0) return 1;      // No ingredients, but allow 1 serving
-  if (totalItems <= 2) return 1;       // Very limited ingredients
-  if (totalItems <= 4) return 2;       // Few ingredients  
-  if (totalItems <= 6) return 3;       // Decent ingredients
-  if (totalItems <= 8) return 4;       // Good variety
-  if (totalItems <= 10) return 5;      // Great variety
-  return Math.min(Math.ceil(totalItems / 2), 6); // Cap at 6 servings max
+  if (totalItems <= 2) return 2;       // Limited but workable
+  if (totalItems <= 4) return 4;       // Few ingredients - enough for 4 servings
+  if (totalItems <= 6) return 6;       // Decent variety - supports 6 servings
+  if (totalItems <= 10) return 8;      // Good variety
+  return Math.min(Math.ceil(totalItems / 2), 10); // Cap at 10 servings max
 };
 
 module.exports = inventoryController;

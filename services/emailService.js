@@ -15,11 +15,6 @@ async function sendTrialStartEmail(user, trialEndDate) {
     return;
   }
 
-  if (!process.env.SEND_TRIAL_START_EMAIL || process.env.SEND_TRIAL_START_EMAIL !== 'true') {
-    console.log('[Email] Trial start emails are disabled');
-    return;
-  }
-
   try {
     console.log(`[Email] Sending trial start email to ${user.email}`);
 
@@ -58,12 +53,7 @@ async function sendTrialEndingEmail(user, trialEndDate) {
     return;
   }
 
-  if (!process.env.SEND_TRIAL_ENDING_EMAIL || process.env.SEND_TRIAL_ENDING_EMAIL !== 'true') {
-    console.log('[Email] Trial ending emails are disabled');
-    return;
-  }
-
-  try {
+  try{
     console.log(`[Email] Sending trial ending email to ${user.email}`);
 
     const result = await client.sendEmailWithTemplate({
@@ -99,11 +89,6 @@ async function sendTrialEndingEmail(user, trialEndDate) {
 async function sendPaymentSuccessEmail(user, amount, nextBillingDate) {
   if (!process.env.EMAIL_ENABLED || process.env.EMAIL_ENABLED !== 'true') {
     console.log('[Email] Email sending is disabled');
-    return;
-  }
-
-  if (!process.env.SEND_PAYMENT_SUCCESS_EMAIL || process.env.SEND_PAYMENT_SUCCESS_EMAIL !== 'true') {
-    console.log('[Email] Payment success emails are disabled');
     return;
   }
 
@@ -143,11 +128,6 @@ async function sendPaymentSuccessEmail(user, amount, nextBillingDate) {
 async function sendWelcomeEmail(user) {
   if (!process.env.EMAIL_ENABLED || process.env.EMAIL_ENABLED !== 'true') {
     console.log('[Email] Email sending is disabled');
-    return;
-  }
-
-  if (!process.env.SEND_WELCOME_EMAIL || process.env.SEND_WELCOME_EMAIL !== 'true') {
-    console.log('[Email] Welcome emails are disabled');
     return;
   }
 

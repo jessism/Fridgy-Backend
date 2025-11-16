@@ -49,6 +49,21 @@ const recipeController = {
       const userId = getUserIdFromToken(req);
       console.log(`🍽️  [${requestId}] User ID: ${userId}`);
 
+      // Check if Spoonacular is disabled via feature flag
+      if (process.env.ENABLE_SPOONACULAR_RECIPES === 'false') {
+        console.log(`⚠️  [${requestId}] Spoonacular recipes disabled by feature flag`);
+        return res.json({
+          success: true,
+          suggestions: [],
+          count: 0,
+          requestId: requestId,
+          meta: {
+            disabled: true,
+            reason: 'Spoonacular API disabled - use AI recipe features instead'
+          }
+        });
+      }
+
       // Check for demo inventory (welcome tour mode)
       const demoInventory = req.body?.demoInventory;
       if (demoInventory && Array.isArray(demoInventory) && demoInventory.length > 0) {

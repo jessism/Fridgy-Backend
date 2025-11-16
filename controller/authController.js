@@ -1,7 +1,15 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { createClient } = require('@supabase/supabase-js');
 const authService = require('../services/authService');
 const { createDefaultRecipe } = require('../services/defaultRecipe');
+const emailService = require('../services/emailService');
+
+// Initialize Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -149,11 +157,57 @@ const authController = {
               });
 
               console.log('[Signup] Successfully linked onboarding payment to user:', newUser.id);
+
+              // Send trial start email
+              try {
+                console.log('[Signup] Fetching subscription details for trial email...');
+
+                // Fetch subscription from Stripe to get trial_end date
+                const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+                const subscription = await stripe.subscriptions.retrieve(session.stripe_subscription_id);
+
+                if (subscription.trial_end) {
+                  const trialEndDate = new Date(subscription.trial_end * 1000);
+
+                  console.log('[Signup] Sending trial start email to:', newUser.email);
+
+                  // Send trial start email
+                  await emailService.sendTrialStartEmail(
+                    {
+                      email: newUser.email,
+                      first_name: newUser.first_name
+                    },
+                    trialEndDate
+                  );
+
+                  console.log('[Signup] Trial start email sent successfully');
+                } else {
+                  console.log('[Signup] No trial_end date found, skipping email');
+                }
+              } catch (emailError) {
+                console.error('[Signup] Failed to send trial start email:', emailError.message);
+                // Don't fail signup if email fails - user already has account
+              }
             }
           }
         } catch (linkError) {
           console.error('[Signup] Error linking onboarding session:', linkError);
           // Don't fail the signup if linking fails - user can contact support
+        }
+      } else {
+        // User didn't go through onboarding with trial - send welcome email
+        try {
+          console.log('[Signup] User signed up without trial, sending welcome email');
+
+          await emailService.sendWelcomeEmail({
+            email: newUser.email,
+            first_name: newUser.first_name
+          });
+
+          console.log('[Signup] Welcome email sent successfully');
+        } catch (emailError) {
+          console.error('[Signup] Failed to send welcome email:', emailError.message);
+          // Don't fail signup if email fails - user already has account
         }
       }
 
@@ -228,6 +282,9 @@ const authController = {
       const token = generateToken(user.id);
       const refreshToken = generateRefreshToken(user.id);
 
+      // Get tour status from user_tours table
+      const tourStatus = await authService.getUserTourStatus(user.id, 'welcome');
+
       // Return success response with tokens
       res.json({
         success: true,
@@ -237,7 +294,8 @@ const authController = {
           email: user.email,
           firstName: user.first_name,
           createdAt: user.created_at,
-          hasSeenWelcomeTour: user.has_seen_welcome_tour || false
+          hasSeenWelcomeTour: user.has_seen_welcome_tour || false,
+          tourStatus: tourStatus.status || 'not_started'
         },
         token,
         refreshToken
@@ -276,6 +334,9 @@ const authController = {
       const newToken = generateToken(user.id);
       const newRefreshToken = generateRefreshToken(user.id);
 
+      // Get tour status from user_tours table
+      const tourStatus = await authService.getUserTourStatus(user.id, 'welcome');
+
       // Return user data with fresh tokens
       res.json({
         success: true,
@@ -283,7 +344,9 @@ const authController = {
           id: user.id,
           email: user.email,
           firstName: user.first_name,
-          createdAt: user.created_at
+          createdAt: user.created_at,
+          hasSeenWelcomeTour: user.has_seen_welcome_tour || false,
+          tourStatus: tourStatus.status || 'not_started'
         },
         token: newToken,
         refreshToken: newRefreshToken
@@ -380,14 +443,18 @@ const authController = {
     }
   },
 
-  // Mark welcome tour as completed
+  // Mark welcome tour as completed (DEPRECATED - use markTourComplete instead)
   async markWelcomeTourComplete(req, res) {
     try {
       const userId = req.user.id;
 
       const { data: user, error } = await supabase
         .from('users')
-        .update({ has_seen_welcome_tour: true })
+        .update({
+          has_seen_welcome_tour: true,
+          tour_status: 'completed',
+          tour_completed_at: new Date().toISOString()
+        })
         .eq('id', userId)
         .select()
         .single();
@@ -407,6 +474,196 @@ const authController = {
       res.status(500).json({
         success: false,
         error: 'Failed to update welcome tour status'
+      });
+    }
+  },
+
+  // Mark tour as started (creates or updates tour record)
+  async markTourStart(req, res) {
+    try {
+      const userId = req.user.id;
+      const tourType = req.body.tour_type || 'welcome';
+
+      // Check if tour record already exists
+      const { data: existingTour } = await supabase
+        .from('user_tours')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('tour_type', tourType)
+        .single();
+
+      let tourData;
+
+      if (existingTour) {
+        // Update existing tour to in_progress
+        const { data, error } = await supabase
+          .from('user_tours')
+          .update({
+            status: 'in_progress',
+            started_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('user_id', userId)
+          .eq('tour_type', tourType)
+          .select()
+          .single();
+
+        if (error) throw error;
+        tourData = data;
+      } else {
+        // Create new tour record
+        const { data, error } = await supabase
+          .from('user_tours')
+          .insert({
+            user_id: userId,
+            tour_type: tourType,
+            status: 'in_progress',
+            started_at: new Date().toISOString(),
+            source: 'auto'
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+        tourData = data;
+      }
+
+      res.json({
+        success: true,
+        tour_status: tourData.status,
+        tour_started_at: tourData.started_at
+      });
+
+    } catch (error) {
+      console.error('Mark tour start error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to mark tour start'
+      });
+    }
+  },
+
+  // Mark tour as completed
+  async markTourComplete(req, res) {
+    try {
+      const userId = req.user.id;
+      const { final_step, tour_type = 'welcome' } = req.body;
+
+      // Get existing tour record to calculate duration
+      const { data: existingTour } = await supabase
+        .from('user_tours')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('tour_type', tour_type)
+        .single();
+
+      const now = new Date().toISOString();
+      const duration = existingTour?.started_at
+        ? Math.round((new Date(now) - new Date(existingTour.started_at)) / 1000)
+        : null;
+
+      const { data: tourData, error } = await supabase
+        .from('user_tours')
+        .update({
+          status: 'completed',
+          completed_at: now,
+          final_step: final_step || 'unknown',
+          updated_at: now
+        })
+        .eq('user_id', userId)
+        .eq('tour_type', tour_type)
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      // Also update has_seen_welcome_tour for backwards compatibility
+      if (tour_type === 'welcome') {
+        await supabase
+          .from('users')
+          .update({ has_seen_welcome_tour: true })
+          .eq('id', userId);
+      }
+
+      console.log(`[Tour Analytics] User ${userId} completed ${tour_type} tour in ${duration}s, final step: ${final_step}`);
+
+      res.json({
+        success: true,
+        tour_status: tourData.status,
+        tour_completed_at: tourData.completed_at,
+        duration_seconds: duration
+      });
+
+    } catch (error) {
+      console.error('Mark tour complete error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to mark tour complete'
+      });
+    }
+  },
+
+  // Mark tour as skipped/dismissed
+  async markTourSkipped(req, res) {
+    try {
+      const userId = req.user.id;
+      const { current_step, reason, tour_type = 'welcome' } = req.body;
+
+      // Get existing tour record to calculate duration before abandonment
+      const { data: existingTour } = await supabase
+        .from('user_tours')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('tour_type', tour_type)
+        .single();
+
+      const now = new Date().toISOString();
+      const duration = existingTour?.started_at
+        ? Math.round((new Date(now) - new Date(existingTour.started_at)) / 1000)
+        : null;
+
+      const { data: tourData, error } = await supabase
+        .from('user_tours')
+        .update({
+          status: 'skipped',
+          abandoned_at: now,
+          final_step: current_step || 'unknown',
+          skip_reason: reason || 'user_action',
+          updated_at: now
+        })
+        .eq('user_id', userId)
+        .eq('tour_type', tour_type)
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      // Also update has_seen_welcome_tour for backwards compatibility
+      if (tour_type === 'welcome') {
+        await supabase
+          .from('users')
+          .update({ has_seen_welcome_tour: true })
+          .eq('id', userId);
+      }
+
+      console.log(`[Tour Analytics] User ${userId} skipped ${tour_type} tour at step: ${current_step}, duration: ${duration}s, reason: ${reason || 'user_action'}`);
+
+      res.json({
+        success: true,
+        tour_status: tourData.status,
+        tour_abandoned_at: tourData.abandoned_at,
+        duration_seconds: duration
+      });
+
+    } catch (error) {
+      console.error('Mark tour skipped error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to mark tour skipped'
       });
     }
   }

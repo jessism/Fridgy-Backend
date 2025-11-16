@@ -504,16 +504,16 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
   }
 
   // Save generated recipes to cache
-  async cacheRecipes(userId, contentHash, recipes, imageUrls = [], questionnaire = {}) {
+  async cacheRecipes(userId, contentHash, recipes, imageUrls = [], questionnaire = {}, tourMode = false) {
     const requestId = Math.random().toString(36).substring(7);
-    
+
     try {
-      console.log(`💾 [${requestId}] Caching recipes for user ${userId}...`);
-      
+      console.log(`💾 [${requestId}] Caching recipes for user ${userId}... (tourMode: ${tourMode})`);
+
       const supabase = getSupabaseClient();
       const expiresAt = new Date();
       expiresAt.setHours(expiresAt.getHours() + 24); // 24-hour cache
-      
+
       const { data, error } = await supabase
         .from('ai_generated_recipes')
         .upsert({
@@ -523,6 +523,7 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
           image_urls: imageUrls,
           questionnaire_data: questionnaire,
           generation_status: imageUrls.length > 0 ? 'completed' : 'pending',
+          tour_mode: tourMode,
           expires_at: expiresAt.toISOString(),
           last_accessed: new Date().toISOString()
         }, {
@@ -546,12 +547,12 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
   }
 
   // Main method to get recipes (with caching)
-  async getRecipesForUser(userId, inventory, preferences, questionnaire = {}) {
+  async getRecipesForUser(userId, inventory, preferences, questionnaire = {}, tourMode = false) {
     const requestId = Math.random().toString(36).substring(7);
     const startTime = Date.now();
-    
+
     try {
-      console.log(`\n🎬 [${requestId}] Starting recipe generation for user ${userId}...`);
+      console.log(`\n🎬 [${requestId}] Starting recipe generation for user ${userId}... (tourMode: ${tourMode})`);
       console.log(`🎬 [${requestId}] Questionnaire data:`, Object.keys(questionnaire).length > 0 ? questionnaire : 'None');
       
       // Generate content hash including questionnaire data
@@ -608,7 +609,7 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
       }
 
       // Cache the recipes (without images initially)
-      const cachedData = await this.cacheRecipes(userId, contentHash, recipes, [], questionnaire);
+      const cachedData = await this.cacheRecipes(userId, contentHash, recipes, [], questionnaire, tourMode);
       
       const duration = Date.now() - startTime;
       console.log(`🎉 [${requestId}] Recipe generation complete in ${duration}ms`);

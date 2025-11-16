@@ -76,7 +76,7 @@ const corsOptions = {
       callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   optionsSuccessStatus: 200
 };
@@ -1370,6 +1370,7 @@ app.get('/api/test', (req, res) => {
 
 // Import notification scheduler
 const expiryNotificationScheduler = require('./services/expiryNotificationScheduler');
+const trialReminderScheduler = require('./services/trialReminderScheduler');
 
 // Start server
 app.listen(PORT, () => {
@@ -1399,4 +1400,9 @@ app.listen(PORT, () => {
   console.log('\n🔔 Starting expiry notification scheduler...');
   expiryNotificationScheduler.start();
   console.log('🔔 Notification scheduler is running');
+
+  // Start the trial reminder scheduler
+  console.log('\n📧 Starting trial reminder scheduler...');
+  trialReminderScheduler.startScheduler();
+  console.log('📧 Trial reminder scheduler is running (runs daily at 9:00 AM)');
 }); 

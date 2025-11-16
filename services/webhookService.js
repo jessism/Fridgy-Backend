@@ -5,6 +5,7 @@
 
 const { getServiceClient } = require('../config/supabase');
 const subscriptionService = require('./subscriptionService');
+const emailService = require('./emailService');
 
 /**
  * Process a Stripe webhook event (with idempotency)
@@ -234,6 +235,25 @@ async function handleSubscriptionCreated(subscription) {
       cancelAtPeriodEnd: subscription.cancel_at_period_end,
       canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
     });
+
+    // Send trial start email if user is starting a trial
+    if (subscription.status === 'trialing' && subscription.trial_end) {
+      console.log('[WebhookService] Trial started, sending email to user:', userId);
+
+      // Get user details for email
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('email, first_name')
+        .eq('id', userId)
+        .single();
+
+      if (userError) {
+        console.error('[WebhookService] Error fetching user for trial email:', userError);
+      } else if (user) {
+        const trialEndDate = new Date(subscription.trial_end * 1000);
+        await emailService.sendTrialStartEmail(user, trialEndDate);
+      }
+    }
   } catch (error) {
     console.error('[WebhookService] Error handling subscription created:', error);
     throw error;
@@ -335,6 +355,33 @@ async function handlePaymentSucceeded(invoice) {
     }
 
     console.log('[WebhookService] Payment succeeded, user active:', dbSub.user_id);
+
+    // Send payment success email (especially important for trial conversions)
+    if (invoice.billing_reason === 'subscription_cycle' || invoice.billing_reason === 'subscription_create') {
+      console.log('[WebhookService] Sending payment success email to user:', dbSub.user_id);
+
+      // Get user details for email
+      const { data: user, error: userFetchError } = await supabase
+        .from('users')
+        .select('email, first_name')
+        .eq('id', dbSub.user_id)
+        .single();
+
+      if (userFetchError) {
+        console.error('[WebhookService] Error fetching user for payment email:', userFetchError);
+      } else if (user) {
+        // Get subscription to find next billing date
+        const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        const nextBillingDate = new Date(subscription.current_period_end * 1000);
+
+        await emailService.sendPaymentSuccessEmail(
+          user,
+          invoice.amount_paid,
+          nextBillingDate
+        );
+      }
+    }
   } catch (error) {
     console.error('[WebhookService] Error handling payment succeeded:', error);
     throw error;

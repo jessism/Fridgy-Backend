@@ -22,9 +22,9 @@ const authService = {
   async findUserByEmail(email) {
     try {
       const supabase = getSupabaseClient();
-      const { data: user, error } = await supabase
+      const { data: user, error} = await supabase
         .from('users')
-        .select('id, email, first_name, password_hash, created_at')
+        .select('id, email, first_name, password_hash, created_at, has_seen_welcome_tour')
         .eq('email', email.toLowerCase())
         .single();
 
@@ -49,7 +49,7 @@ const authService = {
       const supabase = getSupabaseClient();
       const { data: user, error } = await supabase
         .from('users')
-        .select('id, email, first_name, created_at')
+        .select('id, email, first_name, created_at, has_seen_welcome_tour')
         .eq('id', userId)
         .single();
 
@@ -172,6 +172,41 @@ const authService = {
       };
     } catch (error) {
       console.error('Error getting user stats:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get user's tour status for a specific tour type
+   * @param {string} userId - User ID
+   * @param {string} tourType - Tour type (default: 'welcome')
+   * @returns {Object|null} Tour status object or null if not found
+   */
+  async getUserTourStatus(userId, tourType = 'welcome') {
+    try {
+      const supabase = getSupabaseClient();
+      const { data: tour, error } = await supabase
+        .from('user_tours')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('tour_type', tourType)
+        .single();
+
+      // If no record exists, return default status
+      if (error && error.code === 'PGRST116') {
+        return {
+          status: 'not_started',
+          tour_type: tourType
+        };
+      }
+
+      if (error) {
+        throw error;
+      }
+
+      return tour;
+    } catch (error) {
+      console.error('Error getting user tour status:', error);
       throw error;
     }
   }

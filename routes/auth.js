@@ -19,7 +19,12 @@ router.post('/refresh', authController.refreshToken);
 // Logout endpoint
 router.post('/logout', authController.logout);
 
-// Mark welcome tour as completed
+// Mark welcome tour as completed (DEPRECATED - use /tour/complete instead)
 router.patch('/welcome-tour/complete', authenticateToken, authController.markWelcomeTourComplete);
+
+// New tour status tracking endpoints
+router.patch('/tour/start', authenticateToken, authController.markTourStart);
+router.patch('/tour/complete', authenticateToken, authController.markTourComplete);
+router.patch('/tour/skip', authenticateToken, authController.markTourSkipped);
 
 module.exports = router; 

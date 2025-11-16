@@ -135,8 +135,9 @@ const aiRecipeController = {
       });
 
       // Step 3: Generate recipes with AI
-      console.log(`🤖 [${requestId}] Step 3: Generating recipes with AI...`);
-      const recipeResult = await aiRecipeService.getRecipesForUser(userId, inventory, preferences, questionnaire);
+      const tourMode = req.body.tourMode || false;
+      console.log(`🤖 [${requestId}] Step 3: Generating recipes with AI... (tourMode: ${tourMode})`);
+      const recipeResult = await aiRecipeService.getRecipesForUser(userId, inventory, preferences, questionnaire, tourMode);
       
       console.log(`🤖 [${requestId}] Recipe generation result:`, {
         cached: recipeResult.cached,

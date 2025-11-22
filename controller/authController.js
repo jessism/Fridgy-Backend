@@ -106,6 +106,9 @@ const authController = {
       const token = generateToken(newUser.id);
       const refreshToken = generateRefreshToken(newUser.id);
 
+      // Track if payment was successfully linked
+      let paymentLinked = false;
+
       // Link onboarding payment session if provided
       if (onboardingSessionId) {
         try {
@@ -121,6 +124,7 @@ const authController = {
             .single();
 
           if (session && !sessionError && session.payment_confirmed) {
+            paymentLinked = true;
             // Link the session to the new user
             await supabase
               .from('onboarding_sessions')
@@ -228,10 +232,13 @@ const authController = {
           console.error('[Signup] Error linking onboarding session:', linkError);
           // Don't fail the signup if linking fails - user can contact support
         }
-      } else {
-        // User didn't go through onboarding with trial - send welcome email
+      }
+
+      // Send welcome email to free users (no payment linked)
+      // This covers both users who never started onboarding AND users who abandoned it
+      if (!paymentLinked) {
         try {
-          console.log('[Signup] User signed up without trial, sending welcome email');
+          console.log('[Signup] User signed up as free user, sending welcome email');
 
           await emailService.sendWelcomeEmail({
             email: newUser.email,

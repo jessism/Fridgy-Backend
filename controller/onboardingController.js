@@ -537,8 +537,10 @@ const onboardingController = {
         console.log('[Onboarding] Applying promo code:', promoCode, '→ ID:', promoCodeId);
       }
 
-      // Create subscription
-      const subscription = await stripe.subscriptions.create(subscriptionData);
+      // Create subscription with idempotency key to prevent duplicates
+      const subscription = await stripe.subscriptions.create(subscriptionData, {
+        idempotencyKey: `onb_sub_${sessionId}`
+      });
 
       console.log('[Onboarding] Created subscription:', subscription.id);
       console.log('[Onboarding] Subscription status:', subscription.status);

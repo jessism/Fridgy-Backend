@@ -387,6 +387,7 @@ async function handleSubscriptionDeleted(subscription) {
 async function handlePaymentSucceeded(invoice) {
   console.log('🔥 HANDLER CALLED: handlePaymentSucceeded');
   try {
+    const supabase = getServiceClient();
     console.log('[WebhookService] Payment succeeded for invoice:', invoice.id);
 
     const subscriptionId = invoice.subscription;
@@ -428,7 +429,6 @@ async function handlePaymentSucceeded(invoice) {
 
     // Only update user tier to premium if payment method is verified
     if (hasPaymentMethod) {
-      const supabase = getServiceClient();
       const { error: userError } = await supabase
         .from('users')
         .update({ tier: 'premium' })

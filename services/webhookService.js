@@ -372,6 +372,42 @@ async function handleSubscriptionUpdated(subscription) {
     });
 
     console.log('[WebhookService] Updated subscription for user:', dbSub.user_id);
+
+    // Send trial start email if this is a new trial with verified payment
+    // This handles free users upgrading to premium (subscription.updated event)
+    // Note: subscription.created handles onboarding flow, this handles existing free users
+    if (subscription.status === 'trialing' && subscription.trial_end && hasPaymentMethod) {
+      console.log('[WebhookService] Trial started (updated event) with verified payment, sending email to user:', dbSub.user_id);
+
+      const supabase = getServiceClient();
+
+      // Get user details for email
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('email, first_name')
+        .eq('id', dbSub.user_id)
+        .single();
+
+      if (userError) {
+        console.error('[WebhookService] Error fetching user for trial email:', userError);
+      } else if (user) {
+        // Get customer timezone from Stripe metadata
+        let timezone = 'America/Los_Angeles'; // default
+        try {
+          const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+          const customer = await stripe.customers.retrieve(subscription.customer);
+          if (customer.metadata && customer.metadata.timezone) {
+            timezone = customer.metadata.timezone;
+            console.log('[WebhookService] Retrieved customer timezone:', timezone);
+          }
+        } catch (tzError) {
+          console.error('[WebhookService] Error fetching customer timezone:', tzError.message);
+        }
+
+        const trialEndDate = new Date(subscription.trial_end * 1000);
+        await emailService.sendTrialStartEmail(user, trialEndDate, timezone);
+      }
+    }
   } catch (error) {
     console.error('[WebhookService] Error handling subscription updated:', error);
     throw error;

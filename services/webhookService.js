@@ -213,26 +213,49 @@ async function handleSubscriptionCreated(subscription) {
   console.log('🔥 HANDLER CALLED: handleSubscriptionCreated');
   try {
     const supabase = getServiceClient();
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
     console.log('[WebhookService] Subscription created:', subscription.id);
 
-    // Get user by customer ID
-    const { data: existingSub, error: getError } = await supabase
-      .from('subscriptions')
-      .select('user_id')
-      .eq('stripe_customer_id', subscription.customer)
-      .single();
+    // Get user_id - try Stripe customer metadata first (for existing free users upgrading)
+    // then fallback to existing subscription lookup (for onboarding flow)
+    let userId = null;
 
-    if (getError && getError.code !== 'PGRST116') { // PGRST116 = no rows
-      console.error('[WebhookService] Error getting subscription:', getError);
-      throw getError;
+    // Method 1: Get from Stripe customer metadata (set during checkout)
+    try {
+      const customer = await stripe.customers.retrieve(subscription.customer);
+      if (customer.metadata && customer.metadata.user_id) {
+        userId = customer.metadata.user_id;
+        console.log('[WebhookService] Found user_id in customer metadata:', userId);
+      }
+    } catch (customerError) {
+      console.error('[WebhookService] Error retrieving customer:', customerError.message);
     }
 
-    if (!existingSub) {
+    // Method 2: Fallback to existing subscription lookup (backwards compatibility)
+    if (!userId) {
+      const { data: existingSub, error: getError } = await supabase
+        .from('subscriptions')
+        .select('user_id')
+        .eq('stripe_customer_id', subscription.customer)
+        .single();
+
+      if (getError && getError.code !== 'PGRST116') { // PGRST116 = no rows
+        console.error('[WebhookService] Error getting subscription:', getError);
+        throw getError;
+      }
+
+      if (existingSub) {
+        userId = existingSub.user_id;
+        console.log('[WebhookService] Found user_id from existing subscription:', userId);
+      }
+    }
+
+    // If we still don't have a user_id, we can't proceed
+    if (!userId) {
       console.error('[WebhookService] No user found for customer:', subscription.customer);
+      console.error('[WebhookService] Tried customer metadata and existing subscription lookup');
       return;
     }
-
-    const userId = existingSub.user_id;
 
     // Only grant premium if payment method is verified (prevents access before SetupIntent completes)
     const hasPaymentMethod = subscription.default_payment_method != null;
@@ -283,7 +306,6 @@ async function handleSubscriptionCreated(subscription) {
           // Get customer timezone from Stripe metadata
           let timezone = 'America/Los_Angeles'; // default
           try {
-            const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
             const customer = await stripe.customers.retrieve(subscription.customer);
             if (customer.metadata && customer.metadata.timezone) {
               timezone = customer.metadata.timezone;

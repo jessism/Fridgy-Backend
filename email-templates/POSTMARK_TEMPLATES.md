@@ -48,11 +48,14 @@ This is the most common reason items don't show in templates.
 - `recipesUrl` (string)
 - `inventoryUrl` (string)
 
-**⚠️ IMPORTANT - Postmark Template Engine:**
-Postmark uses Mustache templating. When creating the template:
+**⚠️ CRITICAL - Postmark Template Engine:**
+Postmark uses **Mustachio** templating. When creating the template:
 1. Use the **Layout** template type (not Legacy)
-2. Make sure to test with the exact JSON structure provided below
-3. Arrays are iterated using `{{#arrayName}}...{{/arrayName}}` blocks
+2. Arrays MUST use `{{#each arrayName}}...{{/each}}` (NOT `{{#arrayName}}`)
+3. When nested inside conditionals, use `{{#each ../arrayName}}` to access parent scope
+4. Make sure to test with the exact JSON structure provided below
+
+**See `POSTMARK_TROUBLESHOOTING_Nov22.md` for detailed syntax guide and common issues.**
 
 ### HTML Version:
 
@@ -133,9 +136,6 @@ Postmark uses Mustache templating. When creating the template:
     .item-name {
       font-weight: 500;
     }
-    .item-emoji {
-      margin-right: 8px;
-    }
     .cta-button {
       display: inline-block;
       padding: 14px 32px;
@@ -189,9 +189,9 @@ Postmark uses Mustache templating. When creating the template:
     {{#hasExpiringToday}}
     <div class="urgency-section urgent">
       <div class="section-title">⚠️ EXPIRING TODAY</div>
-      {{#each expiringToday}}
+      {{#each ../expiringToday}}
       <div class="item">
-        <span><span class="item-emoji">{{emoji}}</span><span class="item-name">{{name}}</span> ({{quantity}})</span>
+        <span><span class="item-name">{{name}}</span> ({{quantity}})</span>
         <span>{{date}}</span>
       </div>
       {{/each}}
@@ -201,9 +201,9 @@ Postmark uses Mustache templating. When creating the template:
     {{#hasExpiringTomorrow}}
     <div class="urgency-section soon">
       <div class="section-title">⏰ EXPIRING TOMORROW</div>
-      {{#each expiringTomorrow}}
+      {{#each ../expiringTomorrow}}
       <div class="item">
-        <span><span class="item-emoji">{{emoji}}</span><span class="item-name">{{name}}</span> ({{quantity}})</span>
+        <span><span class="item-name">{{name}}</span> ({{quantity}})</span>
         <span>{{date}}</span>
       </div>
       {{/each}}
@@ -213,9 +213,9 @@ Postmark uses Mustache templating. When creating the template:
     {{#hasExpiringThisWeek}}
     <div class="urgency-section this-week">
       <div class="section-title">📅 EXPIRING THIS WEEK</div>
-      {{#each expiringThisWeek}}
+      {{#each ../expiringThisWeek}}
       <div class="item">
-        <span><span class="item-emoji">{{emoji}}</span><span class="item-name">{{name}}</span> ({{quantity}})</span>
+        <span><span class="item-name">{{name}}</span> ({{quantity}})</span>
         <span>{{date}}</span>
       </div>
       {{/each}}
@@ -253,22 +253,22 @@ Quick heads up - you have {{totalCount}} items expiring soon:
 
 {{#hasExpiringToday}}
 ⚠️ EXPIRING TODAY:
-{{#each expiringToday}}
-- {{emoji}} {{name}} ({{quantity}}) - {{date}}
+{{#each ../expiringToday}}
+- {{name}} ({{quantity}}) - {{date}}
 {{/each}}
 
 {{/hasExpiringToday}}
 {{#hasExpiringTomorrow}}
 ⏰ EXPIRING TOMORROW:
-{{#each expiringTomorrow}}
-- {{emoji}} {{name}} ({{quantity}}) - {{date}}
+{{#each ../expiringTomorrow}}
+- {{name}} ({{quantity}}) - {{date}}
 {{/each}}
 
 {{/hasExpiringTomorrow}}
 {{#hasExpiringThisWeek}}
 📅 EXPIRING THIS WEEK:
-{{#each expiringThisWeek}}
-- {{emoji}} {{name}} ({{quantity}}) - {{date}}
+{{#each ../expiringThisWeek}}
+- {{name}} ({{quantity}}) - {{date}}
 {{/each}}
 
 {{/hasExpiringThisWeek}}
@@ -330,13 +330,15 @@ Make sure you're pasting the JSON in the **"Test Data"** section (not "Template 
 
 Your HTML should have:
 ```html
-{{#each expiringToday}}
+{{#each ../expiringToday}}
 <div class="item">
-  <span><span class="item-emoji">{{emoji}}</span><span class="item-name">{{name}}</span> ({{quantity}})</span>
+  <span><span class="item-name">{{name}}</span> ({{quantity}})</span>
   <span>{{date}}</span>
 </div>
 {{/each}}
 ```
+
+**Note:** The `../` is CRITICAL when nested inside conditionals like `{{#hasExpiringToday}}`.
 
 **Solution 4: Simplified Debug Template**
 If still not working, try this minimal version first:
@@ -344,8 +346,8 @@ If still not working, try this minimal version first:
 {{#hasExpiringToday}}
 <div style="background: #ffebee; padding: 15px; margin: 10px 0;">
   <strong>⚠️ EXPIRING TODAY</strong>
-  {{#each expiringToday}}
-    <div style="padding: 5px 0;">{{emoji}} {{name}} ({{quantity}}) - {{date}}</div>
+  {{#each ../expiringToday}}
+    <div style="padding: 5px 0;">{{name}} ({{quantity}}) - {{date}}</div>
   {{/each}}
 </div>
 {{/hasExpiringToday}}

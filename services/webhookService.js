@@ -262,35 +262,42 @@ async function handleSubscriptionCreated(subscription) {
       canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
     });
 
-    // Send trial start email if user is starting a trial
+    // Send trial start email ONLY if payment method is verified
+    // This prevents sending emails when user just opens checkout modal without completing payment
     if (subscription.status === 'trialing' && subscription.trial_end) {
-      console.log('[WebhookService] Trial started, sending email to user:', userId);
+      const hasPaymentMethod = subscription.default_payment_method != null;
 
-      // Get user details for email
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('email, first_name')
-        .eq('id', userId)
-        .single();
+      if (hasPaymentMethod) {
+        console.log('[WebhookService] Trial started with verified payment, sending email to user:', userId);
 
-      if (userError) {
-        console.error('[WebhookService] Error fetching user for trial email:', userError);
-      } else if (user) {
-        // Get customer timezone from Stripe metadata
-        let timezone = 'America/Los_Angeles'; // default
-        try {
-          const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-          const customer = await stripe.customers.retrieve(subscription.customer);
-          if (customer.metadata && customer.metadata.timezone) {
-            timezone = customer.metadata.timezone;
-            console.log('[WebhookService] Retrieved customer timezone:', timezone);
+        // Get user details for email
+        const { data: user, error: userError } = await supabase
+          .from('users')
+          .select('email, first_name')
+          .eq('id', userId)
+          .single();
+
+        if (userError) {
+          console.error('[WebhookService] Error fetching user for trial email:', userError);
+        } else if (user) {
+          // Get customer timezone from Stripe metadata
+          let timezone = 'America/Los_Angeles'; // default
+          try {
+            const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+            const customer = await stripe.customers.retrieve(subscription.customer);
+            if (customer.metadata && customer.metadata.timezone) {
+              timezone = customer.metadata.timezone;
+              console.log('[WebhookService] Retrieved customer timezone:', timezone);
+            }
+          } catch (tzError) {
+            console.error('[WebhookService] Error fetching customer timezone:', tzError.message);
           }
-        } catch (tzError) {
-          console.error('[WebhookService] Error fetching customer timezone:', tzError.message);
-        }
 
-        const trialEndDate = new Date(subscription.trial_end * 1000);
-        await emailService.sendTrialStartEmail(user, trialEndDate, timezone);
+          const trialEndDate = new Date(subscription.trial_end * 1000);
+          await emailService.sendTrialStartEmail(user, trialEndDate, timezone);
+        }
+      } else {
+        console.log('[WebhookService] Skipping trial email - payment method not verified yet for user:', userId);
       }
     }
   } catch (error) {

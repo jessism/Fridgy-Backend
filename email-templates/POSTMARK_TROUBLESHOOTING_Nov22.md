@@ -264,3 +264,421 @@ When in doubt with Postmark templates:
 5. Add `../` when nested inside other blocks
 
 **Remember:** The `../` is your friend when working with nested Mustachio blocks! 🎯
+
+---
+
+# Email Delivery Troubleshooting (November 22, 2025)
+
+## 🐛 Issue: Trial Start Emails Not Sending for Free Users Upgrading
+
+**Status:** ✅ SOLVED
+
+### The Problem
+
+When existing free users upgraded to premium trial (with verified payment), they were NOT receiving the "Welcome to Trackabite Premium" trial start email, even though:
+- Welcome emails were working for new free signups ✓
+- Payment was processing correctly ✓
+- User tier was upgrading to premium ✓
+- Postmark template existed and was configured ✓
+- `EMAIL_ENABLED=true` ✓
+
+### What We Discovered
+
+By analyzing production logs from Railway, we found:
+- ✅ `handleSubscriptionUpdated` webhook was firing
+- ❌ `handleSubscriptionCreated` webhook was **NOT** firing
+- ❌ No trial email send attempt in logs
+
+**The smoking gun:** The subscription was created by the frontend (`createSubscriptionIntent`) BEFORE payment, so when payment completed, Stripe sent `customer.subscription.updated` instead of `customer.subscription.created`.
+
+### Root Cause Analysis
+
+#### Event Flow for Different User Types:
+
+**New Users (Onboarding Flow):**
+1. User starts trial during signup
+2. Stripe creates customer + subscription
+3. Webhook: `customer.subscription.created` fires
+4. ✅ Trial start email sent (code in `handleSubscriptionCreated`)
+
+**Existing Free Users (Upgrade Flow):**
+1. User clicks "Start Trial"
+2. Frontend calls `createSubscriptionIntent` → subscription created in Stripe (status: `incomplete`)
+3. User completes payment
+4. Webhook: `customer.subscription.updated` fires (NOT created!)
+5. ❌ No email sent (no email code in `handleSubscriptionUpdated`)
+
+### The Fix
+
+**File:** `/Users/jessie/fridgy/Backend/services/webhookService.js`
+
+Added trial start email logic to `handleSubscriptionUpdated` (lines 376-410):
+
+```javascript
+// Send trial start email if this is a new trial with verified payment
+// This handles free users upgrading to premium (subscription.updated event)
+if (subscription.status === 'trialing' && subscription.trial_end && hasPaymentMethod) {
+  console.log('[WebhookService] Trial started (updated event) with verified payment, sending email to user:', dbSub.user_id);
+
+  const supabase = getServiceClient();
+
+  // Get user details for email
+  const { data: user, error: userError } = await supabase
+    .from('users')
+    .select('email, first_name')
+    .eq('id', dbSub.user_id)
+    .single();
+
+  if (userError) {
+    console.error('[WebhookService] Error fetching user for trial email:', userError);
+  } else if (user) {
+    // Get customer timezone from Stripe metadata
+    let timezone = 'America/Los_Angeles'; // default
+    try {
+      const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+      const customer = await stripe.customers.retrieve(subscription.customer);
+      if (customer.metadata && customer.metadata.timezone) {
+        timezone = customer.metadata.timezone;
+      }
+    } catch (tzError) {
+      console.error('[WebhookService] Error fetching customer timezone:', tzError.message);
+    }
+
+    const trialEndDate = new Date(subscription.trial_end * 1000);
+    await emailService.sendTrialStartEmail(user, trialEndDate, timezone);
+  }
+}
+```
+
+**Result:** Trial start emails now send for BOTH user flows:
+- New signups → `customer.subscription.created` ✓
+- Free users upgrading → `customer.subscription.updated` ✓
+
+---
+
+## 🐛 Issue: Welcome Emails Not Sending for Users Who Abandoned Trial
+
+**Status:** ✅ SOLVED
+
+### The Problem
+
+Users who:
+1. Started the trial signup flow
+2. Closed the browser without completing payment
+3. Later signed up for a free account
+
+Were NOT receiving the welcome email.
+
+### Root Cause
+
+**File:** `/Users/jessie/fridgy/Backend/controller/authController.js`
+
+The signup flow had this logic (lines 109-246):
+
+```javascript
+if (onboardingSessionId) {
+  // Try to link payment
+  if (session && session.payment_confirmed) {
+    // Send trial email
+  }
+  // NO else block for abandoned sessions!
+} else {
+  // Send welcome email (only if NO session ID)
+}
+```
+
+**The bug:**
+- Users who abandoned trial had `onboardingSessionId` in localStorage
+- Code entered the `if (onboardingSessionId)` block
+- Payment was NOT confirmed → skipped trial email
+- Code did NOT enter the `else` block → skipped welcome email
+- Result: NO email sent!
+
+### The Fix
+
+Changed the logic to use a `paymentLinked` flag:
+
+```javascript
+let paymentLinked = false;
+
+if (onboardingSessionId) {
+  // Try to link payment
+  if (session && session.payment_confirmed) {
+    paymentLinked = true;
+    // Send trial email
+  }
+}
+
+// Send welcome email to free users (no payment linked)
+// This covers both users who never started onboarding AND users who abandoned it
+if (!paymentLinked) {
+  await emailService.sendWelcomeEmail({
+    email: newUser.email,
+    first_name: newUser.first_name
+  });
+}
+```
+
+**Result:** Welcome emails now send to ALL free users, regardless of whether they abandoned a trial flow.
+
+---
+
+## 🐛 Issue: Payment Success Email Not Sending
+
+**Status:** ✅ SOLVED
+
+### The Problem
+
+When users converted from trial to paid (or made any payment), the payment success email was not being sent.
+
+### Root Cause
+
+**File:** `/Users/jessie/fridgy/Backend/services/webhookService.js`
+
+JavaScript scoping bug in `handlePaymentSucceeded` (lines 431-452):
+
+```javascript
+async function handlePaymentSucceeded(invoice) {
+  try {
+    // ... code ...
+
+    // supabase declared INSIDE this if block
+    if (hasPaymentMethod) {
+      const supabase = getServiceClient(); // ← Line 431
+      await supabase.from('users').update(...)
+    } // ← supabase goes out of scope!
+
+    // Trying to send email here
+    if (invoice.billing_reason === 'subscription_cycle') {
+      const { data: user } = await supabase // ← Line 452: ReferenceError!
+        .from('users').select(...)
+    }
+  }
+}
+```
+
+**The bug:** `supabase` was declared inside the `if (hasPaymentMethod)` block but used outside of it, causing a ReferenceError that prevented email sending.
+
+### The Fix
+
+Moved `const supabase = getServiceClient()` to the top of the function (line 390):
+
+```javascript
+async function handlePaymentSucceeded(invoice) {
+  try {
+    const supabase = getServiceClient(); // ← Moved here!
+
+    // Now available everywhere in the function
+    if (hasPaymentMethod) {
+      await supabase.from('users').update(...) // ✓
+    }
+
+    if (invoice.billing_reason === 'subscription_cycle') {
+      const { data: user } = await supabase // ✓ Now works!
+        .from('users').select(...)
+    }
+  }
+}
+```
+
+**Result:** Payment success emails now send correctly.
+
+---
+
+## 📊 Complete Email Flow Summary
+
+### Free User Signup (No Trial)
+1. User signs up → `authController.signup`
+2. No payment → `paymentLinked = false`
+3. ✅ **Welcome email sent** (template: `'welcome'`)
+
+### Free User Upgrades to Trial
+1. User already has account (got welcome email)
+2. Clicks "Start Trial" → Frontend creates subscription
+3. User completes payment
+4. Webhook: `customer.subscription.updated` fires
+5. ✅ **Trial start email sent** (template: `'trial-start'`)
+
+### New User Signs Up with Trial
+1. User goes through onboarding with payment
+2. Webhook: `customer.subscription.created` fires
+3. ✅ **Trial start email sent** (template: `'trial-start'`)
+
+### Trial Converts to Paid
+1. Trial period ends
+2. Stripe charges customer
+3. Webhook: `invoice.payment_succeeded` fires
+4. ✅ **Payment success email sent** (template: `'payment-success'`)
+
+---
+
+## 🎓 Key Learnings for Email Systems
+
+### 1. Always Check Production Logs First
+Don't guess at the problem. Check logs to see:
+- Which webhooks are actually firing
+- What the actual event flow is
+- Where the code is failing
+
+**In our case:** Logs showed `subscription.updated` was firing, not `subscription.created`, which immediately revealed the issue.
+
+### 2. Understand Stripe Webhook Event Order
+
+Different user flows trigger different webhook events:
+
+| Flow | Frontend Action | Webhook Event |
+|------|----------------|---------------|
+| Onboarding signup | Stripe Checkout creates subscription | `subscription.created` |
+| Existing user upgrade | Frontend creates subscription | `subscription.updated` |
+| Payment succeeds | Charge processed | `invoice.payment_succeeded` |
+| Subscription ends | Trial/payment failed | `subscription.deleted` |
+
+**Lesson:** Don't assume all subscription starts fire `subscription.created`!
+
+### 3. Variable Scoping is Critical
+
+In complex handlers, scope bugs can silently break email sending:
+- ✅ Declare shared resources (like `supabase`) at function scope
+- ❌ Don't declare them inside conditional blocks if used outside
+
+**Our bug:** `const supabase` inside an `if` block caused ReferenceError later.
+
+### 4. Handle All User Flows
+
+Don't just code for the "happy path":
+- New users
+- Existing users upgrading
+- Users who abandon flows
+- Users who return after abandoning
+
+**Our bug:** Code only handled "new signups" and "completed payments", not "abandoned then returned".
+
+### 5. Use Flags Over Nested Conditionals
+
+Instead of:
+```javascript
+if (condition) {
+  if (subCondition) {
+    doThing();
+  }
+} else {
+  doOtherThing();
+}
+```
+
+Use:
+```javascript
+let shouldDoThing = false;
+if (condition && subCondition) {
+  shouldDoThing = true;
+}
+
+if (shouldDoThing) {
+  doThing();
+} else {
+  doOtherThing();
+}
+```
+
+**Benefit:** Easier to read, debug, and modify.
+
+### 6. Test All Email Scenarios
+
+Before deploying, manually test:
+- [ ] Free signup → Welcome email
+- [ ] Free user upgrades → Trial email
+- [ ] New signup with trial → Trial email
+- [ ] Trial converts to paid → Payment success email
+- [ ] User abandons trial then signs up free → Welcome email
+
+---
+
+## 🔧 Debugging Process That Worked
+
+1. **Reproduce the issue** - Do the exact user flow
+2. **Check Railway logs** - See what's actually happening
+3. **Identify which webhooks fire** - Don't assume!
+4. **Trace the code path** - Follow the actual execution
+5. **Find the gap** - Where should email send but doesn't?
+6. **Fix precisely** - Don't over-engineer, just fix the gap
+7. **Test again** - Verify all flows work
+
+---
+
+## 🚀 Moving Forward: Email System Best Practices
+
+### When Adding New Email Types
+
+1. **Identify ALL triggers**
+   - Which user actions should send this email?
+   - Which webhook events are involved?
+   - What are the edge cases?
+
+2. **Add email logic to ALL relevant handlers**
+   - Don't assume one webhook event is enough
+   - Check both `created` and `updated` events
+   - Consider async frontend creation flows
+
+3. **Test every flow**
+   - New users
+   - Existing users
+   - Abandoned flows
+   - Edge cases
+
+4. **Add logging**
+   - Log when email sending is attempted
+   - Log success/failure with MessageID
+   - Makes debugging 10x easier
+
+5. **Check environment variables**
+   - `EMAIL_ENABLED=true`
+   - Postmark API key set
+   - Template aliases match exactly
+   - Sender email verified
+
+### Email Checklist
+
+Before deploying new emails:
+
+- [ ] Template created in Postmark with correct alias
+- [ ] Template tested with real data in Postmark UI
+- [ ] Test email sent to yourself
+- [ ] Code calls `emailService.send*Email()` in ALL relevant places
+- [ ] Logging added for debugging
+- [ ] All user flows tested manually
+- [ ] Production logs checked after deploy
+
+---
+
+## 📝 Files Modified (November 22, 2025)
+
+1. **`/Backend/services/webhookService.js`**
+   - Added trial email to `handleSubscriptionUpdated` (lines 376-410)
+   - Fixed scoping bug in `handlePaymentSucceeded` (line 390)
+   - Added user lookup to `handleSubscriptionCreated` (lines 223-258)
+
+2. **`/Backend/controller/authController.js`**
+   - Added `paymentLinked` flag (line 110)
+   - Fixed welcome email logic (lines 237-253)
+
+---
+
+## 💡 Pro Tips
+
+1. **Always check which webhook event actually fires** - Don't trust assumptions about Stripe event order
+
+2. **Read production logs before coding** - They tell you exactly where the problem is
+
+3. **Scope variables at function level** - Especially for shared resources like database clients
+
+4. **Use flags for complex conditional logic** - Makes code more readable and maintainable
+
+5. **Document weird edge cases** - Like "subscription.updated fires instead of created for frontend-created subscriptions"
+
+---
+
+**Last Updated:** November 22, 2025
+**Total Bugs Fixed:** 3 (Trial email, Welcome email, Payment email)
+**Root Cause:** Wrong webhook event assumptions + scoping bugs + conditional logic gaps
+**Time to Debug:** ~3 hours
+**Time Saved Moving Forward:** Countless hours! 🎉

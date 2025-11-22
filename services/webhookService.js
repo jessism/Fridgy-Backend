@@ -8,6 +8,65 @@ const subscriptionService = require('./subscriptionService');
 const emailService = require('./emailService');
 
 /**
+ * Calculate pricing information for trial start email
+ * Handles discounts, promo codes, and returns formatted pricing
+ * @param {Object} subscription - Stripe subscription object
+ * @returns {Object} Pricing info for email template
+ */
+function calculatePricingInfo(subscription) {
+  const basePrice = subscription.items.data[0].price.unit_amount / 100; // Convert cents to dollars
+  const discount = subscription.discount;
+
+  if (!discount) {
+    return {
+      hasDiscount: false,
+      regularAmount: `$${basePrice.toFixed(2)}`,
+      firstChargeAmount: `$${basePrice.toFixed(2)}`,
+      discountDescription: '',
+      isDiscountOnce: false,
+      isDiscountForever: false
+    };
+  }
+
+  // Calculate discounted amount
+  let discountedPrice = basePrice;
+  let discountDescription = '';
+
+  if (discount.coupon.percent_off) {
+    discountedPrice = basePrice * (1 - discount.coupon.percent_off / 100);
+    discountDescription = `${discount.coupon.percent_off}% off`;
+  } else if (discount.coupon.amount_off) {
+    discountedPrice = basePrice - (discount.coupon.amount_off / 100);
+    discountDescription = `$${(discount.coupon.amount_off / 100).toFixed(2)} off`;
+  }
+
+  // Add duration to description
+  if (discount.coupon.duration === 'once') {
+    discountDescription += ' first month';
+  } else if (discount.coupon.duration === 'repeating') {
+    discountDescription += ` for ${discount.coupon.duration_in_months} months`;
+  } else {
+    discountDescription += ' ongoing';
+  }
+
+  console.log('[WebhookService] Pricing calculated:', {
+    basePrice: `$${basePrice.toFixed(2)}`,
+    discountedPrice: `$${discountedPrice.toFixed(2)}`,
+    discountDescription,
+    duration: discount.coupon.duration
+  });
+
+  return {
+    hasDiscount: true,
+    firstChargeAmount: `$${discountedPrice.toFixed(2)}`,
+    regularAmount: `$${basePrice.toFixed(2)}`,
+    discountDescription,
+    isDiscountOnce: discount.coupon.duration === 'once',
+    isDiscountForever: discount.coupon.duration === 'forever'
+  };
+}
+
+/**
  * Process a Stripe webhook event (with idempotency)
  * @param {Object} event - Stripe event object
  * @returns {Promise<Object>} Processing result
@@ -316,7 +375,11 @@ async function handleSubscriptionCreated(subscription) {
           }
 
           const trialEndDate = new Date(subscription.trial_end * 1000);
-          await emailService.sendTrialStartEmail(user, trialEndDate, timezone);
+
+          // Calculate pricing info (handles discounts/promo codes)
+          const pricingInfo = calculatePricingInfo(subscription);
+
+          await emailService.sendTrialStartEmail(user, trialEndDate, timezone, pricingInfo);
         }
       } else {
         console.log('[WebhookService] Skipping trial email - payment method not verified yet for user:', userId);
@@ -405,7 +468,11 @@ async function handleSubscriptionUpdated(subscription) {
         }
 
         const trialEndDate = new Date(subscription.trial_end * 1000);
-        await emailService.sendTrialStartEmail(user, trialEndDate, timezone);
+
+        // Calculate pricing info (handles discounts/promo codes)
+        const pricingInfo = calculatePricingInfo(subscription);
+
+        await emailService.sendTrialStartEmail(user, trialEndDate, timezone, pricingInfo);
       }
     }
   } catch (error) {

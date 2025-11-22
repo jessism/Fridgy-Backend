@@ -21,9 +21,10 @@ function formatDateInTimezone(date, timezone = 'America/Los_Angeles', includeWee
  * @param {Object} user - User object with email and first_name
  * @param {Date} trialEndDate - When the trial ends
  * @param {string} timezone - User's timezone (IANA format)
+ * @param {Object} pricingInfo - Pricing information (with discount if applicable)
  * @returns {Promise<void>}
  */
-async function sendTrialStartEmail(user, trialEndDate, timezone = 'America/Los_Angeles') {
+async function sendTrialStartEmail(user, trialEndDate, timezone = 'America/Los_Angeles', pricingInfo = null) {
   if (!process.env.EMAIL_ENABLED || process.env.EMAIL_ENABLED !== 'true') {
     console.log('[Email] Email sending is disabled');
     return;
@@ -35,6 +36,18 @@ async function sendTrialStartEmail(user, trialEndDate, timezone = 'America/Los_A
     const formattedDate = formatDateInTimezone(trialEndDate, timezone);
     console.log(`[Email] Trial end date formatted: ${formattedDate}`);
 
+    // Default pricing if not provided
+    const pricing = pricingInfo || {
+      hasDiscount: false,
+      regularAmount: '$4.99',
+      firstChargeAmount: '$4.99',
+      discountDescription: '',
+      isDiscountOnce: false,
+      isDiscountForever: false
+    };
+
+    console.log('[Email] Pricing info:', pricing);
+
     const result = await client.sendEmailWithTemplate({
       From: process.env.FROM_EMAIL,
       To: user.email,
@@ -42,7 +55,13 @@ async function sendTrialStartEmail(user, trialEndDate, timezone = 'America/Los_A
       TemplateModel: {
         firstName: user.first_name || 'there',
         trialEndDate: formattedDate,
-        dashboardUrl: `${process.env.FRONTEND_URL}/home`
+        dashboardUrl: `${process.env.FRONTEND_URL}/home`,
+        hasDiscount: pricing.hasDiscount,
+        regularAmount: pricing.regularAmount,
+        firstChargeAmount: pricing.firstChargeAmount,
+        discountDescription: pricing.discountDescription,
+        isDiscountOnce: pricing.isDiscountOnce,
+        isDiscountForever: pricing.isDiscountForever
       }
     });
 

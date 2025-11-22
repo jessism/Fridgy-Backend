@@ -132,21 +132,61 @@ const authController = {
 
             // Transfer the Stripe subscription to the user
             if (session.stripe_customer_id && session.stripe_subscription_id) {
+              // Fetch subscription from Stripe to get trial dates
+              const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+              const subscription = await stripe.subscriptions.retrieve(session.stripe_subscription_id);
+
+              // Prepare subscription data with all fields from Stripe
+              const subscriptionData = {
+                user_id: newUser.id,
+                stripe_customer_id: session.stripe_customer_id,
+                stripe_subscription_id: session.stripe_subscription_id,
+                stripe_price_id: subscription.items.data[0]?.price?.id || null,
+                tier: 'premium',
+                status: subscription.status || 'trialing',
+                trial_start: subscription.trial_start
+                  ? new Date(subscription.trial_start * 1000).toISOString()
+                  : null,
+                trial_end: subscription.trial_end
+                  ? new Date(subscription.trial_end * 1000).toISOString()
+                  : null,
+                current_period_start: subscription.current_period_start
+                  ? new Date(subscription.current_period_start * 1000).toISOString()
+                  : null,
+                current_period_end: subscription.current_period_end
+                  ? new Date(subscription.current_period_end * 1000).toISOString()
+                  : null,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+              };
+
+              console.log('[Signup] Saving subscription with all Stripe fields:', {
+                stripe_price_id: subscriptionData.stripe_price_id,
+                trial_start: subscriptionData.trial_start,
+                trial_end: subscriptionData.trial_end,
+                current_period_start: subscriptionData.current_period_start,
+                current_period_end: subscriptionData.current_period_end
+              });
+
               // Create subscription record for the user
               await supabase
                 .from('subscriptions')
-                .upsert({
-                  user_id: newUser.id,
-                  stripe_customer_id: session.stripe_customer_id,
-                  stripe_subscription_id: session.stripe_subscription_id,
-                  tier: 'premium',
-                  status: 'trialing',
-                  created_at: new Date().toISOString(),
-                  updated_at: new Date().toISOString()
-                }, { onConflict: 'user_id' });
+                .upsert(subscriptionData, { onConflict: 'user_id' });
+
+              // Sync user tier to premium immediately (don't wait for webhook)
+              const { error: tierError } = await supabase
+                .from('users')
+                .update({ tier: 'premium' })
+                .eq('id', newUser.id);
+
+              if (tierError) {
+                console.error('[Signup] Error updating user tier:', tierError);
+                // Don't fail signup - webhook will fix it
+              } else {
+                console.log('[Signup] User tier updated to premium');
+              }
 
               // Update Stripe customer with user email and name
-              const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
               await stripe.customers.update(session.stripe_customer_id, {
                 email: newUser.email,
                 name: newUser.first_name,
@@ -160,12 +200,6 @@ const authController = {
 
               // Send trial start email
               try {
-                console.log('[Signup] Fetching subscription details for trial email...');
-
-                // Fetch subscription from Stripe to get trial_end date
-                const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-                const subscription = await stripe.subscriptions.retrieve(session.stripe_subscription_id);
-
                 if (subscription.trial_end) {
                   const trialEndDate = new Date(subscription.trial_end * 1000);
 
@@ -225,7 +259,9 @@ const authController = {
           email: newUser.email,
           firstName: newUser.first_name,
           createdAt: newUser.created_at,
-          hasSeenWelcomeTour: newUser.has_seen_welcome_tour || false
+          hasSeenWelcomeTour: newUser.has_seen_welcome_tour || false,
+          tier: newUser.tier || 'free',
+          isGrandfathered: newUser.is_grandfathered || false
         },
         token,
         refreshToken
@@ -295,7 +331,9 @@ const authController = {
           firstName: user.first_name,
           createdAt: user.created_at,
           hasSeenWelcomeTour: user.has_seen_welcome_tour || false,
-          tourStatus: tourStatus.status || 'not_started'
+          tourStatus: tourStatus.status || 'not_started',
+          tier: user.tier || 'free',
+          isGrandfathered: user.is_grandfathered || false
         },
         token,
         refreshToken
@@ -346,7 +384,9 @@ const authController = {
           firstName: user.first_name,
           createdAt: user.created_at,
           hasSeenWelcomeTour: user.has_seen_welcome_tour || false,
-          tourStatus: tourStatus.status || 'not_started'
+          tourStatus: tourStatus.status || 'not_started',
+          tier: user.tier || 'free',
+          isGrandfathered: user.is_grandfathered || false
         },
         token: newToken,
         refreshToken: newRefreshToken
@@ -405,7 +445,9 @@ const authController = {
           id: user.id,
           email: user.email,
           firstName: user.first_name,
-          createdAt: user.created_at
+          createdAt: user.created_at,
+          tier: user.tier || 'free',
+          isGrandfathered: user.is_grandfathered || false
         }
       });
 

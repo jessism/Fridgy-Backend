@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const moment = require('moment-timezone');
 const { createClient } = require('@supabase/supabase-js');
 const pushNotificationService = require('./pushNotificationService');
+const emailService = require('./emailService');
 
 // Initialize Supabase
 const supabase = createClient(
@@ -31,9 +32,10 @@ class ExpiryNotificationScheduler {
 
     // Run every 30 minutes for timezone-aware notifications and daily reminders
     this.timezoneTask = cron.schedule('*/30 * * * *', async () => {
-      console.log('Running timezone-aware checks (expiry + daily reminders)...');
+      console.log('Running timezone-aware checks (expiry + daily reminders + emails)...');
       await this.checkAndSendTimezoneAwareNotifications();
       await this.checkAndSendDailyReminders();
+      await this.checkAndSendEmailNotifications();
     });
 
     this.isRunning = true;
@@ -429,6 +431,245 @@ class ExpiryNotificationScheduler {
       return results.some(r => r.success);
     } catch (error) {
       console.error(`Error sending daily reminder ${reminderType} to user ${userId}:`, error);
+      return false;
+    }
+  }
+
+  // Check and send email notifications at 7:45 AM user's time
+  async checkAndSendEmailNotifications() {
+    try {
+      console.log('Checking for email notifications to send at 7:45 AM...');
+
+      // Get all users with email notifications enabled
+      const { data: preferences, error } = await supabase
+        .from('notification_preferences')
+        .select('*');
+
+      if (error || !preferences) {
+        console.error('Error fetching preferences for email notifications:', error);
+        return;
+      }
+
+      let emailsChecked = 0;
+      let emailsSent = 0;
+
+      for (const pref of preferences) {
+        const userTime = moment.tz(pref.timezone || 'America/Los_Angeles');
+        const currentHour = userTime.hour();
+        const currentMinute = userTime.minute();
+
+        // Check if it's 7:45 AM in user's timezone (within 30-minute window from cron)
+        if (currentHour === 7 && currentMinute >= 45) {
+          emailsChecked++;
+
+          // 1. Check for DAILY expiry email
+          if (pref.email_daily_expiry) {
+            const lastSent = pref.last_daily_email_sent ? moment(pref.last_daily_email_sent) : null;
+            const today = moment().format('YYYY-MM-DD');
+            const lastSentDate = lastSent ? lastSent.format('YYYY-MM-DD') : null;
+
+            // Only send if we haven't sent today
+            if (!lastSent || lastSentDate !== today) {
+              const emailSent = await this.sendDailyExpiryEmail(pref.user_id);
+
+              if (emailSent) {
+                emailsSent++;
+                // Update last_daily_email_sent timestamp
+                await supabase
+                  .from('notification_preferences')
+                  .update({ last_daily_email_sent: new Date().toISOString() })
+                  .eq('user_id', pref.user_id);
+
+                console.log(`Sent daily expiry email to user ${pref.user_id}`);
+              }
+            }
+          }
+
+          // 2. Check for WEEKLY summary email (Sundays only)
+          if (pref.email_weekly_summary && userTime.day() === 0) { // 0 = Sunday
+            const lastSent = pref.last_weekly_email_sent ? moment(pref.last_weekly_email_sent) : null;
+            const thisWeek = moment().week();
+            const lastSentWeek = lastSent ? lastSent.week() : null;
+
+            // Only send if we haven't sent this week
+            if (!lastSent || lastSentWeek !== thisWeek) {
+              const emailSent = await this.sendWeeklyExpiryEmail(pref.user_id);
+
+              if (emailSent) {
+                emailsSent++;
+                // Update last_weekly_email_sent timestamp
+                await supabase
+                  .from('notification_preferences')
+                  .update({ last_weekly_email_sent: new Date().toISOString() })
+                  .eq('user_id', pref.user_id);
+
+                console.log(`Sent weekly expiry email to user ${pref.user_id}`);
+              }
+            }
+          }
+        }
+      }
+
+      if (emailsChecked > 0) {
+        console.log(`Email notifications: Checked ${emailsChecked} users, Sent ${emailsSent} emails`);
+      }
+    } catch (error) {
+      console.error('Error in checkAndSendEmailNotifications:', error);
+    }
+  }
+
+  // Send daily expiry email to a user
+  async sendDailyExpiryEmail(userId) {
+    try {
+      // Get user details
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('email, first_name, timezone')
+        .eq('id', userId)
+        .single();
+
+      if (userError || !user) {
+        console.error(`Error fetching user ${userId}:`, userError);
+        return false;
+      }
+
+      // Get all expiring items (today, tomorrow, and next 7 days)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const sevenDaysFromNow = new Date(today);
+      sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
+
+      const { data: items, error: itemsError } = await supabase
+        .from('fridge_items')
+        .select('id, item_name, expiration_date, quantity, category')
+        .eq('user_id', userId)
+        .is('deleted_at', null)
+        .gte('expiration_date', today.toISOString().split('T')[0])
+        .lte('expiration_date', sevenDaysFromNow.toISOString().split('T')[0]);
+
+      if (itemsError) {
+        console.error(`Error fetching items for user ${userId}:`, itemsError);
+        return false;
+      }
+
+      // Only send if there are items expiring
+      if (!items || items.length === 0) {
+        console.log(`No expiring items for user ${userId}, skipping daily email`);
+        return false;
+      }
+
+      // Send email via emailService
+      await emailService.sendDailyExpiryEmail(user, items);
+
+      // Log the email notification
+      await supabase
+        .from('notification_logs')
+        .insert({
+          user_id: userId,
+          notification_type: 'daily-expiry-email',
+          notification_method: 'email',
+          title: 'Daily Expiry Reminder',
+          body: `Sent email about ${items.length} expiring items`,
+          data: { itemCount: items.length },
+          success: true
+        });
+
+      return true;
+    } catch (error) {
+      console.error(`Error sending daily expiry email to user ${userId}:`, error);
+
+      // Log the failed email
+      await supabase
+        .from('notification_logs')
+        .insert({
+          user_id: userId,
+          notification_type: 'daily-expiry-email',
+          notification_method: 'email',
+          title: 'Daily Expiry Reminder',
+          body: 'Failed to send',
+          success: false,
+          error_message: error.message
+        })
+        .catch(() => {}); // Ignore logging errors
+
+      return false;
+    }
+  }
+
+  // Send weekly expiry email to a user
+  async sendWeeklyExpiryEmail(userId) {
+    try {
+      // Get user details
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('email, first_name, timezone')
+        .eq('id', userId)
+        .single();
+
+      if (userError || !user) {
+        console.error(`Error fetching user ${userId}:`, userError);
+        return false;
+      }
+
+      // Get all items expiring this week (next 7 days)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const sevenDaysFromNow = new Date(today);
+      sevenDaysFromNow.setDate(sevenDaysFromNow.getDate() + 7);
+
+      const { data: items, error: itemsError } = await supabase
+        .from('fridge_items')
+        .select('id, item_name, expiration_date, quantity, category')
+        .eq('user_id', userId)
+        .is('deleted_at', null)
+        .gte('expiration_date', today.toISOString().split('T')[0])
+        .lte('expiration_date', sevenDaysFromNow.toISOString().split('T')[0]);
+
+      if (itemsError) {
+        console.error(`Error fetching items for user ${userId}:`, itemsError);
+        return false;
+      }
+
+      // Only send if there are items expiring this week
+      if (!items || items.length === 0) {
+        console.log(`No items expiring this week for user ${userId}, skipping weekly email`);
+        return false;
+      }
+
+      // Send email via emailService
+      await emailService.sendWeeklyExpiryEmail(user, items);
+
+      // Log the email notification
+      await supabase
+        .from('notification_logs')
+        .insert({
+          user_id: userId,
+          notification_type: 'weekly-expiry-email',
+          notification_method: 'email',
+          title: 'Weekly Expiry Summary',
+          body: `Sent weekly email about ${items.length} expiring items`,
+          data: { itemCount: items.length },
+          success: true
+        });
+
+      return true;
+    } catch (error) {
+      console.error(`Error sending weekly expiry email to user ${userId}:`, error);
+
+      // Log the failed email
+      await supabase
+        .from('notification_logs')
+        .insert({
+          user_id: userId,
+          notification_type: 'weekly-expiry-email',
+          notification_method: 'email',
+          title: 'Weekly Expiry Summary',
+          body: 'Failed to send',
+          success: false,
+          error_message: error.message
+        })
+        .catch(() => {}); // Ignore logging errors
+
       return false;
     }
   }

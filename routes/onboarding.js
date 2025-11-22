@@ -11,6 +11,8 @@ router.get('/progress', onboardingController.getProgress);
 router.post('/create-session', onboardingController.createOnboardingSession);
 router.post('/create-payment-intent', onboardingController.createPaymentIntent);
 router.post('/confirm-payment', onboardingController.confirmOnboardingPayment);
+router.post('/validate-promo', onboardingController.validatePromoCode);
+router.post('/apply-promo', onboardingController.applyPromoCode);
 
 // Protected routes (require auth after account creation)
 router.post('/complete', authMiddleware.authenticateToken, onboardingController.completeOnboarding);

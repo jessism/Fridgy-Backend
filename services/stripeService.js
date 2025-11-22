@@ -7,7 +7,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 /**
  * Get or create a Stripe customer for a user
- * @param {Object} user - User object with id, email, firstName
+ * @param {Object} user - User object with id, email, firstName, timezone
  * @returns {Promise<string>} Stripe customer ID
  */
 async function getOrCreateCustomer(user) {
@@ -22,23 +22,37 @@ async function getOrCreateCustomer(user) {
       .eq('user_id', user.id)
       .single();
 
-    // If found and has customer ID, return it
+    // If found and has customer ID, update timezone if provided and return it
     if (!fetchError && subscription && subscription.stripe_customer_id) {
       console.log('[StripeService] Found existing customer:', subscription.stripe_customer_id);
+
+      // Update customer metadata with timezone if provided
+      if (user.timezone) {
+        await stripe.customers.update(subscription.stripe_customer_id, {
+          metadata: {
+            user_id: user.id,
+            timezone: user.timezone,
+            app: 'fridgy'
+          }
+        });
+        console.log('[StripeService] Updated customer timezone:', user.timezone);
+      }
+
       return subscription.stripe_customer_id;
     }
 
-    // Create new Stripe customer
+    // Create new Stripe customer with timezone
     const customer = await stripe.customers.create({
       email: user.email,
       name: user.firstName || user.first_name,
       metadata: {
         user_id: user.id,
+        timezone: user.timezone || 'America/Los_Angeles',
         app: 'fridgy'
       }
     });
 
-    console.log('[StripeService] Created customer:', customer.id, 'for user:', user.id);
+    console.log('[StripeService] Created customer:', customer.id, 'for user:', user.id, 'timezone:', user.timezone);
 
     // Store customer ID in subscriptions table
     const { error: upsertError } = await supabase
@@ -68,9 +82,10 @@ async function getOrCreateCustomer(user) {
  * @param {string} userId - User ID
  * @param {string} email - User email
  * @param {string|null} promoCode - Optional promo code
+ * @param {string|null} timezone - User's timezone (IANA format)
  * @returns {Promise<Object>} { subscriptionId, clientSecret }
  */
-async function createSubscriptionIntent(userId, email, promoCode = null) {
+async function createSubscriptionIntent(userId, email, promoCode = null, timezone = null) {
   try {
     const priceId = process.env.STRIPE_PRICE_ID;
 
@@ -78,8 +93,8 @@ async function createSubscriptionIntent(userId, email, promoCode = null) {
       throw new Error('STRIPE_PRICE_ID not configured in environment variables');
     }
 
-    // Get or create Stripe customer
-    const customerId = await getOrCreateCustomer({ id: userId, email });
+    // Get or create Stripe customer with timezone
+    const customerId = await getOrCreateCustomer({ id: userId, email, timezone });
 
     const subscriptionData = {
       customer: customerId,
@@ -96,21 +111,23 @@ async function createSubscriptionIntent(userId, email, promoCode = null) {
       }
     };
 
-    // If promo code provided, validate and apply
+    // If promo code provided, validate and apply using modern Stripe API
     if (promoCode) {
-      const { getServiceClient } = require('../config/supabase');
-      const supabase = getServiceClient();
+      console.log('[StripeService] Looking up promotion code in Stripe:', promoCode);
 
-      const { data: promo, error: promoError } = await supabase
-        .from('promo_codes')
-        .select('stripe_coupon_id')
-        .eq('code', promoCode)
-        .eq('active', true)
-        .single();
+      // Look up the promotion code ID from Stripe (modern approach)
+      const promoCodes = await stripe.promotionCodes.list({
+        code: promoCode,
+        active: true,
+        limit: 1
+      });
 
-      if (!promoError && promo && promo.stripe_coupon_id) {
-        subscriptionData.coupon = promo.stripe_coupon_id;
-        console.log('[StripeService] Applied promo code:', promoCode);
+      if (promoCodes.data.length > 0) {
+        const promoCodeId = promoCodes.data[0].id;
+        subscriptionData.discounts = [{ promotion_code: promoCodeId }];
+        console.log('[StripeService] Applied promo code:', promoCode, '-> ID:', promoCodeId);
+      } else {
+        console.warn('[StripeService] Promotion code not found in Stripe:', promoCode);
       }
     }
 
@@ -298,16 +315,32 @@ async function reactivateSubscription(subscriptionId) {
 /**
  * Apply a promo code to an existing subscription
  * @param {string} subscriptionId - Stripe subscription ID
- * @param {string} couponId - Stripe coupon ID
+ * @param {string} promoCode - Promo code string (will be looked up in Stripe)
  * @returns {Promise<Object>} Updated subscription
  */
-async function applyPromoCode(subscriptionId, couponId) {
+async function applyPromoCode(subscriptionId, promoCode) {
   try {
-    const subscription = await stripe.subscriptions.update(subscriptionId, {
-      coupon: couponId,
+    // Look up the promotion code ID from Stripe
+    const promoCodes = await stripe.promotionCodes.list({
+      code: promoCode,
+      active: true,
+      limit: 1
     });
 
-    console.log('[StripeService] Applied promo code to subscription:', subscriptionId);
+    if (promoCodes.data.length === 0) {
+      throw new Error('Promotion code not found or inactive in Stripe');
+    }
+
+    const promoCodeId = promoCodes.data[0].id;
+
+    const subscription = await stripe.subscriptions.update(subscriptionId, {
+      discounts: [{ promotion_code: promoCodeId }],
+      metadata: {
+        promo_code: promoCode
+      }
+    });
+
+    console.log('[StripeService] Applied promo code to subscription:', subscriptionId, '-> Code:', promoCode);
 
     return subscription;
   } catch (error) {

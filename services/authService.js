@@ -24,7 +24,7 @@ const authService = {
       const supabase = getSupabaseClient();
       const { data: user, error} = await supabase
         .from('users')
-        .select('id, email, first_name, password_hash, created_at, has_seen_welcome_tour')
+        .select('id, email, first_name, password_hash, created_at, has_seen_welcome_tour, tier, is_grandfathered')
         .eq('email', email.toLowerCase())
         .single();
 
@@ -49,7 +49,7 @@ const authService = {
       const supabase = getSupabaseClient();
       const { data: user, error } = await supabase
         .from('users')
-        .select('id, email, first_name, created_at, has_seen_welcome_tour')
+        .select('id, email, first_name, created_at, has_seen_welcome_tour, tier, is_grandfathered')
         .eq('id', userId)
         .single();
 
@@ -84,7 +84,7 @@ const authService = {
           first_name: firstName.trim(),
           password_hash: passwordHash
         })
-        .select('id, email, first_name, created_at')
+        .select('id, email, first_name, created_at, tier, is_grandfathered')
         .single();
 
       if (insertError) {
@@ -137,7 +137,7 @@ const authService = {
           updated_at: new Date().toISOString()
         })
         .eq('id', userId)
-        .select('id, email, first_name, created_at')
+        .select('id, email, first_name, created_at, tier, is_grandfathered')
         .single();
 
       if (error) {

@@ -344,7 +344,7 @@ const onboardingController = {
     try {
       console.log('💳 Creating payment intent for onboarding...');
 
-      const { sessionId, priceId = process.env.STRIPE_PRICE_ID, isOnboarding = true } = req.body;
+      const { sessionId, priceId = process.env.STRIPE_PRICE_ID, isOnboarding = true, promoCode = null } = req.body;
 
       if (!sessionId) {
         return res.status(400).json({
@@ -405,6 +405,75 @@ const onboardingController = {
         });
       }
 
+      // If session already has a subscription (not confirmed), update it instead of creating new
+      if (session.stripe_subscription_id && !session.payment_confirmed) {
+        console.log('[Onboarding] Session already has subscription:', session.stripe_subscription_id);
+
+        // If promo code is being applied, update the existing subscription
+        if (promoCode) {
+          console.log('[Onboarding] Updating existing subscription with promo code:', promoCode);
+
+          // Look up the promotion code ID from Stripe
+          const promoCodes = await stripe.promotionCodes.list({
+            code: promoCode,
+            active: true,
+            limit: 1
+          });
+
+          if (promoCodes.data.length === 0) {
+            console.error('[Onboarding] Promotion code not found in Stripe:', promoCode);
+            throw new Error('Promotion code not found or inactive in Stripe');
+          }
+
+          const promoCodeId = promoCodes.data[0].id;
+          console.log('[Onboarding] Applying promo code to existing subscription:', promoCode, '→ ID:', promoCodeId);
+
+          // Update existing subscription with the promo discount
+          await stripe.subscriptions.update(session.stripe_subscription_id, {
+            discounts: [{ promotion_code: promoCodeId }],
+            metadata: {
+              promo_code: promoCode
+            }
+          });
+        }
+
+        // Retrieve the existing subscription with expanded fields
+        const subscription = await stripe.subscriptions.retrieve(
+          session.stripe_subscription_id,
+          { expand: ['latest_invoice.payment_intent', 'pending_setup_intent'] }
+        );
+
+        console.log('[Onboarding] Retrieved existing subscription:', subscription.id);
+        console.log('[Onboarding] Subscription status:', subscription.status);
+
+        // For TRIAL subscriptions, return SetupIntent
+        if (subscription.pending_setup_intent) {
+          console.log('✅ Returning existing subscription (trial)');
+          return res.json({
+            success: true,
+            subscriptionId: subscription.id,
+            clientSecret: subscription.pending_setup_intent.client_secret,
+            requiresSetup: true,
+            isTrial: true
+          });
+        }
+
+        // For NON-TRIAL subscriptions, return PaymentIntent
+        if (subscription.latest_invoice?.payment_intent?.client_secret) {
+          console.log('✅ Returning existing subscription (immediate)');
+          return res.json({
+            success: true,
+            subscriptionId: subscription.id,
+            clientSecret: subscription.latest_invoice.payment_intent.client_secret,
+            requiresSetup: false,
+            isTrial: false
+          });
+        }
+
+        // If subscription exists but has no intent, fall through to create new one
+        console.log('[Onboarding] Existing subscription has no intent, will create new one');
+      }
+
       // Create or retrieve Stripe customer for this session
       let customerId = session.stripe_customer_id;
 
@@ -430,8 +499,8 @@ const onboardingController = {
           .eq('session_id', sessionId);
       }
 
-      // Create subscription with trial
-      const subscription = await stripe.subscriptions.create({
+      // Prepare subscription data
+      const subscriptionData = {
         customer: customerId,
         items: [{ price: priceId }],
         payment_behavior: 'default_incomplete',
@@ -442,9 +511,34 @@ const onboardingController = {
         trial_period_days: 7, // 7-day free trial
         metadata: {
           session_id: sessionId,
-          is_onboarding: 'true'
+          is_onboarding: 'true',
+          promo_code: promoCode || null
         }
-      });
+      };
+
+      // Apply promo code if provided (Stripe promotion code)
+      if (promoCode) {
+        console.log('[Onboarding] Looking up promotion code in Stripe:', promoCode);
+
+        // Look up the promotion code ID from Stripe
+        const promoCodes = await stripe.promotionCodes.list({
+          code: promoCode,
+          active: true,
+          limit: 1
+        });
+
+        if (promoCodes.data.length === 0) {
+          console.error('[Onboarding] Promotion code not found in Stripe:', promoCode);
+          throw new Error('Promotion code not found or inactive in Stripe');
+        }
+
+        const promoCodeId = promoCodes.data[0].id;
+        subscriptionData.discounts = [{ promotion_code: promoCodeId }];
+        console.log('[Onboarding] Applying promo code:', promoCode, '→ ID:', promoCodeId);
+      }
+
+      // Create subscription
+      const subscription = await stripe.subscriptions.create(subscriptionData);
 
       console.log('[Onboarding] Created subscription:', subscription.id);
       console.log('[Onboarding] Subscription status:', subscription.status);
@@ -519,7 +613,20 @@ const onboardingController = {
 
       const { sessionId, paymentIntentId, subscriptionId } = req.body;
 
+      // Detailed logging for debugging
+      console.log('[ConfirmPayment] Request body:', {
+        sessionId,
+        paymentIntentId,
+        subscriptionId,
+        hasSessionId: !!sessionId,
+        hasSubscriptionId: !!subscriptionId
+      });
+
       if (!sessionId || !subscriptionId) {
+        console.error('[ConfirmPayment] Missing required fields:', {
+          sessionId: !!sessionId,
+          subscriptionId: !!subscriptionId
+        });
         return res.status(400).json({
           success: false,
           error: 'Session ID and subscription ID required'
@@ -528,25 +635,87 @@ const onboardingController = {
 
       const supabase = getSupabaseClient();
 
-      // Verify session
+      // Step 1: Query session by session_id ONLY (remove strict filter)
+      console.log('[ConfirmPayment] Querying session:', sessionId);
       const { data: session, error: sessionError } = await supabase
         .from('onboarding_sessions')
         .select('*')
         .eq('session_id', sessionId)
-        .eq('stripe_subscription_id', subscriptionId)
         .single();
 
+      // Log what we got from database
+      console.log('[ConfirmPayment] Database query result:', {
+        found: !!session,
+        error: sessionError?.message,
+        sessionData: session ? {
+          session_id: session.session_id,
+          stripe_customer_id: session.stripe_customer_id,
+          stripe_subscription_id: session.stripe_subscription_id,
+          payment_confirmed: session.payment_confirmed
+        } : null
+      });
+
       if (sessionError || !session) {
+        console.error('[ConfirmPayment] Session not found:', {
+          sessionId,
+          error: sessionError?.message
+        });
         return res.status(400).json({
           success: false,
-          error: 'Invalid session or subscription'
+          error: 'Session not found'
         });
       }
 
-      // Verify payment status with Stripe
+      // Step 2: Verify subscription ID matches
+      if (session.stripe_subscription_id !== subscriptionId) {
+        console.error('[ConfirmPayment] Subscription ID mismatch:', {
+          sessionId,
+          storedSubscriptionId: session.stripe_subscription_id,
+          receivedSubscriptionId: subscriptionId,
+          match: session.stripe_subscription_id === subscriptionId
+        });
+        return res.status(400).json({
+          success: false,
+          error: 'Subscription ID mismatch',
+          details: {
+            expected: session.stripe_subscription_id,
+            received: subscriptionId
+          }
+        });
+      }
+
+      // Step 3: Check if already confirmed
+      if (session.payment_confirmed) {
+        console.log('[ConfirmPayment] Payment already confirmed for session:', sessionId);
+        // Return success anyway - idempotent
+        return res.json({
+          success: true,
+          message: 'Payment already confirmed',
+          alreadyConfirmed: true
+        });
+      }
+
+      // Step 4: Verify payment status with Stripe
+      console.log('[ConfirmPayment] Retrieving subscription from Stripe:', subscriptionId);
       const subscription = await stripe.subscriptions.retrieve(subscriptionId);
 
-      if (subscription.status === 'trialing' || subscription.status === 'active') {
+      console.log('[ConfirmPayment] Stripe subscription status:', {
+        id: subscription.id,
+        status: subscription.status,
+        trial_end: subscription.trial_end,
+        current_period_end: subscription.current_period_end,
+        default_payment_method: subscription.default_payment_method
+      });
+
+      // Only confirm payment if subscription has verified payment method
+      const hasPaymentMethod = subscription.default_payment_method != null;
+
+      console.log('[ConfirmPayment] 🔍 Payment method check:', {
+        hasPaymentMethod,
+        status: subscription.status
+      });
+
+      if ((subscription.status === 'trialing' || subscription.status === 'active') && hasPaymentMethod) {
         // Payment confirmed, update session
         await supabase
           .from('onboarding_sessions')
@@ -568,6 +737,11 @@ const onboardingController = {
           }
         });
       } else {
+        console.error('[ConfirmPayment] Unexpected subscription status:', {
+          subscriptionId,
+          status: subscription.status,
+          expectedStatuses: ['trialing', 'active']
+        });
         res.status(400).json({
           success: false,
           error: 'Payment not confirmed',
@@ -580,6 +754,169 @@ const onboardingController = {
       res.status(500).json({
         success: false,
         error: 'Failed to confirm payment',
+        message: error.message
+      });
+    }
+  },
+
+  /**
+   * Validate Promo Code (Public - No Auth Required)
+   * Used during onboarding before account creation
+   */
+  async validatePromoCode(req, res) {
+    try {
+      const { code } = req.body;
+
+      if (!code) {
+        return res.status(400).json({
+          success: false,
+          valid: false,
+          error: 'MISSING_CODE',
+          message: 'Promo code is required'
+        });
+      }
+
+      console.log('[Onboarding] Validating promo code:', code.toUpperCase());
+
+      // Query database for promo code
+      const supabase = getSupabaseClient();
+
+      const { data: promoCodes, error: queryError } = await supabase
+        .from('promo_codes')
+        .select('*')
+        .eq('code', code.toUpperCase())
+        .eq('active', true)
+        .single();
+
+      if (queryError || !promoCodes) {
+        console.log('[Onboarding] Promo code not found in database');
+        return res.status(404).json({
+          success: false,
+          valid: false,
+          error: 'INVALID_CODE',
+          message: 'Promo code is invalid or expired'
+        });
+      }
+
+      // Check expiration
+      if (promoCodes.expires_at && new Date(promoCodes.expires_at) < new Date()) {
+        console.log('[Onboarding] Promo code has expired');
+        return res.status(404).json({
+          success: false,
+          valid: false,
+          error: 'EXPIRED_CODE',
+          message: 'Promo code has expired'
+        });
+      }
+
+      // Note: max_redemptions is enforced by Stripe, not here
+      // Stripe will reject the promo if limit is reached when applying to subscription
+
+      // Code is valid
+      console.log('[Onboarding] Promo code is valid:', promoCodes);
+      return res.json({
+        success: true,
+        valid: true,
+        promo: {
+          code: promoCodes.code,
+          discountType: promoCodes.discount_type,
+          discountValue: promoCodes.discount_value,
+          duration: promoCodes.duration,
+          durationInMonths: promoCodes.duration_in_months
+        }
+      });
+
+    } catch (error) {
+      console.error('[Onboarding] Promo validation error:', error);
+      return res.status(500).json({
+        success: false,
+        valid: false,
+        error: 'SERVER_ERROR',
+        message: 'Failed to validate promo code'
+      });
+    }
+  },
+
+  /**
+   * Apply Promo Code to Existing Subscription
+   * POST /api/onboarding/apply-promo
+   * Updates subscription discount WITHOUT returning new clientSecret
+   */
+  async applyPromoCode(req, res) {
+    try {
+      const { sessionId, subscriptionId, promoCode } = req.body;
+
+      if (!sessionId || !subscriptionId || !promoCode) {
+        return res.status(400).json({
+          success: false,
+          error: 'Session ID, subscription ID, and promo code required'
+        });
+      }
+
+      const supabase = getSupabaseClient();
+
+      // Verify session exists
+      const { data: session, error: sessionError } = await supabase
+        .from('onboarding_sessions')
+        .select('*')
+        .eq('session_id', sessionId)
+        .single();
+
+      if (sessionError || !session) {
+        return res.status(400).json({
+          success: false,
+          error: 'Session not found'
+        });
+      }
+
+      // Verify subscription ID matches session
+      if (session.stripe_subscription_id !== subscriptionId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Subscription ID mismatch'
+        });
+      }
+
+      console.log('[Onboarding] Applying promo code to subscription:', promoCode, subscriptionId);
+
+      // Look up the promotion code ID from Stripe
+      const promoCodes = await stripe.promotionCodes.list({
+        code: promoCode,
+        active: true,
+        limit: 1
+      });
+
+      if (promoCodes.data.length === 0) {
+        console.error('[Onboarding] Promotion code not found in Stripe:', promoCode);
+        return res.status(404).json({
+          success: false,
+          error: 'Promotion code not found or inactive in Stripe'
+        });
+      }
+
+      const promoCodeId = promoCodes.data[0].id;
+
+      // Update existing subscription with the promo discount
+      await stripe.subscriptions.update(subscriptionId, {
+        discounts: [{ promotion_code: promoCodeId }],
+        metadata: {
+          promo_code: promoCode
+        }
+      });
+
+      console.log('[Onboarding] Promo code applied successfully:', promoCode);
+
+      res.json({
+        success: true,
+        message: 'Promo code applied successfully',
+        promoCode: promoCode
+      });
+
+    } catch (error) {
+      console.error('[Onboarding] Error applying promo code:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to apply promo code',
         message: error.message
       });
     }

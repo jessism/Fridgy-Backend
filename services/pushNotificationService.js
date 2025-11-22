@@ -333,6 +333,58 @@ class PushNotificationService {
       throw error;
     }
   }
+
+  // Get user's email notification preferences
+  async getEmailPreferences(userId) {
+    try {
+      const { data, error } = await supabase
+        .from('notification_preferences')
+        .select('email_daily_expiry, email_weekly_summary, email_tips_updates, last_daily_email_sent, last_weekly_email_sent, last_tips_email_sent')
+        .eq('user_id', userId)
+        .single();
+
+      if (error && error.code !== 'PGRST116') throw error; // PGRST116 = no rows
+
+      // Return defaults if no preferences exist
+      return data || {
+        email_daily_expiry: true,
+        email_weekly_summary: true,
+        email_tips_updates: true,
+        last_daily_email_sent: null,
+        last_weekly_email_sent: null,
+        last_tips_email_sent: null
+      };
+    } catch (error) {
+      console.error('Error fetching email preferences:', error);
+      return {
+        email_daily_expiry: true,
+        email_weekly_summary: true,
+        email_tips_updates: true,
+        last_daily_email_sent: null,
+        last_weekly_email_sent: null,
+        last_tips_email_sent: null
+      };
+    }
+  }
+
+  // Update email notification preferences
+  async updateEmailPreferences(userId, emailPreferences) {
+    try {
+      const { error } = await supabase
+        .from('notification_preferences')
+        .upsert({
+          user_id: userId,
+          ...emailPreferences,
+          updated_at: new Date().toISOString()
+        });
+
+      if (error) throw error;
+      return { success: true, message: 'Email preferences updated successfully' };
+    } catch (error) {
+      console.error('Error updating email preferences:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = new PushNotificationService();

@@ -44,6 +44,8 @@ async function processWebhookEvent(event) {
       'customer.subscription.deleted': handleSubscriptionDeleted,
       'invoice.payment_succeeded': handlePaymentSucceeded,
       'invoice.payment_failed': handlePaymentFailed,
+      'promotion_code.created': handlePromotionCodeCreated,
+      'promotion_code.updated': handlePromotionCodeUpdated,
     };
 
     const handler = handlers[event.type];
@@ -151,6 +153,7 @@ async function markEventProcessed(eventId) {
  * Triggered when user completes payment in Stripe Checkout
  */
 async function handleCheckoutComplete(session) {
+  console.log('🔥 HANDLER CALLED: handleCheckoutComplete');
   try {
     console.log('[WebhookService] Checkout completed:', session.id);
 
@@ -167,8 +170,18 @@ async function handleCheckoutComplete(session) {
     const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
 
-    // Determine tier based on subscription status
-    const tier = subscription.status === 'trialing' || subscription.status === 'active' ? 'premium' : 'free';
+    // Determine tier based on subscription status AND payment method
+    // Only grant premium if payment method is verified (prevents access before SetupIntent completes)
+    const hasPaymentMethod = subscription.default_payment_method != null;
+    const tier = (subscription.status === 'trialing' || subscription.status === 'active') && hasPaymentMethod
+      ? 'premium'
+      : 'free';
+
+    console.log('[WebhookService] 🔍 handleCheckoutComplete - Subscription:', subscription.id);
+    console.log('[WebhookService] 🔍 Subscription status:', subscription.status);
+    console.log('[WebhookService] 🔍 default_payment_method:', subscription.default_payment_method);
+    console.log('[WebhookService] 🔍 hasPaymentMethod:', hasPaymentMethod);
+    console.log('[WebhookService] 🔍 Tier decision:', tier);
 
     // Create/update subscription in database
     await subscriptionService.upsertSubscription({
@@ -197,6 +210,7 @@ async function handleCheckoutComplete(session) {
  * Handle customer.subscription.created event
  */
 async function handleSubscriptionCreated(subscription) {
+  console.log('🔥 HANDLER CALLED: handleSubscriptionCreated');
   try {
     const supabase = getServiceClient();
     console.log('[WebhookService] Subscription created:', subscription.id);
@@ -219,7 +233,19 @@ async function handleSubscriptionCreated(subscription) {
     }
 
     const userId = existingSub.user_id;
-    const tier = subscription.status === 'trialing' || subscription.status === 'active' ? 'premium' : 'free';
+
+    // Only grant premium if payment method is verified (prevents access before SetupIntent completes)
+    const hasPaymentMethod = subscription.default_payment_method != null;
+    const tier = (subscription.status === 'trialing' || subscription.status === 'active') && hasPaymentMethod
+      ? 'premium'
+      : 'free';
+
+    console.log('[WebhookService] 🔍 handleSubscriptionCreated - Subscription:', subscription.id);
+    console.log('[WebhookService] 🔍 User ID:', userId);
+    console.log('[WebhookService] 🔍 Subscription status:', subscription.status);
+    console.log('[WebhookService] 🔍 default_payment_method:', subscription.default_payment_method);
+    console.log('[WebhookService] 🔍 hasPaymentMethod:', hasPaymentMethod);
+    console.log('[WebhookService] 🔍 Tier decision:', tier);
 
     await subscriptionService.upsertSubscription({
       userId,
@@ -250,8 +276,21 @@ async function handleSubscriptionCreated(subscription) {
       if (userError) {
         console.error('[WebhookService] Error fetching user for trial email:', userError);
       } else if (user) {
+        // Get customer timezone from Stripe metadata
+        let timezone = 'America/Los_Angeles'; // default
+        try {
+          const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+          const customer = await stripe.customers.retrieve(subscription.customer);
+          if (customer.metadata && customer.metadata.timezone) {
+            timezone = customer.metadata.timezone;
+            console.log('[WebhookService] Retrieved customer timezone:', timezone);
+          }
+        } catch (tzError) {
+          console.error('[WebhookService] Error fetching customer timezone:', tzError.message);
+        }
+
         const trialEndDate = new Date(subscription.trial_end * 1000);
-        await emailService.sendTrialStartEmail(user, trialEndDate);
+        await emailService.sendTrialStartEmail(user, trialEndDate, timezone);
       }
     }
   } catch (error) {
@@ -265,6 +304,7 @@ async function handleSubscriptionCreated(subscription) {
  * Triggered when subscription status changes (e.g., trial ends, cancellation scheduled)
  */
 async function handleSubscriptionUpdated(subscription) {
+  console.log('🔥 HANDLER CALLED: handleSubscriptionUpdated');
   try {
     console.log('[WebhookService] Subscription updated:', subscription.id, 'status:', subscription.status);
 
@@ -274,7 +314,18 @@ async function handleSubscriptionUpdated(subscription) {
       return;
     }
 
-    const tier = subscription.status === 'trialing' || subscription.status === 'active' ? 'premium' : 'free';
+    // Only grant premium if payment method is verified (prevents access before SetupIntent completes)
+    const hasPaymentMethod = subscription.default_payment_method != null;
+    const tier = (subscription.status === 'trialing' || subscription.status === 'active') && hasPaymentMethod
+      ? 'premium'
+      : 'free';
+
+    console.log('[WebhookService] 🔍 handleSubscriptionUpdated - Subscription:', subscription.id);
+    console.log('[WebhookService] 🔍 User ID:', dbSub.user_id);
+    console.log('[WebhookService] 🔍 Subscription status:', subscription.status);
+    console.log('[WebhookService] 🔍 default_payment_method:', subscription.default_payment_method);
+    console.log('[WebhookService] 🔍 hasPaymentMethod:', hasPaymentMethod);
+    console.log('[WebhookService] 🔍 Tier decision:', tier);
 
     await subscriptionService.upsertSubscription({
       userId: dbSub.user_id,
@@ -327,34 +378,64 @@ async function handleSubscriptionDeleted(subscription) {
  * Triggered when payment succeeds (trial conversion, renewal, etc.)
  */
 async function handlePaymentSucceeded(invoice) {
+  console.log('🔥 HANDLER CALLED: handlePaymentSucceeded');
   try {
     console.log('[WebhookService] Payment succeeded for invoice:', invoice.id);
 
     const subscriptionId = invoice.subscription;
-    if (!subscriptionId) return; // Not a subscription payment
-
-    const dbSub = await subscriptionService.getSubscriptionByStripeId(subscriptionId);
-    if (!dbSub) {
-      console.error('[WebhookService] Subscription not found:', subscriptionId);
+    console.log('🔍 DEBUG: subscriptionId =', subscriptionId);
+    if (!subscriptionId) {
+      console.log('🔍 DEBUG: No subscription ID, returning early');
       return;
     }
+
+    console.log('🔍 DEBUG: Looking up subscription in database:', subscriptionId);
+    const dbSub = await subscriptionService.getSubscriptionByStripeId(subscriptionId);
+    console.log('🔍 DEBUG: dbSub =', dbSub ? `found (user: ${dbSub.user_id})` : 'NULL - NOT FOUND');
+    if (!dbSub) {
+      console.error('[WebhookService] Subscription not found in database:', subscriptionId);
+      return;
+    }
+
+    console.log('🔍 DEBUG: About to retrieve subscription from Stripe');
+    // Get subscription from Stripe to check payment method
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    console.log('🔍 DEBUG: Retrieved subscription from Stripe successfully');
+
+    // Only grant premium if payment method is verified
+    // This prevents granting access on $0 trial invoices before SetupIntent completes
+    const hasPaymentMethod = subscription.default_payment_method != null;
+
+    console.log('[WebhookService] 🔍 handlePaymentSucceeded - Invoice:', invoice.id);
+    console.log('[WebhookService] 🔍 User ID:', dbSub.user_id);
+    console.log('[WebhookService] 🔍 Amount paid:', invoice.amount_paid);
+    console.log('[WebhookService] 🔍 Billing reason:', invoice.billing_reason);
+    console.log('[WebhookService] 🔍 Subscription:', subscription.id);
+    console.log('[WebhookService] 🔍 Subscription status:', subscription.status);
+    console.log('[WebhookService] 🔍 default_payment_method:', subscription.default_payment_method);
+    console.log('[WebhookService] 🔍 hasPaymentMethod:', hasPaymentMethod);
 
     // Update status to active (in case it was past_due)
     await subscriptionService.updateSubscriptionStatus(subscriptionId, 'active');
 
-    // Update user tier to premium
-    const supabase = getServiceClient();
-    const { error: userError } = await supabase
-      .from('users')
-      .update({ tier: 'premium' })
-      .eq('id', dbSub.user_id);
+    // Only update user tier to premium if payment method is verified
+    if (hasPaymentMethod) {
+      const supabase = getServiceClient();
+      const { error: userError } = await supabase
+        .from('users')
+        .update({ tier: 'premium' })
+        .eq('id', dbSub.user_id);
 
-    if (userError) {
-      console.error('[WebhookService] Error updating user tier:', userError);
-      throw userError;
+      if (userError) {
+        console.error('[WebhookService] Error updating user tier:', userError);
+        throw userError;
+      }
+
+      console.log('[WebhookService] Payment succeeded, user active:', dbSub.user_id);
+    } else {
+      console.log('[WebhookService] Skipping tier update - no payment method yet for:', dbSub.user_id);
     }
-
-    console.log('[WebhookService] Payment succeeded, user active:', dbSub.user_id);
 
     // Send payment success email (especially important for trial conversions)
     if (invoice.billing_reason === 'subscription_cycle' || invoice.billing_reason === 'subscription_create') {
@@ -420,6 +501,122 @@ async function handlePaymentFailed(invoice) {
   }
 }
 
+/**
+ * Handle promotion_code.created event
+ * Triggered when a promotion code is created in Stripe Dashboard
+ * Automatically syncs the promo code to the database
+ */
+async function handlePromotionCodeCreated(promotionCode) {
+  try {
+    console.log('\n========================================');
+    console.log('[WebhookService] 🎯 PROMOTION CODE CREATED WEBHOOK RECEIVED');
+    console.log('[WebhookService] Promotion code:', promotionCode.code);
+    console.log('[WebhookService] Full promotion code object:', JSON.stringify(promotionCode, null, 2));
+
+    // Fetch the associated coupon details from Stripe
+    const couponId = promotionCode.promotion?.coupon || promotionCode.coupon;
+    console.log('[WebhookService] 📡 Fetching coupon from Stripe:', couponId);
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    const coupon = await stripe.coupons.retrieve(couponId);
+
+    console.log('[WebhookService] ✅ Retrieved coupon details:', coupon.id);
+    console.log('[WebhookService] Coupon data:', JSON.stringify(coupon, null, 2));
+
+    // Prepare promo code data for database
+    const promoData = {
+      id: require('uuid').v4(),
+      code: promotionCode.code.toUpperCase(),
+      stripe_coupon_id: coupon.id,
+      discount_type: coupon.percent_off ? 'percent' : 'fixed',
+      discount_value: coupon.percent_off || (coupon.amount_off / 100), // Convert cents to dollars for fixed
+      duration: coupon.duration, // 'once', 'repeating', 'forever'
+      duration_in_months: coupon.duration_in_months || null,
+      max_redemptions: promotionCode.max_redemptions || null,
+      times_redeemed: 0,
+      active: promotionCode.active,
+      expires_at: promotionCode.expires_at ? new Date(promotionCode.expires_at * 1000) : null,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+
+    console.log('[WebhookService] 💾 Attempting database insert with data:', JSON.stringify(promoData, null, 2));
+
+    // Insert into database (upsert in case it already exists)
+    const { getServiceClient } = require('../config/supabase');
+    const supabase = getServiceClient();
+
+    const { data, error } = await supabase
+      .from('promo_codes')
+      .upsert(promoData, {
+        onConflict: 'code',
+        ignoreDuplicates: false
+      })
+      .select();
+
+    if (error) {
+      console.error('[WebhookService] ❌ ERROR inserting promo code:', error);
+      console.error('[WebhookService] Error details:', JSON.stringify(error, null, 2));
+      throw error;
+    }
+
+    console.log('[WebhookService] ✅ SUCCESS! Database insert result:', JSON.stringify(data, null, 2));
+    console.log('[WebhookService] ✅ Promo code synced to database:', promotionCode.code);
+    console.log('========================================\n');
+
+  } catch (error) {
+    console.error('[WebhookService] ❌ FATAL ERROR handling promotion code created:', error);
+    console.error('[WebhookService] Error stack:', error.stack);
+    throw error;
+  }
+}
+
+/**
+ * Handle promotion_code.updated event
+ * Triggered when a promotion code is updated in Stripe Dashboard
+ * Updates the existing promo code in the database
+ */
+async function handlePromotionCodeUpdated(promotionCode) {
+  try {
+    console.log('[WebhookService] Promotion code updated:', promotionCode.code);
+
+    // Prepare update data
+    const updateData = {
+      active: promotionCode.active,
+      max_redemptions: promotionCode.max_redemptions || null,
+      times_redeemed: promotionCode.times_redeemed || 0,
+      expires_at: promotionCode.expires_at ? new Date(promotionCode.expires_at * 1000) : null,
+      updated_at: new Date()
+    };
+
+    // Update in database
+    const { getServiceClient } = require('../config/supabase');
+    const supabase = getServiceClient();
+
+    const { data, error } = await supabase
+      .from('promo_codes')
+      .update(updateData)
+      .eq('code', promotionCode.code.toUpperCase())
+      .select();
+
+    if (error) {
+      console.error('[WebhookService] Error updating promo code:', error);
+      throw error;
+    }
+
+    if (!data || data.length === 0) {
+      console.warn('[WebhookService] ⚠️  Promo code not found in database, creating it');
+      // If not found, treat as creation
+      await handlePromotionCodeCreated(promotionCode);
+    } else {
+      console.log('[WebhookService] ✅ Promo code updated in database:', promotionCode.code);
+    }
+
+  } catch (error) {
+    console.error('[WebhookService] Error handling promotion code updated:', error);
+    throw error;
+  }
+}
+
 module.exports = {
   processWebhookEvent,
   logWebhookEvent,
@@ -430,4 +627,6 @@ module.exports = {
   handleSubscriptionDeleted,
   handlePaymentSucceeded,
   handlePaymentFailed,
+  handlePromotionCodeCreated,
+  handlePromotionCodeUpdated,
 };

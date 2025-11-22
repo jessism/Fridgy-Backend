@@ -303,4 +303,67 @@ router.get('/test/status', authenticateToken, async (req, res) => {
   }
 });
 
+// Get email notification preferences
+router.get('/email-preferences', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const preferences = await pushNotificationService.getEmailPreferences(userId);
+    res.json({ success: true, preferences });
+  } catch (error) {
+    console.error('Get email preferences error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get email preferences'
+    });
+  }
+});
+
+// Update email notification preferences
+router.put('/email-preferences', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { email_daily_expiry, email_weekly_summary, email_tips_updates } = req.body;
+
+    const result = await pushNotificationService.updateEmailPreferences(userId, {
+      email_daily_expiry,
+      email_weekly_summary,
+      email_tips_updates
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Update email preferences error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update email preferences'
+    });
+  }
+});
+
+// Unsubscribe from all email notifications (for email unsubscribe links)
+router.post('/email/unsubscribe', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Turn off all email notifications
+    const result = await pushNotificationService.updateEmailPreferences(userId, {
+      email_daily_expiry: false,
+      email_weekly_summary: false,
+      email_tips_updates: false
+    });
+
+    res.json({
+      success: true,
+      message: 'Unsubscribed from all email notifications',
+      result
+    });
+  } catch (error) {
+    console.error('Email unsubscribe error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to unsubscribe from emails'
+    });
+  }
+});
+
 module.exports = router;

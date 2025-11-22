@@ -6,7 +6,7 @@
 const stripeService = require('../services/stripeService');
 const subscriptionService = require('../services/subscriptionService');
 const usageService = require('../services/usageService');
-const db = require('../config/database');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 /**
  * Get user's subscription status and usage
@@ -22,12 +22,72 @@ async function getStatus(req, res) {
     // Get usage stats
     const usage = await usageService.getUserUsage(userId);
 
+    // Fetch billing details from Stripe if user has active subscription
+    let billingInfo = null;
+    if (subscription?.stripe_customer_id &&
+        (subscription.status === 'active' || subscription.status === 'trialing')) {
+      try {
+        // Step 1: Always fetch subscription from Stripe for date and base price
+        const stripeSubscription = await stripe.subscriptions.retrieve(
+          subscription.stripe_subscription_id
+        );
+
+        // Get base price from subscription items
+        const baseAmount = stripeSubscription.items.data[0]?.price?.unit_amount || 499;
+
+        // Determine the billing/trial end date from Stripe
+        const billingDate = stripeSubscription.trial_end
+          ? new Date(stripeSubscription.trial_end * 1000).toISOString()
+          : new Date(stripeSubscription.current_period_end * 1000).toISOString();
+
+        // Set base billing info (always available from subscription)
+        billingInfo = {
+          amount: baseAmount, // Default to base amount
+          amountFormatted: `$${(baseAmount / 100).toFixed(2)}`,
+          baseAmount: baseAmount,
+          baseAmountFormatted: `$${(baseAmount / 100).toFixed(2)}`,
+          date: billingDate,
+          discount: null
+        };
+
+        // Step 2: Try to get invoice preview for actual amount with discounts
+        // This may fail for canceled subscriptions (no upcoming invoice)
+        try {
+          const upcomingInvoice = await stripe.invoices.createPreview({
+            customer: subscription.stripe_customer_id,
+            subscription: subscription.stripe_subscription_id
+          });
+
+          // Update with actual invoice amounts
+          billingInfo.amount = upcomingInvoice.total;
+          billingInfo.amountFormatted = `$${(upcomingInvoice.total / 100).toFixed(2)}`;
+          billingInfo.discount = upcomingInvoice.discount ? {
+            code: upcomingInvoice.discount.coupon?.name || upcomingInvoice.discount.coupon?.id,
+            percentOff: upcomingInvoice.discount.coupon?.percent_off || null,
+            amountOff: upcomingInvoice.discount.coupon?.amount_off || null
+          } : null;
+        } catch (invoiceError) {
+          // Invoice preview failed (likely canceled subscription) - keep base info
+          console.log('[SubscriptionController] No upcoming invoice (may be canceled):', invoiceError.message);
+        }
+
+        console.log('[SubscriptionController] Fetched billing info from Stripe:', billingInfo);
+      } catch (subscriptionError) {
+        // Could not fetch subscription from Stripe
+        console.log('[SubscriptionController] Could not fetch subscription:', subscriptionError.message);
+      }
+    }
+
     res.json({
       success: true,
-      subscription: subscription || {
+      subscription: subscription ? {
+        ...subscription,
+        billing: billingInfo
+      } : {
         tier: 'free',
         status: null,
-        is_grandfathered: false
+        is_grandfathered: false,
+        billing: null
       },
       usage: usage.current,
       limits: usage.limits,
@@ -154,11 +214,21 @@ async function cancelSubscription(req, res) {
     await stripeService.cancelSubscription(subscription.stripe_subscription_id);
 
     // Update database (webhook will also handle this)
-    await db.query(`
-      UPDATE subscriptions
-      SET cancel_at_period_end = true, updated_at = NOW()
-      WHERE stripe_subscription_id = $1
-    `, [subscription.stripe_subscription_id]);
+    const { getServiceClient } = require('../config/supabase');
+    const supabase = getServiceClient();
+
+    const { error: updateError } = await supabase
+      .from('subscriptions')
+      .update({
+        cancel_at_period_end: true,
+        updated_at: new Date().toISOString()
+      })
+      .eq('stripe_subscription_id', subscription.stripe_subscription_id);
+
+    if (updateError) {
+      console.error('[SubscriptionController] Error updating subscription:', updateError);
+      throw updateError;
+    }
 
     res.json({
       success: true,
@@ -206,11 +276,21 @@ async function reactivateSubscription(req, res) {
     await stripeService.reactivateSubscription(subscription.stripe_subscription_id);
 
     // Update database (webhook will also handle this)
-    await db.query(`
-      UPDATE subscriptions
-      SET cancel_at_period_end = false, updated_at = NOW()
-      WHERE stripe_subscription_id = $1
-    `, [subscription.stripe_subscription_id]);
+    const { getServiceClient } = require('../config/supabase');
+    const supabase = getServiceClient();
+
+    const { error: updateError } = await supabase
+      .from('subscriptions')
+      .update({
+        cancel_at_period_end: false,
+        updated_at: new Date().toISOString()
+      })
+      .eq('stripe_subscription_id', subscription.stripe_subscription_id);
+
+    if (updateError) {
+      console.error('[SubscriptionController] Error updating subscription:', updateError);
+      throw updateError;
+    }
 
     res.json({
       success: true,
@@ -242,16 +322,18 @@ async function validatePromoCode(req, res) {
       });
     }
 
-    // Check if code exists and is active
-    const result = await db.query(`
-      SELECT * FROM promo_codes
-      WHERE code = $1
-      AND active = true
-      AND (expires_at IS NULL OR expires_at > NOW())
-      AND (max_redemptions IS NULL OR times_redeemed < max_redemptions)
-    `, [code.toUpperCase()]);
+    // Check if code exists and is active using Supabase client
+    const { getServiceClient } = require('../config/supabase');
+    const supabase = getServiceClient();
 
-    if (result.rows.length === 0) {
+    const { data: promo, error: queryError } = await supabase
+      .from('promo_codes')
+      .select('*')
+      .eq('code', code.toUpperCase())
+      .eq('active', true)
+      .single();
+
+    if (queryError || !promo) {
       return res.status(404).json({
         success: false,
         error: 'INVALID_CODE',
@@ -259,7 +341,23 @@ async function validatePromoCode(req, res) {
       });
     }
 
-    const promo = result.rows[0];
+    // Check expiration
+    if (promo.expires_at && new Date(promo.expires_at) < new Date()) {
+      return res.status(404).json({
+        success: false,
+        error: 'INVALID_CODE',
+        message: 'Promo code has expired'
+      });
+    }
+
+    // Check max redemptions
+    if (promo.max_redemptions !== null && promo.times_redeemed >= promo.max_redemptions) {
+      return res.status(404).json({
+        success: false,
+        error: 'INVALID_CODE',
+        message: 'Promo code has reached its redemption limit'
+      });
+    }
 
     res.json({
       success: true,
@@ -285,11 +383,15 @@ async function validatePromoCode(req, res) {
 /**
  * Apply promo code to existing subscription
  * POST /api/subscriptions/apply-promo
+ *
+ * Can be used in two ways:
+ * 1. With subscriptionId param - for in-app checkout (applying to pending subscription)
+ * 2. Without subscriptionId - for existing active subscription
  */
 async function applyPromoCode(req, res) {
   try {
     const userId = req.user.id || req.user.userId;
-    const { code } = req.body;
+    const { code, subscriptionId: requestSubscriptionId } = req.body;
 
     if (!code) {
       return res.status(400).json({
@@ -299,13 +401,19 @@ async function applyPromoCode(req, res) {
       });
     }
 
-    // Get promo code
-    const promoResult = await db.query(`
-      SELECT * FROM promo_codes
-      WHERE code = $1 AND active = true
-    `, [code.toUpperCase()]);
+    // Get Supabase client
+    const { getServiceClient } = require('../config/supabase');
+    const supabase = getServiceClient();
 
-    if (promoResult.rows.length === 0) {
+    // Get promo code
+    const { data: promo, error: promoError } = await supabase
+      .from('promo_codes')
+      .select('*')
+      .eq('code', code.toUpperCase())
+      .eq('active', true)
+      .single();
+
+    if (promoError || !promo) {
       return res.status(404).json({
         success: false,
         error: 'INVALID_CODE',
@@ -313,15 +421,33 @@ async function applyPromoCode(req, res) {
       });
     }
 
-    const promo = promoResult.rows[0];
+    // Check expiration
+    if (promo.expires_at && new Date(promo.expires_at) < new Date()) {
+      return res.status(404).json({
+        success: false,
+        error: 'INVALID_CODE',
+        message: 'Promo code has expired'
+      });
+    }
+
+    // Check max redemptions
+    if (promo.max_redemptions !== null && promo.times_redeemed >= promo.max_redemptions) {
+      return res.status(404).json({
+        success: false,
+        error: 'INVALID_CODE',
+        message: 'Promo code has reached its redemption limit'
+      });
+    }
 
     // Check if user already redeemed this code
-    const redemptionCheck = await db.query(`
-      SELECT * FROM user_promo_codes
-      WHERE user_id = $1 AND promo_code_id = $2
-    `, [userId, promo.id]);
+    const { data: existingRedemption } = await supabase
+      .from('user_promo_codes')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('promo_code_id', promo.id)
+      .single();
 
-    if (redemptionCheck.rows.length > 0) {
+    if (existingRedemption) {
       return res.status(400).json({
         success: false,
         error: 'ALREADY_REDEEMED',
@@ -329,36 +455,56 @@ async function applyPromoCode(req, res) {
       });
     }
 
-    // Get user's subscription
-    const subscription = await subscriptionService.getUserSubscription(userId);
+    // Determine which subscription to apply promo to
+    let targetSubscriptionId = requestSubscriptionId;
 
-    if (!subscription || !subscription.stripe_subscription_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'NO_SUBSCRIPTION',
-        message: 'No active subscription found'
-      });
+    if (!targetSubscriptionId) {
+      // No subscriptionId provided - get user's existing subscription
+      const subscription = await subscriptionService.getUserSubscription(userId);
+
+      if (!subscription || !subscription.stripe_subscription_id) {
+        return res.status(400).json({
+          success: false,
+          error: 'NO_SUBSCRIPTION',
+          message: 'No subscription found'
+        });
+      }
+
+      targetSubscriptionId = subscription.stripe_subscription_id;
     }
 
-    // Apply to Stripe subscription
-    await stripeService.applyPromoCode(subscription.stripe_subscription_id, promo.stripe_coupon_id);
+    // Apply to Stripe subscription using modern API (promo code string, not coupon ID)
+    await stripeService.applyPromoCode(targetSubscriptionId, code.toUpperCase());
 
     // Record redemption
-    await db.query(`
-      INSERT INTO user_promo_codes (user_id, promo_code_id, stripe_subscription_id)
-      VALUES ($1, $2, $3)
-    `, [userId, promo.id, subscription.stripe_subscription_id]);
+    const { error: insertError } = await supabase
+      .from('user_promo_codes')
+      .insert({
+        user_id: userId,
+        promo_code_id: promo.id,
+        stripe_subscription_id: targetSubscriptionId
+      });
+
+    if (insertError) {
+      console.error('[SubscriptionController] Error recording redemption:', insertError);
+    }
 
     // Increment redemption count
-    await db.query(`
-      UPDATE promo_codes
-      SET times_redeemed = times_redeemed + 1
-      WHERE id = $1
-    `, [promo.id]);
+    const { error: updateError } = await supabase
+      .from('promo_codes')
+      .update({ times_redeemed: promo.times_redeemed + 1 })
+      .eq('id', promo.id);
+
+    if (updateError) {
+      console.error('[SubscriptionController] Error updating redemption count:', updateError);
+    }
+
+    console.log('[SubscriptionController] Promo code applied successfully:', code.toUpperCase(), 'to subscription:', targetSubscriptionId);
 
     res.json({
       success: true,
-      message: 'Promo code applied successfully'
+      message: 'Promo code applied successfully',
+      promoCode: code.toUpperCase()
     });
   } catch (error) {
     console.error('[SubscriptionController] Error applying promo:', error);
@@ -378,20 +524,40 @@ async function createSubscriptionIntent(req, res) {
   try {
     const userId = req.user.id || req.user.userId;
     const email = req.user.email;
-    const { promoCode } = req.body;
+    const { promoCode, timezone } = req.body;
 
-    // Check if user already has active subscription
+    console.log('[SubscriptionController] Creating subscription intent with timezone:', timezone);
+
+    // Check if user already has active or in-progress subscription
     const existing = await subscriptionService.getUserSubscription(userId);
-    if (existing && (existing.status === 'active' || existing.status === 'trialing')) {
-      return res.status(400).json({
-        success: false,
-        error: 'ALREADY_SUBSCRIBED',
-        message: 'You already have an active subscription'
-      });
+    if (existing && (existing.status === 'active' || existing.status === 'trialing' || existing.status === 'incomplete')) {
+      // Allow retry if tier is 'free' (user never completed payment method verification)
+      if (existing.tier === 'free') {
+        console.log('[SubscriptionController] Existing subscription has tier=free, allowing retry and canceling old subscription');
+
+        // Cancel the incomplete subscription in Stripe
+        try {
+          const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+          await stripe.subscriptions.cancel(existing.stripe_subscription_id);
+          console.log('[SubscriptionController] Canceled incomplete subscription:', existing.stripe_subscription_id);
+        } catch (cancelError) {
+          console.error('[SubscriptionController] Error canceling subscription:', cancelError);
+          // Continue anyway - might already be canceled
+        }
+      } else {
+        // User has a real subscription with premium tier
+        return res.status(400).json({
+          success: false,
+          error: 'ALREADY_SUBSCRIBED',
+          message: existing.status === 'incomplete'
+            ? 'You already have a subscription in progress'
+            : 'You already have an active subscription'
+        });
+      }
     }
 
-    // Create subscription intent
-    const intent = await stripeService.createSubscriptionIntent(userId, email, promoCode);
+    // Create subscription intent with timezone
+    const intent = await stripeService.createSubscriptionIntent(userId, email, promoCode, timezone);
 
     res.json({
       success: true,
@@ -424,6 +590,7 @@ async function confirmSubscription(req, res) {
     const userId = req.user.id || req.user.userId;
     const email = req.user.email;
 
+    console.log('[ConfirmSubscription] 🔍 Called with:', { paymentIntentId, subscriptionId, userId });
     console.log('Request body:', { paymentIntentId, subscriptionId });
     console.log('User:', { userId, email });
 
@@ -470,36 +637,47 @@ async function confirmSubscription(req, res) {
     }
 
     console.log(`✅ STEP 1 COMPLETE: Payment verified with Stripe`);
-    console.log(`\n--- STEP 2: Update Users Table ---`);
+    console.log(`\n--- STEP 2: Defer Tier Upgrade to Webhook ---`);
+    console.log('ℹ️  User tier will be upgraded when Stripe webhook confirms subscription is active');
+    console.log('ℹ️  This prevents premature Pro access before payment is fully confirmed');
+    console.log('✅ STEP 2 COMPLETE: Tier upgrade deferred');
 
-    // NOW safe to activate - Update user tier
+    // Get Supabase client for subscription record creation
     const { getServiceClient } = require('../config/supabase');
     const supabase = getServiceClient();
 
-    console.log('Updating user tier to premium...');
-    const { error: userError } = await supabase
-      .from('users')
-      .update({ tier: 'premium' })
-      .eq('id', userId);
+    // Fetch subscription details from Stripe to get all fields
+    console.log(`\n--- STEP 3: Fetch Subscription from Stripe ---`);
+    const stripeSubscription = await stripe.subscriptions.retrieve(subscriptionId);
+    console.log('Retrieved subscription from Stripe:', {
+      id: stripeSubscription.id,
+      status: stripeSubscription.status,
+      price_id: stripeSubscription.items.data[0]?.price?.id,
+      current_period_start: stripeSubscription.current_period_start,
+      current_period_end: stripeSubscription.current_period_end
+    });
 
-    if (userError) {
-      console.error('❌ Error updating user tier:', userError);
-      throw userError;
-    }
-    console.log('✅ STEP 2 COMPLETE: User tier updated to premium');
-
-    // IMMEDIATE ACTIVATION - Create/update subscription record
-    console.log(`\n--- STEP 3: Upsert Subscription Record ---`);
-    const trialStart = new Date();
-    const trialEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    // Create/update subscription record with all fields from Stripe
+    console.log(`\n--- STEP 4: Upsert Subscription Record ---`);
 
     const subscriptionData = {
       user_id: userId,
       stripe_subscription_id: subscriptionId,
+      stripe_price_id: stripeSubscription.items.data[0]?.price?.id || null,
       tier: 'premium',
-      status: 'trialing',
-      trial_start: trialStart.toISOString(),
-      trial_end: trialEnd.toISOString(),
+      status: stripeSubscription.status || 'trialing',
+      trial_start: stripeSubscription.trial_start
+        ? new Date(stripeSubscription.trial_start * 1000).toISOString()
+        : null,
+      trial_end: stripeSubscription.trial_end
+        ? new Date(stripeSubscription.trial_end * 1000).toISOString()
+        : null,
+      current_period_start: stripeSubscription.current_period_start
+        ? new Date(stripeSubscription.current_period_start * 1000).toISOString()
+        : null,
+      current_period_end: stripeSubscription.current_period_end
+        ? new Date(stripeSubscription.current_period_end * 1000).toISOString()
+        : null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -512,14 +690,30 @@ async function confirmSubscription(req, res) {
       .upsert(subscriptionData, { onConflict: 'user_id' });
 
     if (subError) {
-      console.error('❌ STEP 3 FAILED: Error upserting subscription:', subError);
+      console.error('❌ STEP 4 FAILED: Error upserting subscription:', subError);
       console.error('Error code:', subError.code);
       console.error('Error details:', subError.details);
       console.error('Error message:', subError.message);
       throw subError;
     }
 
-    console.log(`✅ STEP 3 COMPLETE: Subscription record upserted`);
+    console.log(`✅ STEP 4 COMPLETE: Subscription record upserted`);
+
+    // STEP 5: Sync user tier immediately (don't wait for webhook)
+    console.log(`\n--- STEP 5: Update Users Tier ---`);
+    console.log('[ConfirmSubscription] 🔍 Setting tier to premium for user:', userId);
+    const { error: tierError } = await supabase
+      .from('users')
+      .update({ tier: 'premium' })
+      .eq('id', userId);
+
+    if (tierError) {
+      console.error('❌ STEP 5 FAILED: Error updating user tier:', tierError);
+      // Don't throw - webhook will fix it, but log the issue
+    } else {
+      console.log(`✅ STEP 5 COMPLETE: User tier updated to premium`);
+      console.log('[ConfirmSubscription] 🔍 Successfully set tier to premium for user:', userId);
+    }
 
     // If we got here, all database operations succeeded
     // Supabase guarantees ACID transactions - if upsert succeeded, data IS there

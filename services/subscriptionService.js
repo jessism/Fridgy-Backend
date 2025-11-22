@@ -148,6 +148,31 @@ async function upsertSubscription(subscriptionData) {
 
     console.log('[SubscriptionService] Upserted subscription for user:', userId, 'tier:', tier);
 
+    // Verify what was actually saved to database
+    const { data: verifyUser } = await supabase
+      .from('users')
+      .select('tier')
+      .eq('id', userId)
+      .single();
+
+    const { data: verifySub } = await supabase
+      .from('subscriptions')
+      .select('tier')
+      .eq('user_id', userId)
+      .single();
+
+    console.log('[SubscriptionService] 🔍 VERIFICATION - Database state after upsert:');
+    console.log('[SubscriptionService] 🔍 users.tier =', verifyUser?.tier);
+    console.log('[SubscriptionService] 🔍 subscriptions.tier =', verifySub?.tier);
+    console.log('[SubscriptionService] 🔍 Expected tier =', tier);
+
+    if (verifyUser?.tier !== tier || verifySub?.tier !== tier) {
+      console.error('[SubscriptionService] ⚠️  WARNING: Tier mismatch detected!');
+      console.error('[SubscriptionService] ⚠️  Expected:', tier);
+      console.error('[SubscriptionService] ⚠️  users.tier:', verifyUser?.tier);
+      console.error('[SubscriptionService] ⚠️  subscriptions.tier:', verifySub?.tier);
+    }
+
     return subscription;
   } catch (error) {
     console.error('[SubscriptionService] Error upserting subscription:', error);

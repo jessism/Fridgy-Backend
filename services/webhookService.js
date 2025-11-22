@@ -6,64 +6,68 @@
 const { getServiceClient } = require('../config/supabase');
 const subscriptionService = require('./subscriptionService');
 const emailService = require('./emailService');
+const { trackEvent } = require('../config/posthog');
 
 /**
- * Calculate pricing information for trial start email
- * Handles discounts, promo codes, and returns formatted pricing
- * @param {Object} subscription - Stripe subscription object
- * @returns {Object} Pricing info for email template
+ * Get pricing information from Stripe's upcoming invoice
+ * This is more accurate than manual calculation - we get exactly what Stripe will charge
+ * @param {string} customerId - Stripe customer ID
+ * @param {string} subscriptionId - Stripe subscription ID
+ * @returns {Promise<Object>} Pricing info for email template
  */
-function calculatePricingInfo(subscription) {
-  const basePrice = subscription.items.data[0].price.unit_amount / 100; // Convert cents to dollars
-  const discount = subscription.discount;
+async function getPricingFromStripeInvoice(customerId, subscriptionId) {
+  try {
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-  if (!discount) {
+    console.log('[WebhookService] Fetching pricing from Stripe invoice for subscription:', subscriptionId);
+
+    // Get the upcoming invoice preview - shows exact amount customer will be charged
+    // Using createPreview (modern API) instead of deprecated retrieveUpcoming
+    const upcomingInvoice = await stripe.invoices.createPreview({
+      customer: customerId,
+      subscription: subscriptionId
+    });
+
+    // Get base price from subscription
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    const basePrice = subscription.items.data[0].price.unit_amount / 100;
+
+    // Extract pricing from invoice
+    const total = upcomingInvoice.total / 100; // What they'll actually pay
+    const subtotal = upcomingInvoice.subtotal / 100;
+
+    // Calculate discount amount
+    const discountAmount = subtotal - total;
+    const hasDiscount = discountAmount > 0;
+
+    let discountDescription = '';
+    if (hasDiscount) {
+      // Get discount percentage
+      const discountPercent = Math.round((discountAmount / subtotal) * 100);
+      discountDescription = `${discountPercent}% off - save $${discountAmount.toFixed(2)}`;
+    }
+
+    const result = {
+      hasDiscount,
+      firstChargeAmount: `$${total.toFixed(2)}`,
+      regularAmount: `$${basePrice.toFixed(2)}`,
+      discountDescription
+    };
+
+    console.log('[WebhookService] Pricing from Stripe invoice:', result);
+
+    return result;
+  } catch (error) {
+    console.error('[WebhookService] Error fetching Stripe invoice:', error.message);
+
+    // Fallback to safe default
     return {
       hasDiscount: false,
-      regularAmount: `$${basePrice.toFixed(2)}`,
-      firstChargeAmount: `$${basePrice.toFixed(2)}`,
-      discountDescription: '',
-      isDiscountOnce: false,
-      isDiscountForever: false
+      firstChargeAmount: '$4.99',
+      regularAmount: '$4.99',
+      discountDescription: ''
     };
   }
-
-  // Calculate discounted amount
-  let discountedPrice = basePrice;
-  let discountDescription = '';
-
-  if (discount.coupon.percent_off) {
-    discountedPrice = basePrice * (1 - discount.coupon.percent_off / 100);
-    discountDescription = `${discount.coupon.percent_off}% off`;
-  } else if (discount.coupon.amount_off) {
-    discountedPrice = basePrice - (discount.coupon.amount_off / 100);
-    discountDescription = `$${(discount.coupon.amount_off / 100).toFixed(2)} off`;
-  }
-
-  // Add duration to description
-  if (discount.coupon.duration === 'once') {
-    discountDescription += ' first month';
-  } else if (discount.coupon.duration === 'repeating') {
-    discountDescription += ` for ${discount.coupon.duration_in_months} months`;
-  } else {
-    discountDescription += ' ongoing';
-  }
-
-  console.log('[WebhookService] Pricing calculated:', {
-    basePrice: `$${basePrice.toFixed(2)}`,
-    discountedPrice: `$${discountedPrice.toFixed(2)}`,
-    discountDescription,
-    duration: discount.coupon.duration
-  });
-
-  return {
-    hasDiscount: true,
-    firstChargeAmount: `$${discountedPrice.toFixed(2)}`,
-    regularAmount: `$${basePrice.toFixed(2)}`,
-    discountDescription,
-    isDiscountOnce: discount.coupon.duration === 'once',
-    isDiscountForever: discount.coupon.duration === 'forever'
-  };
 }
 
 /**
@@ -352,16 +356,22 @@ async function handleSubscriptionCreated(subscription) {
       if (hasPaymentMethod) {
         console.log('[WebhookService] Trial started with verified payment, sending email to user:', userId);
 
-        // Get user details for email
+        // Get user details for email and analytics
         const { data: user, error: userError } = await supabase
           .from('users')
-          .select('email, first_name')
+          .select('email, first_name, created_at')
           .eq('id', userId)
           .single();
 
         if (userError) {
           console.error('[WebhookService] Error fetching user for trial email:', userError);
         } else if (user) {
+          // Determine user journey: onboarding vs upgrade from free
+          const userCreatedAt = new Date(user.created_at);
+          const now = new Date();
+          const minutesSinceCreation = (now - userCreatedAt) / (1000 * 60);
+          const userJourney = minutesSinceCreation < 10 ? 'onboarding' : 'upgrade_from_free';
+
           // Get customer timezone from Stripe metadata
           let timezone = 'America/Los_Angeles'; // default
           try {
@@ -376,8 +386,28 @@ async function handleSubscriptionCreated(subscription) {
 
           const trialEndDate = new Date(subscription.trial_end * 1000);
 
-          // Calculate pricing info (handles discounts/promo codes)
-          const pricingInfo = calculatePricingInfo(subscription);
+          // Get pricing info from Stripe's upcoming invoice (accurate pricing)
+          const pricingInfo = await getPricingFromStripeInvoice(
+            subscription.customer,
+            subscription.id
+          );
+
+          // 🎯 TRACK "Trial Start" EVENT IN POSTHOG
+          await trackEvent(userId, 'Trial Start', {
+            subscription_id: subscription.id,
+            stripe_customer_id: subscription.customer,
+            trial_end_date: trialEndDate.toISOString(),
+            trial_duration_days: 7,
+            payment_verified: true,
+            has_payment_method: true,
+            user_journey: userJourney,
+            subscription_status: subscription.status,
+            has_discount: pricingInfo.hasDiscount,
+            first_charge_amount: pricingInfo.firstChargeAmount,
+            user_email: user.email,
+            timezone: timezone,
+            event_source: 'subscription.created webhook'
+          });
 
           await emailService.sendTrialStartEmail(user, trialEndDate, timezone, pricingInfo);
         }
@@ -444,16 +474,22 @@ async function handleSubscriptionUpdated(subscription) {
 
       const supabase = getServiceClient();
 
-      // Get user details for email
+      // Get user details for email and analytics
       const { data: user, error: userError } = await supabase
         .from('users')
-        .select('email, first_name')
+        .select('email, first_name, created_at')
         .eq('id', dbSub.user_id)
         .single();
 
       if (userError) {
         console.error('[WebhookService] Error fetching user for trial email:', userError);
       } else if (user) {
+        // Determine user journey: onboarding vs upgrade from free
+        const userCreatedAt = new Date(user.created_at);
+        const now = new Date();
+        const minutesSinceCreation = (now - userCreatedAt) / (1000 * 60);
+        const userJourney = minutesSinceCreation < 10 ? 'onboarding' : 'upgrade_from_free';
+
         // Get customer timezone from Stripe metadata
         let timezone = 'America/Los_Angeles'; // default
         try {
@@ -469,8 +505,28 @@ async function handleSubscriptionUpdated(subscription) {
 
         const trialEndDate = new Date(subscription.trial_end * 1000);
 
-        // Calculate pricing info (handles discounts/promo codes)
-        const pricingInfo = calculatePricingInfo(subscription);
+        // Get pricing info from Stripe's upcoming invoice (accurate pricing)
+        const pricingInfo = await getPricingFromStripeInvoice(
+          subscription.customer,
+          subscription.id
+        );
+
+        // 🎯 TRACK "Trial Start" EVENT IN POSTHOG
+        await trackEvent(dbSub.user_id, 'Trial Start', {
+          subscription_id: subscription.id,
+          stripe_customer_id: subscription.customer,
+          trial_end_date: trialEndDate.toISOString(),
+          trial_duration_days: 7,
+          payment_verified: true,
+          has_payment_method: true,
+          user_journey: userJourney,
+          subscription_status: subscription.status,
+          has_discount: pricingInfo.hasDiscount,
+          first_charge_amount: pricingInfo.firstChargeAmount,
+          user_email: user.email,
+          timezone: timezone,
+          event_source: 'subscription.updated webhook'
+        });
 
         await emailService.sendTrialStartEmail(user, trialEndDate, timezone, pricingInfo);
       }

@@ -24,6 +24,7 @@
     "node-cron": "^4.2.1",
     "node-fetch": "^2.7.0",
     "openai": "^4.67.3",
+    "posthog-node": "^5.13.2",
     "postmark": "^4.0.5",
     "stripe": "^19.1.0",
     "uuid": "^9.0.1",

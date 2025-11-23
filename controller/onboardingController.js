@@ -697,59 +697,69 @@ const onboardingController = {
         });
       }
 
-      // Step 4: Verify payment status with Stripe
-      console.log('[ConfirmPayment] Retrieving subscription from Stripe:', subscriptionId);
-      const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+      // Step 4: Verify payment/setup with Stripe DIRECTLY (not via subscription)
+      // This avoids race condition where payment method hasn't propagated to subscription yet
+      console.log('[ConfirmPayment] Verifying payment intent with Stripe:', paymentIntentId);
 
-      console.log('[ConfirmPayment] Stripe subscription status:', {
-        id: subscription.id,
-        status: subscription.status,
-        trial_end: subscription.trial_end,
-        current_period_end: subscription.current_period_end,
-        default_payment_method: subscription.default_payment_method
-      });
+      let isVerified = false;
 
-      // Only confirm payment if subscription has verified payment method
-      const hasPaymentMethod = subscription.default_payment_method != null;
+      try {
+        // Try SetupIntent first (for trial subscriptions)
+        console.log('[ConfirmPayment] Trying to retrieve SetupIntent:', paymentIntentId);
+        const setupIntent = await stripe.setupIntents.retrieve(paymentIntentId);
+        isVerified = setupIntent.status === 'succeeded';
+        console.log(`[ConfirmPayment] ✅ SetupIntent status: ${setupIntent.status}, verified: ${isVerified}`);
+      } catch (setupError) {
+        console.log('[ConfirmPayment] SetupIntent not found, trying PaymentIntent...');
+        // If not a SetupIntent, try PaymentIntent (for non-trial subscriptions)
+        try {
+          const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+          isVerified = paymentIntent.status === 'succeeded';
+          console.log(`[ConfirmPayment] ✅ PaymentIntent status: ${paymentIntent.status}, verified: ${isVerified}`);
+        } catch (paymentError) {
+          console.error(`[ConfirmPayment] ❌ Invalid intent ID ${paymentIntentId}:`, paymentError.message);
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid payment intent ID'
+          });
+        }
+      }
 
-      console.log('[ConfirmPayment] 🔍 Payment method check:', {
-        hasPaymentMethod,
-        status: subscription.status
-      });
-
-      if ((subscription.status === 'trialing' || subscription.status === 'active') && hasPaymentMethod) {
-        // Payment confirmed, update session
-        await supabase
-          .from('onboarding_sessions')
-          .update({
-            payment_confirmed: true,
-            updated_at: new Date().toISOString()
-          })
-          .eq('session_id', sessionId);
-
-        console.log('✅ Onboarding payment confirmed for session:', sessionId);
-
-        res.json({
-          success: true,
-          message: 'Payment confirmed',
-          subscription: {
-            id: subscription.id,
-            status: subscription.status,
-            trial_end: subscription.trial_end
-          }
+      if (!isVerified) {
+        console.error('[ConfirmPayment] Payment verification failed:', {
+          paymentIntentId,
+          verified: isVerified
         });
-      } else {
-        console.error('[ConfirmPayment] Unexpected subscription status:', {
-          subscriptionId,
-          status: subscription.status,
-          expectedStatuses: ['trialing', 'active']
-        });
-        res.status(400).json({
+        return res.status(400).json({
           success: false,
-          error: 'Payment not confirmed',
-          status: subscription.status
+          error: 'Payment verification failed',
+          details: 'SetupIntent/PaymentIntent did not complete successfully'
         });
       }
+
+      // Payment verified via SetupIntent/PaymentIntent - mark as confirmed
+      await supabase
+        .from('onboarding_sessions')
+        .update({
+          payment_confirmed: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('session_id', sessionId);
+
+      console.log('✅ Onboarding payment confirmed for session:', sessionId);
+
+      // Also fetch subscription for response data
+      const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+      res.json({
+        success: true,
+        message: 'Payment confirmed',
+        subscription: {
+          id: subscription.id,
+          status: subscription.status,
+          trial_end: subscription.trial_end
+        }
+      });
 
     } catch (error) {
       console.error('❌ Error confirming payment:', error);

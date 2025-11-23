@@ -41,9 +41,7 @@ async function sendTrialStartEmail(user, trialEndDate, timezone = 'America/Los_A
       hasDiscount: false,
       regularAmount: '$4.99',
       firstChargeAmount: '$4.99',
-      discountDescription: '',
-      isDiscountOnce: false,
-      isDiscountForever: false
+      discountDescription: ''
     };
 
     console.log('[Email] Pricing info:', pricing);
@@ -59,9 +57,7 @@ async function sendTrialStartEmail(user, trialEndDate, timezone = 'America/Los_A
         hasDiscount: pricing.hasDiscount,
         regularAmount: pricing.regularAmount,
         firstChargeAmount: pricing.firstChargeAmount,
-        discountDescription: pricing.discountDescription,
-        isDiscountOnce: pricing.isDiscountOnce,
-        isDiscountForever: pricing.isDiscountForever
+        discountDescription: pricing.discountDescription
       }
     });
 

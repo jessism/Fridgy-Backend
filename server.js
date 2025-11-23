@@ -1372,6 +1372,9 @@ app.get('/api/test', (req, res) => {
 const expiryNotificationScheduler = require('./services/expiryNotificationScheduler');
 const trialReminderScheduler = require('./services/trialReminderScheduler');
 
+// Import PostHog for analytics
+const { getPostHogClient } = require('./config/posthog');
+
 // Start server
 app.listen(PORT, () => {
   const startupTime = new Date().toISOString();
@@ -1395,6 +1398,11 @@ app.listen(PORT, () => {
   console.log(`   APIFY_API_TOKEN: ${process.env.APIFY_API_TOKEN ? '✅ Present' : '❌ Missing'}`);
   console.log(`   VAPID_PUBLIC_KEY: ${process.env.VAPID_PUBLIC_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   VAPID_PRIVATE_KEY: ${process.env.VAPID_PRIVATE_KEY ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   POSTHOG_API_KEY: ${process.env.POSTHOG_API_KEY ? '✅ Present' : '❌ Missing'}`);
+
+  // Initialize PostHog analytics
+  console.log('\n📊 Initializing PostHog analytics...');
+  getPostHogClient();
 
   // Start the expiry notification scheduler
   console.log('\n🔔 Starting expiry notification scheduler...');

@@ -6,6 +6,7 @@
 const stripeService = require('../services/stripeService');
 const subscriptionService = require('../services/subscriptionService');
 const usageService = require('../services/usageService');
+const emailService = require('../services/emailService');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 /**
@@ -228,6 +229,39 @@ async function cancelSubscription(req, res) {
     if (updateError) {
       console.error('[SubscriptionController] Error updating subscription:', updateError);
       throw updateError;
+    }
+
+    // Send cancellation confirmation email
+    try {
+      // Get user details for email
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('email, first_name')
+        .eq('id', userId)
+        .single();
+
+      if (userError) {
+        console.error('[SubscriptionController] Error fetching user for cancellation email:', userError);
+      } else if (user) {
+        // Get customer timezone from Stripe metadata
+        let timezone = 'America/Los_Angeles'; // default
+        try {
+          const customer = await stripe.customers.retrieve(subscription.stripe_customer_id);
+          if (customer.metadata && customer.metadata.timezone) {
+            timezone = customer.metadata.timezone;
+            console.log('[SubscriptionController] Retrieved customer timezone:', timezone);
+          }
+        } catch (tzError) {
+          console.error('[SubscriptionController] Error fetching customer timezone:', tzError.message);
+        }
+
+        // Send cancellation email with period end date
+        const accessUntilDate = new Date(subscription.current_period_end);
+        await emailService.sendCancellationEmail(user, accessUntilDate, timezone);
+      }
+    } catch (emailError) {
+      // Don't fail the cancellation if email fails
+      console.error('[SubscriptionController] Failed to send cancellation email:', emailError);
     }
 
     res.json({

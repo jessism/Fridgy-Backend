@@ -685,6 +685,43 @@ Manage email preferences: {{unsubscribeUrl}}
 
 ---
 
+## Template 4: Subscription Cancelled
+
+**Template Alias:** `subscription-cancelled`
+
+**Subject:** `Subscription Cancelled - Trackabite`
+
+**Template Variables:**
+- `firstName` (string) - User's first name
+- `accessUntilDate` (string) - Formatted date when Pro access ends (e.g., "December 15, 2025")
+- `subscriptionUrl` (string) - URL to subscription management page
+
+**Description:**
+Sent immediately when a user cancels their subscription. Confirms the cancellation, reminds them they still have Pro access until the end of their billing period, and provides an option to reactivate.
+
+### HTML Version:
+
+See `/Backend/email-templates/subscription-cancelled.html` for the complete HTML template.
+
+### Key Features:
+- Professional, empathetic tone
+- Clear confirmation of cancellation
+- Highlighted box showing continued Pro access until period end
+- Timeline of what happens next
+- Reactivation call-to-action
+- Free plan feature reminder
+
+### Test Data:
+```json
+{
+  "firstName": "Alex",
+  "accessUntilDate": "December 15, 2025",
+  "subscriptionUrl": "https://trackabite.com/subscription"
+}
+```
+
+---
+
 ## Testing Your Templates
 
 After creating each template in Postmark, test them with sample data:

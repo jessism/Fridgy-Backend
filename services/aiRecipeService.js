@@ -127,16 +127,12 @@ class AIRecipeService {
 
       // Step 2: Build comprehensive recipe prompt
       console.log(`📝 [${requestId}] Step 2: Building recipe generation prompt...`);
-      
-      const inventoryText = inventory.map(item => 
-        `- ${item.item_name} (Qty: ${item.quantity}, Expires: ${item.expiration_date}, Category: ${item.category})`
-      ).join('\n');
 
-      const restrictionsText = preferences.dietary_restrictions?.length ? 
+      const restrictionsText = preferences.dietary_restrictions?.length ?
         preferences.dietary_restrictions.join(', ') : 'None';
-      const allergiesText = preferences.allergies?.length ? 
+      const allergiesText = preferences.allergies?.length ?
         preferences.allergies.join(', ') : 'None';
-      const cuisinePrefsText = preferences.preferred_cuisines?.length ? 
+      const cuisinePrefsText = preferences.preferred_cuisines?.length ?
         preferences.preferred_cuisines.join(', ') : 'Any cuisine';
       const timePreferenceText = preferences.cooking_time_preference || 'Any cooking time';
 
@@ -151,15 +147,102 @@ class AIRecipeService {
       const servingSizeText = questionnaire.serving_size || 2; // Default to 2 if not provided
       const ingredientUsagePreference = questionnaire.ingredient_usage_preference || 'use_most';
 
-      // Group inventory by category for clearer understanding
-      const proteins = inventory.filter(i => i.category === 'Protein' || i.category === 'Meat').map(i => i.item_name);
-      const vegetables = inventory.filter(i => i.category === 'Vegetables').map(i => i.item_name);
-      const fruits = inventory.filter(i => i.category === 'Fruits').map(i => i.item_name);
-      const dairy = inventory.filter(i => i.category === 'Dairy').map(i => i.item_name);
-      const grains = inventory.filter(i => i.category === 'Grains' || i.category === 'Pasta').map(i => i.item_name);
+      // Check if we're in flexible mode with no inventory
+      const hasInventory = inventory && inventory.length > 0;
+      const isFlexibleModeNoInventory = !hasInventory && ingredientUsagePreference === 'fully_flexible';
 
-      // Make prompt stronger on retries
-      const retryWarning = retryAttempt > 0 ? `
+      console.log(`🎛️  [${requestId}] Inventory: ${hasInventory ? inventory.length + ' items' : 'EMPTY'}, Mode: ${ingredientUsagePreference}, FlexibleNoInventory: ${isFlexibleModeNoInventory}`);
+
+      let recipePrompt;
+
+      // Build different prompts based on whether we have inventory
+      if (isFlexibleModeNoInventory) {
+        // FLEXIBLE MODE WITHOUT INVENTORY - Generate based purely on preferences
+        console.log(`🎨 [${requestId}] Building preference-only prompt (no inventory, flexible mode)...`);
+
+        recipePrompt = `You are an expert chef creating personalized recipes for a home cook. The user has selected "Suggest any ingredients" mode, so you have FULL CREATIVE FREEDOM to suggest any ingredients you want.
+
+🎯 USER'S PREFERENCES - MUST FOLLOW:
+
+1. MEAL TYPE: ${mealTypeText}
+2. COOKING TIME: ${cookingTimeText}
+3. VIBE/STYLE: ${vibeText}
+4. CUISINE PREFERENCE: ${cuisinePreferenceText}
+5. SERVINGS: Exactly ${servingSizeText} ${servingSizeText === 1 ? 'person' : 'people'}
+
+${questionnaire.additional_notes ? `
+🌟 USER'S SPECIAL REQUEST (VERY IMPORTANT - prioritize this!):
+"${questionnaire.additional_notes}"
+` : ''}
+
+${dietaryConsiderationsText !== 'None' ? `
+📋 TODAY'S DIETARY CONSIDERATIONS:
+${dietaryConsiderationsText}
+` : ''}
+
+🔴 ALLERGIES & RESTRICTIONS - NEVER VIOLATE:
+${allergiesText !== 'None' ? `❌ NEVER USE: ${allergiesText} - User is ALLERGIC!` : 'No allergies specified.'}
+${restrictionsText !== 'None' ? `❌ MUST RESPECT: ${restrictionsText}` : ''}
+${preferences.custom_allergies ? `❌ ALSO AVOID: ${preferences.custom_allergies}` : ''}
+
+📝 USER'S PROFILE PREFERENCES:
+- Preferred Cuisines: ${cuisinePrefsText}
+- Cooking Skill/Time: ${timePreferenceText}
+
+🎨 YOUR TASK:
+Create 3 delicious, creative recipes that match ALL the preferences above. You can suggest ANY ingredients - be creative! Focus on making recipes that are:
+- Delicious and well-balanced
+- Achievable for home cooks
+- Matching the requested vibe (${vibeText})
+- Within the time constraint (${cookingTimeText})
+
+Return ONLY a valid JSON array with exactly 3 recipes in this format:
+[
+  {
+    "title": "Descriptive Recipe Name",
+    "description": "Brief appetizing 1-sentence description",
+    "prep_time": "X minutes",
+    "cook_time": "X minutes",
+    "total_time": "X minutes",
+    "servings": ${servingSizeText},
+    "difficulty": "Easy|Medium|Hard",
+    "cuisine_type": "Italian|Asian|American|etc",
+    "ingredients": [
+      {"item": "ingredient name", "amount": "1 cup", "from_inventory": false}
+    ],
+    "instructions": [
+      "Step 1: Clear, detailed instruction",
+      "Step 2: Next step with specific details",
+      "Step 3: Continue until complete"
+    ],
+    "key_ingredients": ["main", "visible", "ingredients", "for", "photo"],
+    "dietary_info": {
+      "vegetarian": true,
+      "vegan": false,
+      "gluten_free": true,
+      "dairy_free": false
+    },
+    "tips": "One helpful cooking tip for best results"
+  }
+]
+
+Focus on creating restaurant-quality recipes that will inspire and delight!`;
+
+      } else {
+        // STANDARD MODE - Use inventory-based prompt
+        const inventoryText = inventory.map(item =>
+          `- ${item.item_name} (Qty: ${item.quantity}, Expires: ${item.expiration_date}, Category: ${item.category})`
+        ).join('\n');
+
+        // Group inventory by category for clearer understanding
+        const proteins = inventory.filter(i => i.category === 'Protein' || i.category === 'Meat').map(i => i.item_name);
+        const vegetables = inventory.filter(i => i.category === 'Vegetables').map(i => i.item_name);
+        const fruits = inventory.filter(i => i.category === 'Fruits').map(i => i.item_name);
+        const dairy = inventory.filter(i => i.category === 'Dairy').map(i => i.item_name);
+        const grains = inventory.filter(i => i.category === 'Grains' || i.category === 'Pasta').map(i => i.item_name);
+
+        // Make prompt stronger on retries
+        const retryWarning = retryAttempt > 0 ? `
 ⚠️⚠️⚠️ CRITICAL WARNING - ATTEMPT ${retryAttempt + 1} ⚠️⚠️⚠️
 Your previous recipes were REJECTED for using ingredients NOT in the inventory.
 This is your ${retryAttempt === 1 ? 'SECOND' : 'FINAL'} attempt.
@@ -169,7 +252,7 @@ DO NOT SUGGEST: chicken, beef, pork, tilapia, cod, turkey, lamb, or ANY protein 
 
 ` : '';
 
-      const recipePrompt = `${retryWarning}You are an expert chef creating personalized recipes for a home cook. You MUST follow these rules in STRICT PRIORITY ORDER.
+        recipePrompt = `${retryWarning}You are an expert chef creating personalized recipes for a home cook. You MUST follow these rules in STRICT PRIORITY ORDER.
 
 🔴 CRITICAL CONSTRAINTS - VIOLATION WILL CAUSE REJECTION:
 
@@ -256,6 +339,7 @@ Return ONLY a valid JSON array with exactly 3 recipes in this format:
 ]
 
 Focus on creating restaurant-quality recipes that showcase the available ingredients beautifully.`;
+      } // End of else block (inventory-based prompt)
 
       // Step 3: Prepare request body (using existing pattern)
       console.log(`⚙️  [${requestId}] Step 3: Preparing request body...`);
@@ -336,69 +420,75 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
       }
 
       // Post-generation validation: Ensure recipes use inventory items
-      console.log(`🔍 [${requestId}] Validating recipes against inventory...`);
-      const validationIssues = [];
-      
-      recipes.forEach((recipe, index) => {
-        console.log(`🔍 [${requestId}] Validating Recipe ${index + 1}: "${recipe.title}"`);
-        
-        // Check if recipe uses any main ingredients from inventory
-        const recipeIngredients = recipe.ingredients.map(ing => ing.item.toLowerCase());
-        const inventoryNames = inventory.map(item => item.item_name.toLowerCase());
-        
-        // Check for main ingredient usage (excluding pantry staples)
-        const pantryStaples = ['salt', 'pepper', 'oil', 'butter', 'flour', 'sugar', 'garlic powder', 
-                              'onion powder', 'milk', 'cream', 'water', 'vinegar', 'soy sauce'];
-        
-        const mainIngredientsUsed = recipeIngredients.filter(ing => {
-          // Check if this is a pantry staple
-          const isPantryStaple = pantryStaples.some(staple => ing.includes(staple));
-          if (isPantryStaple) return false;
-          
-          // Check if this ingredient is from inventory
-          return inventoryNames.some(invItem => 
-            ing.includes(invItem) || invItem.includes(ing)
-          );
-        });
-        
-        if (mainIngredientsUsed.length === 0) {
-          validationIssues.push(`Recipe "${recipe.title}" uses NO items from inventory!`);
-          console.error(`❌ [${requestId}] Recipe ${index + 1} validation failed: No inventory items used`);
-        } else {
-          console.log(`✅ [${requestId}] Recipe ${index + 1} uses inventory items: ${mainIngredientsUsed.join(', ')}`);
-        }
-        
-        // Check for forbidden ingredients (proteins not in inventory)
-        const forbiddenProteins = [
-          'chicken', 'beef', 'pork', 'tilapia', 'cod', 'turkey', 'lamb',
-          'salmon', 'tuna', 'shrimp', 'crab', 'lobster', 'fish', 'steak',
-          'bacon', 'sausage', 'ham', 'duck', 'venison', 'veal', 'goat',
-          'prawns', 'scallops', 'mussels', 'clams', 'oysters', 'squid',
-          'halibut', 'trout', 'bass', 'mahi', 'snapper', 'grouper'
-        ];
-        const availableProteins = inventory
-          .filter(item => item.category === 'Protein' || item.category === 'Meat')
-          .map(item => item.item_name.toLowerCase());
-        
-        forbiddenProteins.forEach(protein => {
-          if (recipeIngredients.some(ing => ing.includes(protein)) && 
-              !availableProteins.some(avail => avail.includes(protein))) {
-            validationIssues.push(`Recipe "${recipe.title}" uses ${protein} which is NOT in inventory!`);
-            console.error(`❌ [${requestId}] Forbidden protein detected: ${protein}`);
-          }
-        });
-      });
-      
-      if (validationIssues.length > 0) {
-        console.error(`❌ [${requestId}] Recipe validation failed with ${validationIssues.length} issues:`);
-        validationIssues.forEach(issue => console.error(`   - ${issue}`));
-
-        // Throw error to trigger retry
-        const errorMsg = `Recipe validation failed (attempt ${retryAttempt + 1}): ${validationIssues.join('; ')}`;
-        console.error(`❌ [${requestId}] ${errorMsg}`);
-        throw new Error(errorMsg);
+      // Skip validation if in flexible mode with no inventory (AI has full freedom)
+      if (isFlexibleModeNoInventory) {
+        console.log(`🎨 [${requestId}] Skipping inventory validation - flexible mode with no inventory`);
+        console.log(`✅ [${requestId}] Recipes generated based on user preferences only`);
       } else {
-        console.log(`✅ [${requestId}] All recipes validated successfully!`);
+        console.log(`🔍 [${requestId}] Validating recipes against inventory...`);
+        const validationIssues = [];
+
+        recipes.forEach((recipe, index) => {
+          console.log(`🔍 [${requestId}] Validating Recipe ${index + 1}: "${recipe.title}"`);
+
+          // Check if recipe uses any main ingredients from inventory
+          const recipeIngredients = recipe.ingredients.map(ing => ing.item.toLowerCase());
+          const inventoryNames = inventory.map(item => item.item_name.toLowerCase());
+
+          // Check for main ingredient usage (excluding pantry staples)
+          const pantryStaples = ['salt', 'pepper', 'oil', 'butter', 'flour', 'sugar', 'garlic powder',
+                                'onion powder', 'milk', 'cream', 'water', 'vinegar', 'soy sauce'];
+
+          const mainIngredientsUsed = recipeIngredients.filter(ing => {
+            // Check if this is a pantry staple
+            const isPantryStaple = pantryStaples.some(staple => ing.includes(staple));
+            if (isPantryStaple) return false;
+
+            // Check if this ingredient is from inventory
+            return inventoryNames.some(invItem =>
+              ing.includes(invItem) || invItem.includes(ing)
+            );
+          });
+
+          if (mainIngredientsUsed.length === 0) {
+            validationIssues.push(`Recipe "${recipe.title}" uses NO items from inventory!`);
+            console.error(`❌ [${requestId}] Recipe ${index + 1} validation failed: No inventory items used`);
+          } else {
+            console.log(`✅ [${requestId}] Recipe ${index + 1} uses inventory items: ${mainIngredientsUsed.join(', ')}`);
+          }
+
+          // Check for forbidden ingredients (proteins not in inventory)
+          const forbiddenProteins = [
+            'chicken', 'beef', 'pork', 'tilapia', 'cod', 'turkey', 'lamb',
+            'salmon', 'tuna', 'shrimp', 'crab', 'lobster', 'fish', 'steak',
+            'bacon', 'sausage', 'ham', 'duck', 'venison', 'veal', 'goat',
+            'prawns', 'scallops', 'mussels', 'clams', 'oysters', 'squid',
+            'halibut', 'trout', 'bass', 'mahi', 'snapper', 'grouper'
+          ];
+          const availableProteins = inventory
+            .filter(item => item.category === 'Protein' || item.category === 'Meat')
+            .map(item => item.item_name.toLowerCase());
+
+          forbiddenProteins.forEach(protein => {
+            if (recipeIngredients.some(ing => ing.includes(protein)) &&
+                !availableProteins.some(avail => avail.includes(protein))) {
+              validationIssues.push(`Recipe "${recipe.title}" uses ${protein} which is NOT in inventory!`);
+              console.error(`❌ [${requestId}] Forbidden protein detected: ${protein}`);
+            }
+          });
+        });
+
+        if (validationIssues.length > 0) {
+          console.error(`❌ [${requestId}] Recipe validation failed with ${validationIssues.length} issues:`);
+          validationIssues.forEach(issue => console.error(`   - ${issue}`));
+
+          // Throw error to trigger retry
+          const errorMsg = `Recipe validation failed (attempt ${retryAttempt + 1}): ${validationIssues.join('; ')}`;
+          console.error(`❌ [${requestId}] ${errorMsg}`);
+          throw new Error(errorMsg);
+        } else {
+          console.log(`✅ [${requestId}] All recipes validated successfully!`);
+        }
       }
 
       // ========== CHECKPOINT: ABOUT TO START NUTRITION ENRICHMENT ==========

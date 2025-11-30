@@ -379,6 +379,43 @@ function getCategoryEmoji(category) {
   return emojiMap[category?.toLowerCase()] || '🍽️';
 }
 
+/**
+ * Sends a subscription cancellation confirmation email
+ * @param {Object} user - User object with email and first_name
+ * @param {Date} accessUntilDate - When Pro access ends (current_period_end)
+ * @param {string} timezone - User's timezone (IANA format)
+ * @returns {Promise<void>}
+ */
+async function sendCancellationEmail(user, accessUntilDate, timezone = 'America/Los_Angeles') {
+  if (!process.env.EMAIL_ENABLED || process.env.EMAIL_ENABLED !== 'true') {
+    console.log('[Email] Email sending is disabled');
+    return;
+  }
+
+  try {
+    console.log(`[Email] Sending cancellation email to ${user.email} (timezone: ${timezone})`);
+
+    const formattedDate = formatDateInTimezone(accessUntilDate, timezone);
+    console.log(`[Email] Access until date formatted: ${formattedDate}`);
+
+    const result = await client.sendEmailWithTemplate({
+      From: process.env.FROM_EMAIL,
+      To: user.email,
+      TemplateAlias: 'subscription-cancelled',
+      TemplateModel: {
+        firstName: user.first_name || 'there',
+        accessUntilDate: formattedDate,
+        subscriptionUrl: `${process.env.FRONTEND_URL}/subscription`
+      }
+    });
+
+    console.log(`[Email] Cancellation email sent successfully. MessageID: ${result.MessageID}`);
+  } catch (error) {
+    console.error('[Email] Failed to send cancellation email:', error.message);
+    // Don't throw - we don't want email failures to break the cancellation flow
+  }
+}
+
 module.exports = {
   sendTrialStartEmail,
   sendTrialEndingEmail,
@@ -386,5 +423,6 @@ module.exports = {
   sendWelcomeEmail,
   sendDailyExpiryEmail,
   sendWeeklyExpiryEmail,
-  sendTipsAndUpdatesEmail
+  sendTipsAndUpdatesEmail,
+  sendCancellationEmail
 };

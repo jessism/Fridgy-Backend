@@ -469,7 +469,8 @@ async function handleSubscriptionUpdated(subscription) {
     // Send trial start email if this is a new trial with verified payment
     // This handles free users upgrading to premium (subscription.updated event)
     // Note: subscription.created handles onboarding flow, this handles existing free users
-    if (subscription.status === 'trialing' && subscription.trial_end && hasPaymentMethod) {
+    // Don't send trial email if subscription is being cancelled
+    if (subscription.status === 'trialing' && subscription.trial_end && hasPaymentMethod && !subscription.cancel_at_period_end) {
       console.log('[WebhookService] Trial started (updated event) with verified payment, sending email to user:', dbSub.user_id);
 
       const supabase = getServiceClient();

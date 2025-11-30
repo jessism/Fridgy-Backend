@@ -62,6 +62,11 @@ const aiRecipeController = {
 
       let inventory;
 
+      // Extract ingredient usage preference from questionnaire
+      const questionnaire = req.body || {};
+      const ingredientUsagePreference = questionnaire.ingredient_usage_preference || 'use_most';
+      console.log(`🎛️  [${requestId}] Ingredient usage preference: ${ingredientUsagePreference}`);
+
       // Check if demo inventory is provided (for welcome tour)
       if (req.body.demoInventory && Array.isArray(req.body.demoInventory) && req.body.demoInventory.length > 0) {
         console.log(`🎯 [${requestId}] Using demo inventory for tour mode (${req.body.demoInventory.length} items)`);
@@ -81,15 +86,21 @@ const aiRecipeController = {
         }
 
         if (!inventoryData || inventoryData.length === 0) {
-          console.log(`⚠️  [${requestId}] No inventory items found`);
-          return res.status(400).json({
-            success: false,
-            error: 'No inventory items found. Please add some food items to your fridge first.',
-            requestId: requestId
-          });
+          // Allow empty inventory if user selected "Suggest any ingredients" (fully_flexible)
+          if (ingredientUsagePreference === 'fully_flexible') {
+            console.log(`📭 [${requestId}] Empty inventory but using flexible mode - proceeding without inventory`);
+            inventory = []; // Use empty array, AI will generate based on preferences only
+          } else {
+            console.log(`⚠️  [${requestId}] No inventory items found`);
+            return res.status(400).json({
+              success: false,
+              error: 'No inventory items found. Please add some food items to your fridge first.',
+              requestId: requestId
+            });
+          }
+        } else {
+          inventory = inventoryData;
         }
-
-        inventory = inventoryData;
       }
 
       console.log(`📦 [${requestId}] Using ${inventory.length} inventory items`);
@@ -123,8 +134,7 @@ const aiRecipeController = {
         time_pref: preferences.cooking_time_preference || 'any'
       });
 
-      // Step 2.5: Extract questionnaire data from request body
-      const questionnaire = req.body || {};
+      // Step 2.5: Log questionnaire data (already extracted above for ingredient_usage_preference)
       console.log(`📋 [${requestId}] Questionnaire data received:`, {
         meal_type: questionnaire.meal_type || 'not specified',
         cooking_time: questionnaire.cooking_time || 'not specified',

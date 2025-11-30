@@ -21,8 +21,10 @@ class RecipeService {
 
   /**
    * Make HTTPS request to Spoonacular API
+   * @param {string} path - API path
+   * @param {number} timeout - Request timeout in ms (default 10000)
    */
-  makeApiRequest(path) {
+  makeApiRequest(path, timeout = 10000) {
     return new Promise((resolve, reject) => {
       const options = {
         hostname: this.baseUrl,
@@ -35,18 +37,18 @@ class RecipeService {
 
       const req = https.request(options, (res) => {
         let data = '';
-        
+
         res.on('data', (chunk) => {
           data += chunk;
         });
-        
+
         res.on('end', () => {
           try {
             if (res.statusCode !== 200) {
               reject(new Error(`API request failed with status ${res.statusCode}: ${data}`));
               return;
             }
-            
+
             const jsonData = JSON.parse(data);
             resolve(jsonData);
           } catch (error) {
@@ -59,7 +61,7 @@ class RecipeService {
         reject(error);
       });
 
-      req.setTimeout(10000, () => {
+      req.setTimeout(timeout, () => {
         req.abort();
         reject(new Error('API request timeout'));
       });
@@ -197,6 +199,40 @@ class RecipeService {
     } catch (error) {
       console.error(`Error fetching recipe details for ID ${recipeId}:`, error);
       throw new Error(`Failed to fetch recipe details: ${error.message}`);
+    }
+  }
+
+  /**
+   * Extract recipe from any website URL using Spoonacular
+   * @param {string} url - The recipe page URL
+   * @returns {object} Extracted recipe data matching saved_recipes schema
+   */
+  async extractRecipeFromUrl(url) {
+    const apiKey = process.env.SPOONACULAR_API_KEY;
+    if (!apiKey || apiKey === 'your-api-key-here') {
+      throw new Error('Spoonacular API key not configured');
+    }
+
+    try {
+      console.log(`🌐 [WebExtract] Extracting recipe from URL: ${url}`);
+
+      const path = `/recipes/extract?url=${encodeURIComponent(url)}&analyze=true&apiKey=${apiKey}`;
+
+      // Use 30 second timeout - extract endpoint needs to fetch external pages
+      const recipe = await this.makeApiRequest(path, 30000);
+
+      if (!recipe || !recipe.title) {
+        throw new Error('No recipe found at this URL');
+      }
+
+      console.log(`✅ [WebExtract] Successfully extracted: ${recipe.title}`);
+      console.log(`📝 [WebExtract] Ingredients: ${recipe.extendedIngredients?.length || 0}`);
+      console.log(`📝 [WebExtract] Instructions: ${recipe.analyzedInstructions?.[0]?.steps?.length || 0} steps`);
+
+      return recipe;
+    } catch (error) {
+      console.error(`❌ [WebExtract] Extraction failed:`, error.message);
+      throw new Error(`Recipe extraction failed: ${error.message}`);
     }
   }
 

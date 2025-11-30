@@ -10,6 +10,8 @@ const authMiddleware = require('../middleware/auth');
 const { getServiceClient } = require('../config/supabase');
 const { shortcutImportLimiter } = require('../middleware/rateLimiter');
 const { validateShortcutImport, sanitizeRecipeData } = require('../middleware/validation');
+const recipeService = require('../services/recipeService');
+const NutritionAnalysisService = require('../services/nutritionAnalysisService');
 
 // Use service client for database operations (bypasses RLS)
 const supabase = getServiceClient();
@@ -18,10 +20,13 @@ const instagramExtractor = new InstagramExtractor();
 const recipeAI = new RecipeAIExtractor();
 const apifyService = new ApifyInstagramService();
 const multiModalExtractor = new MultiModalExtractor();
+const nutritionAnalysis = new NutritionAnalysisService();
 
 // POST /api/shortcuts/import - Main import endpoint for shortcuts
-// Uses multi-modal extraction (Apify + Gemini video analysis) for complete recipe details
-// Updated: January 2025 - Enhanced with full video/image analysis for better accuracy
+// Handles BOTH Instagram and web recipe URLs:
+// - Instagram URLs → Apify + Gemini multi-modal extraction
+// - Web URLs → Spoonacular extraction API
+// Updated: November 2025 - Added universal web recipe support
 router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req, res) => {
   try {
     const { url, token, caption } = req.body;
@@ -76,12 +81,16 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
       tokenData.daily_usage_count = 0;
     }
 
+    // Detect URL type - Instagram vs generic web
+    const isInstagram = url.includes('instagram.com');
+    console.log(`[Shortcuts] URL type detected: ${isInstagram ? 'Instagram' : 'Web'}`);
+
     // Send immediate push notification to provide instant feedback
     try {
       console.log('[Shortcuts] Sending immediate import notification...');
       await pushService.sendToUser(tokenData.user_id, {
         title: 'Importing Recipe',
-        body: 'Analyzing Instagram post...',
+        body: isInstagram ? 'Analyzing Instagram post...' : 'Extracting recipe from website...',
         icon: '/logo192.png',
         badge: '/logo192.png',
         tag: 'recipe-importing',
@@ -96,7 +105,10 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
       // Continue anyway
     }
 
-    // Extract Instagram content using Apify (multi-modal approach)
+    // Branch based on URL type
+    if (isInstagram) {
+      // ========== INSTAGRAM FLOW ==========
+      // Extract Instagram content using Apify (multi-modal approach)
     console.log(`[Shortcuts] Extracting from URL with multi-modal: ${url}`);
     const apifyData = await apifyService.extractFromUrl(url, tokenData.user_id);
 
@@ -355,7 +367,171 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
       },
       message: savedRecipe.title // This shows in notification
     });
-    
+
+    } else {
+      // ========== WEB URL FLOW ==========
+      // Extract recipe from any website using Spoonacular
+      console.log(`[Shortcuts] Extracting web recipe from URL: ${url}`);
+
+      let extractedRecipe;
+      try {
+        extractedRecipe = await recipeService.extractRecipeFromUrl(url);
+      } catch (extractError) {
+        console.error('[Shortcuts] Spoonacular extraction failed:', extractError.message);
+
+        // Send failure notification
+        try {
+          await pushService.sendToUser(tokenData.user_id, {
+            title: 'Import Failed',
+            body: 'Could not extract recipe from this website. The page may not contain a recognizable recipe.',
+            icon: '/logo192.png',
+            badge: '/logo192.png',
+            tag: 'recipe-import-failed',
+            data: { url: '/import' },
+            requireInteraction: false
+          });
+        } catch (pushError) {
+          console.error('[Shortcuts] Failed to send error notification:', pushError);
+        }
+
+        return res.status(400).json({
+          success: false,
+          error: 'Could not extract recipe from this URL. The page may not contain a recognizable recipe.'
+        });
+      }
+
+      console.log('[Shortcuts] Web extraction successful:', {
+        title: extractedRecipe.title,
+        ingredientCount: extractedRecipe.extendedIngredients?.length,
+        source: extractedRecipe.sourceName
+      });
+
+      // Prepare recipe for database (matches Spoonacular format)
+      const webRecipeToSave = {
+        user_id: tokenData.user_id,
+        source_type: 'web',
+        source_url: url,
+        import_method: 'ios_shortcut',
+
+        // Core recipe data
+        title: extractedRecipe.title || 'Recipe from Web',
+        summary: extractedRecipe.summary || '',
+        image: extractedRecipe.image || null,
+
+        // Recipe details
+        extendedIngredients: extractedRecipe.extendedIngredients || [],
+        analyzedInstructions: extractedRecipe.analyzedInstructions || [],
+
+        // Time and servings
+        readyInMinutes: extractedRecipe.readyInMinutes || null,
+        cookingMinutes: extractedRecipe.cookingMinutes || null,
+        servings: extractedRecipe.servings || 4,
+
+        // Dietary attributes
+        vegetarian: extractedRecipe.vegetarian || false,
+        vegan: extractedRecipe.vegan || false,
+        glutenFree: extractedRecipe.glutenFree || false,
+        dairyFree: extractedRecipe.dairyFree || false,
+
+        // Additional metadata
+        cuisines: extractedRecipe.cuisines || [],
+        dishTypes: extractedRecipe.dishTypes || [],
+        diets: extractedRecipe.diets || [],
+
+        // Extraction metadata
+        extraction_confidence: 0.95, // Spoonacular is highly reliable
+        extraction_notes: 'Extracted via Spoonacular web extraction API (iOS Shortcut)',
+        missing_info: [],
+        ai_model_used: 'spoonacular',
+
+        // Source info
+        source_author: extractedRecipe.sourceName || extractedRecipe.creditsText || null,
+        source_author_image: null,
+
+        // Nutrition (will be added below)
+        nutrition: null
+      };
+
+      // Get nutrition estimation
+      console.log('[Shortcuts] Analyzing nutrition for web recipe...');
+      try {
+        const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(webRecipeToSave);
+        if (nutritionData) {
+          console.log('[Shortcuts] ✅ Nutrition analysis successful');
+          webRecipeToSave.nutrition = nutritionData;
+        }
+      } catch (nutritionError) {
+        console.error('[Shortcuts] Nutrition analysis failed:', nutritionError.message);
+        // Don't fail the import if nutrition fails
+      }
+
+      // Save to database
+      console.log('[Shortcuts] Saving web recipe to database...');
+      const { data: savedWebRecipe, error: saveWebError } = await supabase
+        .from('saved_recipes')
+        .insert(webRecipeToSave)
+        .select()
+        .single();
+
+      if (saveWebError) {
+        console.error('[Shortcuts] Save error:', saveWebError);
+        throw saveWebError;
+      }
+
+      // Update token usage
+      await supabase
+        .from('shortcut_tokens')
+        .update({
+          usage_count: tokenData.usage_count + 1,
+          daily_usage_count: tokenData.daily_usage_count + 1,
+          last_used: new Date().toISOString()
+        })
+        .eq('token', token);
+
+      console.log('[Shortcuts] Web recipe saved successfully:', {
+        id: savedWebRecipe.id,
+        title: savedWebRecipe.title,
+        source: savedWebRecipe.source_author
+      });
+
+      // Send push notification
+      try {
+        console.log('[Shortcuts] Sending push notification for web recipe...');
+        await pushService.sendToUser(tokenData.user_id, {
+          title: 'Recipe Saved',
+          body: savedWebRecipe.title || 'Your recipe has been imported',
+          icon: savedWebRecipe.image || '/logo192.png',
+          badge: '/logo192.png',
+          tag: 'recipe-import',
+          data: {
+            url: '/saved-recipes',
+            recipeId: savedWebRecipe.id
+          },
+          requireInteraction: false,
+          actions: [
+            { action: 'view', title: 'View Recipe' },
+            { action: 'dismiss', title: 'Dismiss' }
+          ]
+        });
+        console.log('[Shortcuts] Push notification sent successfully');
+      } catch (pushError) {
+        console.error('[Shortcuts] Failed to send push notification:', pushError);
+      }
+
+      // Return success response
+      res.json({
+        success: true,
+        recipe: {
+          id: savedWebRecipe.id,
+          title: savedWebRecipe.title,
+          image: savedWebRecipe.image,
+          confidence: 0.95,
+          ingredientCount: savedWebRecipe.extendedIngredients?.length || 0
+        },
+        message: savedWebRecipe.title
+      });
+    }
+
   } catch (error) {
     console.error('[Shortcuts] Import error:', error);
 
@@ -523,12 +699,22 @@ router.get('/test', async (req, res) => {
       'POST /api/shortcuts/regenerate'
     ],
     features: {
+      universalUrlSupport: true,      // NEW: Supports any recipe URL
+      instagramExtraction: true,       // Apify + Gemini multi-modal
+      webExtraction: true,             // Spoonacular API
       manualCaptionSupport: true,
-      partialExtractionSupport: true, 
+      partialExtractionSupport: true,
       lowConfidenceAcceptance: true,
       enhancedLogging: true,
       detailedErrorMessages: true
-    }
+    },
+    supportedUrls: [
+      'instagram.com/p/xxx',
+      'instagram.com/reel/xxx',
+      'allrecipes.com/recipe/xxx',
+      'foodnetwork.com/recipes/xxx',
+      '...any recipe website'
+    ]
   });
 });
 

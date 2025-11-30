@@ -25,6 +25,7 @@ const shortcutsRoutes = require('./routes/shortcuts');
 const savedRecipesRoutes = require('./routes/savedRecipes');
 const shoppingListsRoutes = require('./routes/shoppingLists');
 const pushRoutes = require('./routes/push');
+const mealPlansRoutes = require('./routes/mealPlans');
 const webhookRoutes = require('./routes/webhooks');
 const subscriptionRoutes = require('./routes/subscriptions');
 const supportRoutes = require('./routes/support');
@@ -107,6 +108,7 @@ app.use('/api/saved-recipes', savedRecipesRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/shopping-lists', shoppingListsRoutes);
 app.use('/api/support', supportRoutes);
+app.use('/api/meal-plans', mealPlansRoutes);
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)
 app.get('/api/proxy-image', async (req, res) => {

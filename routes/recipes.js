@@ -404,6 +404,149 @@ router.post('/import-instagram', authMiddleware.authenticateToken, checkImported
   }
 });
 
+// Import recipe from ANY web URL (non-Instagram)
+// POST /api/recipes/import-web
+router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+  try {
+    const { url } = req.body;
+    const userId = req.user?.userId || req.user?.id;
+
+    console.log('[WebImport] Request from user:', userId);
+    console.log('[WebImport] URL:', url);
+
+    // Validate URL
+    if (!url) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide a URL'
+      });
+    }
+
+    // Basic URL validation
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide a valid URL'
+      });
+    }
+
+    // Redirect Instagram URLs to dedicated endpoint
+    if (url.includes('instagram.com')) {
+      return res.status(400).json({
+        success: false,
+        error: 'For Instagram recipes, please use the Instagram import option',
+        useInstagramImport: true
+      });
+    }
+
+    // Extract recipe using Spoonacular
+    console.log('[WebImport] Extracting recipe with Spoonacular...');
+    let extractedRecipe;
+    try {
+      extractedRecipe = await recipeService.extractRecipeFromUrl(url);
+    } catch (extractError) {
+      console.error('[WebImport] Spoonacular extraction failed:', extractError.message);
+      return res.status(400).json({
+        success: false,
+        error: 'Could not extract recipe from this URL. The page may not contain a recognizable recipe.',
+        requiresManualInput: true
+      });
+    }
+
+    // Prepare recipe for database (Spoonacular format matches our schema)
+    const recipeToSave = {
+      user_id: userId,
+      source_type: 'web',
+      source_url: url,
+      import_method: 'spoonacular',
+
+      // Core recipe data
+      title: extractedRecipe.title || 'Recipe from Web',
+      summary: extractedRecipe.summary || '',
+      image: extractedRecipe.image || null,
+
+      // Recipe details (Spoonacular format matches exactly)
+      extendedIngredients: extractedRecipe.extendedIngredients || [],
+      analyzedInstructions: extractedRecipe.analyzedInstructions || [],
+
+      // Time and servings
+      readyInMinutes: extractedRecipe.readyInMinutes || null,
+      cookingMinutes: extractedRecipe.cookingMinutes || null,
+      servings: extractedRecipe.servings || 4,
+
+      // Dietary attributes
+      vegetarian: extractedRecipe.vegetarian || false,
+      vegan: extractedRecipe.vegan || false,
+      glutenFree: extractedRecipe.glutenFree || false,
+      dairyFree: extractedRecipe.dairyFree || false,
+
+      // Additional metadata
+      cuisines: extractedRecipe.cuisines || [],
+      dishTypes: extractedRecipe.dishTypes || [],
+      diets: extractedRecipe.diets || [],
+
+      // Extraction metadata
+      extraction_confidence: 0.95, // Spoonacular is highly reliable
+      extraction_notes: 'Extracted via Spoonacular web extraction API',
+      ai_model_used: 'spoonacular',
+
+      // Source info
+      source_author: extractedRecipe.sourceName || extractedRecipe.creditsText || null
+    };
+
+    // Get nutrition estimation
+    console.log('[WebImport] Analyzing nutrition...');
+    try {
+      const nutritionData = await nutritionAnalysis.analyzeRecipeNutrition(recipeToSave);
+      if (nutritionData) {
+        console.log('[WebImport] ✅ Nutrition analysis successful');
+        recipeToSave.nutrition = nutritionData;
+      }
+    } catch (nutritionError) {
+      console.error('[WebImport] Nutrition analysis failed:', nutritionError.message);
+      recipeToSave.nutrition = null;
+    }
+
+    // Save to database
+    console.log('[WebImport] Saving to database...');
+    const { data: savedRecipe, error: saveError } = await supabase
+      .from('saved_recipes')
+      .insert(recipeToSave)
+      .select()
+      .single();
+
+    if (saveError) {
+      console.error('[WebImport] Database save error:', saveError);
+      throw saveError;
+    }
+
+    // Increment usage counter
+    await incrementUsageCounter(userId, 'imported_recipes');
+    console.log('[WebImport] Recipe saved successfully:', savedRecipe.id, savedRecipe.title);
+
+    res.json({
+      success: true,
+      recipe: savedRecipe,
+      message: 'Recipe imported successfully from web',
+      extractionMeta: {
+        method: 'spoonacular',
+        confidence: 0.95,
+        sourceType: 'web'
+      }
+    });
+
+  } catch (error) {
+    console.error('[WebImport] Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to import recipe. Please try again.'
+    });
+  }
+});
+
 // NEW: Multi-modal extraction endpoint (unified caption + video + audio analysis)
 // POST /api/recipes/multi-modal-extract
 router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {

@@ -2,11 +2,56 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const { createClient } = require('@supabase/supabase-js');
+const googleCalendarService = require('../services/googleCalendarService');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
+
+/**
+ * Helper: Get user's calendar connection and tokens for deletion
+ */
+async function getCalendarTokens(userId) {
+  const { data: connection, error } = await supabase
+    .from('user_calendar_connections')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('provider', 'google')
+    .eq('is_active', true)
+    .single();
+
+  if (error || !connection) {
+    return null;
+  }
+
+  // Check if token needs refresh
+  const now = new Date();
+  const expiry = new Date(connection.token_expiry);
+
+  if (expiry <= now) {
+    try {
+      const newTokens = await googleCalendarService.refreshAccessToken(connection.refresh_token);
+      await supabase
+        .from('user_calendar_connections')
+        .update({
+          access_token: newTokens.access_token,
+          token_expiry: newTokens.expiry_date ? new Date(newTokens.expiry_date).toISOString() : null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', connection.id);
+      connection.access_token = newTokens.access_token;
+    } catch (refreshError) {
+      console.error('[MealPlans] Token refresh failed:', refreshError);
+      return null;
+    }
+  }
+
+  return {
+    access_token: connection.access_token,
+    refresh_token: connection.refresh_token
+  };
+}
 
 // GET /api/meal-plans - Get meal plans for a date range
 router.get('/', authMiddleware.authenticateToken, async (req, res) => {
@@ -229,7 +274,7 @@ router.put('/:id', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id;
     const { id } = req.params;
-    const { recipe_id, recipe_source, recipe_snapshot } = req.body;
+    const { recipe_id, recipe_source, recipe_snapshot, scheduled_time } = req.body;
 
     console.log(`[MealPlans] Updating plan ${id} for user ${userId}`);
 
@@ -262,6 +307,7 @@ router.put('/:id', authMiddleware.authenticateToken, async (req, res) => {
     if (recipe_id !== undefined) updateData.recipe_id = recipe_id;
     if (recipe_source !== undefined) updateData.recipe_source = recipe_source;
     if (recipe_snapshot !== undefined) updateData.recipe_snapshot = recipe_snapshot;
+    if (scheduled_time !== undefined) updateData.scheduled_time = scheduled_time;
 
     const { data, error } = await supabase
       .from('meal_plans')
@@ -303,10 +349,10 @@ router.delete('/:id', authMiddleware.authenticateToken, async (req, res) => {
 
     console.log(`[MealPlans] Deleting plan ${id} for user ${userId}`);
 
-    // Verify ownership
+    // Verify ownership and get calendar_event_id
     const { data: existing, error: fetchError } = await supabase
       .from('meal_plans')
-      .select('id, user_id')
+      .select('id, user_id, calendar_event_id')
       .eq('id', id)
       .single();
 
@@ -322,6 +368,20 @@ router.delete('/:id', authMiddleware.authenticateToken, async (req, res) => {
         success: false,
         error: 'Not authorized to delete this meal plan'
       });
+    }
+
+    // Delete from Google Calendar if synced
+    if (existing.calendar_event_id) {
+      try {
+        const tokens = await getCalendarTokens(userId);
+        if (tokens) {
+          await googleCalendarService.deleteMealEvent(tokens, existing.calendar_event_id);
+          console.log(`[MealPlans] Deleted calendar event: ${existing.calendar_event_id}`);
+        }
+      } catch (calendarError) {
+        // Log but don't fail - continue with meal plan deletion
+        console.warn('[MealPlans] Failed to delete calendar event:', calendarError.message);
+      }
     }
 
     // Delete the plan

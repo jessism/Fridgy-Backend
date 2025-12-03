@@ -30,7 +30,7 @@ class MultiModalExtractor {
 
     // Models for extraction (fallback)
     this.primaryModel = 'google/gemini-2.0-flash-exp:free';
-    this.fallbackModel = 'google/gemini-flash-1.5-8b';
+    this.fallbackModel = 'google/gemini-2.0-flash-lite-001';  // Paid, cheapest with video support
   }
 
   /**
@@ -460,10 +460,41 @@ RETURN COMPREHENSIVE JSON:
     } catch (error) {
       console.error('[MultiModal] AI call failed:', error);
 
-      // Try fallback model
-      if (this.fallbackModel) {
-        console.log('[MultiModal] Trying fallback model...');
-        // Implement fallback logic here
+      // Try fallback model on rate limit errors
+      if (this.fallbackModel && (error.message?.includes('429') || error.message?.includes('rate') || error.message?.includes('Provider returned error'))) {
+        console.log('[MultiModal] Primary model failed, trying fallback model:', this.fallbackModel);
+
+        try {
+          const fallbackResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${this.apiKey}`,
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://fridgy.app',
+              'X-Title': 'Fridgy Multi-Modal Import'
+            },
+            body: JSON.stringify({
+              model: this.fallbackModel,
+              messages,
+              response_format: { type: 'json_object' },
+              temperature: 0.3,
+              max_tokens: 3000
+            })
+          });
+
+          const fallbackData = await fallbackResponse.json();
+
+          if (!fallbackResponse.ok) {
+            console.error('[MultiModal] Fallback model also failed:', fallbackData.error);
+            throw new Error(fallbackData.error?.message || `Fallback AI API error: ${fallbackResponse.status}`);
+          }
+
+          console.log('[MultiModal] Fallback model successful');
+          return fallbackData.choices[0].message.content;
+        } catch (fallbackError) {
+          console.error('[MultiModal] Fallback model failed:', fallbackError);
+          throw fallbackError;
+        }
       }
 
       throw error;

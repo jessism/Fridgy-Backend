@@ -1,14 +1,18 @@
 /**
  * Calendar Sync Routes
- * Handles Google Calendar OAuth and sync operations
+ * Handles Google Calendar OAuth, ICS subscriptions, and sync operations
  */
 
 const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const googleCalendarService = require('../services/googleCalendarService');
+const icsService = require('../services/icsService');
 const { getServiceClient } = require('../config/supabase');
 const supabase = getServiceClient();
+
+// API URL for building ICS feed URLs
+const API_URL = process.env.API_URL || 'http://localhost:5000';
 
 // Frontend URL for OAuth redirects
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -126,15 +130,14 @@ router.get('/callback', async (req, res) => {
 
 /**
  * GET /api/calendar/status
- * Check if calendar is connected
+ * Check if calendar is connected (supports both Google and ICS providers)
  */
 router.get('/status', authenticateToken, async (req, res) => {
   try {
     const { data: connection, error } = await supabase
       .from('user_calendar_connections')
-      .select('connected_email, is_active, created_at')
+      .select('provider, connected_email, subscription_token, is_active, created_at')
       .eq('user_id', req.user.id)
-      .eq('provider', 'google')
       .eq('is_active', true)
       .single();
 
@@ -142,11 +145,26 @@ router.get('/status', authenticateToken, async (req, res) => {
       return res.json({ connected: false });
     }
 
-    res.json({
-      connected: true,
-      email: connection.connected_email,
-      connectedAt: connection.created_at
-    });
+    // Build response based on provider type
+    if (connection.provider === 'google') {
+      res.json({
+        connected: true,
+        provider: 'google',
+        email: connection.connected_email,
+        connectedAt: connection.created_at
+      });
+    } else if (connection.provider === 'ics') {
+      const httpsUrl = `${API_URL}/api/calendar/ics/${connection.subscription_token}`;
+      res.json({
+        connected: true,
+        provider: 'ics',
+        webcalUrl: icsService.httpsToWebcal(httpsUrl),
+        downloadUrl: `${httpsUrl}/download`,
+        connectedAt: connection.created_at
+      });
+    } else {
+      res.json({ connected: false });
+    }
   } catch (error) {
     console.error('[Calendar] Error checking status:', error);
     res.status(500).json({ error: 'Failed to check calendar status' });
@@ -155,25 +173,21 @@ router.get('/status', authenticateToken, async (req, res) => {
 
 /**
  * POST /api/calendar/disconnect
- * Disconnect Google Calendar
+ * Disconnect any calendar provider (Google or ICS)
  */
 router.post('/disconnect', authenticateToken, async (req, res) => {
   try {
-    // Deactivate connection (keep record for potential reconnection)
+    // Delete all connections for this user (supports switching providers)
     const { error: dbError } = await supabase
       .from('user_calendar_connections')
-      .update({
-        is_active: false,
-        updated_at: new Date().toISOString()
-      })
-      .eq('user_id', req.user.id)
-      .eq('provider', 'google');
+      .delete()
+      .eq('user_id', req.user.id);
 
     if (dbError) {
       throw dbError;
     }
 
-    // Clear calendar_event_id from user's meal plans
+    // Clear calendar_event_id from user's meal plans (for Google sync)
     await supabase
       .from('meal_plans')
       .update({
@@ -492,6 +506,311 @@ router.post('/sync-week', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[Calendar] Sync week error:', error);
     res.status(500).json({ error: 'Failed to sync meals to calendar' });
+  }
+});
+
+// =============================================================================
+// ICS SUBSCRIPTION ROUTES
+// =============================================================================
+
+/**
+ * POST /api/calendar/connect-ics
+ * Create ICS subscription in PENDING state (is_active: false)
+ * User must call /confirm-ics to activate after subscribing in their calendar app
+ */
+router.post('/connect-ics', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // First, disconnect any existing active connection (only one provider at a time)
+    await supabase
+      .from('user_calendar_connections')
+      .delete()
+      .eq('user_id', userId);
+
+    // Clear calendar_event_id from meal plans (Google sync artifacts)
+    await supabase
+      .from('meal_plans')
+      .update({
+        calendar_event_id: null,
+        synced_at: null
+      })
+      .eq('user_id', userId);
+
+    // Generate new subscription token
+    const subscriptionToken = icsService.generateSubscriptionToken();
+
+    // Create ICS connection in PENDING state (is_active: false)
+    // Will be activated when user confirms via /confirm-ics
+    const { error: dbError } = await supabase
+      .from('user_calendar_connections')
+      .insert({
+        user_id: userId,
+        provider: 'ics',
+        subscription_token: subscriptionToken,
+        is_active: false  // Pending until user confirms
+      });
+
+    if (dbError) {
+      console.error('[Calendar] Error creating ICS connection:', dbError);
+      throw dbError;
+    }
+
+    // Create default preferences if they don't exist
+    await supabase
+      .from('user_meal_time_preferences')
+      .upsert({
+        user_id: userId,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'user_id',
+        ignoreDuplicates: true
+      });
+
+    // Build URLs
+    const httpsUrl = `${API_URL}/api/calendar/ics/${subscriptionToken}`;
+    const webcalUrl = icsService.httpsToWebcal(httpsUrl);
+    const downloadUrl = `${httpsUrl}/download`;
+
+    console.log('[Calendar] ICS subscription created (pending):', { userId, webcalUrl });
+
+    res.json({
+      success: true,
+      pending: true,
+      webcalUrl,
+      downloadUrl
+    });
+  } catch (error) {
+    console.error('[Calendar] Error creating ICS subscription:', error);
+    res.status(500).json({ error: 'Failed to create calendar subscription' });
+  }
+});
+
+/**
+ * POST /api/calendar/confirm-ics
+ * Activate a pending ICS subscription after user confirms they added it to their calendar
+ */
+router.post('/confirm-ics', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Find and activate the pending ICS connection
+    const { data: connection, error: findError } = await supabase
+      .from('user_calendar_connections')
+      .select('id, subscription_token')
+      .eq('user_id', userId)
+      .eq('provider', 'ics')
+      .single();
+
+    if (findError || !connection) {
+      return res.status(404).json({ error: 'No pending ICS subscription found' });
+    }
+
+    // Activate the connection
+    const { error: updateError } = await supabase
+      .from('user_calendar_connections')
+      .update({ is_active: true })
+      .eq('id', connection.id);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    // Build URLs for response
+    const httpsUrl = `${API_URL}/api/calendar/ics/${connection.subscription_token}`;
+    const webcalUrl = icsService.httpsToWebcal(httpsUrl);
+    const downloadUrl = `${httpsUrl}/download`;
+
+    console.log('[Calendar] ICS subscription confirmed:', { userId });
+
+    res.json({
+      success: true,
+      webcalUrl,
+      downloadUrl
+    });
+  } catch (error) {
+    console.error('[Calendar] Error confirming ICS subscription:', error);
+    res.status(500).json({ error: 'Failed to confirm calendar subscription' });
+  }
+});
+
+/**
+ * POST /api/calendar/cancel-pending-ics
+ * Cancel a pending ICS subscription (user clicked Cancel in modal)
+ */
+router.post('/cancel-pending-ics', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Delete any pending (is_active: false) ICS connection
+    const { error: deleteError } = await supabase
+      .from('user_calendar_connections')
+      .delete()
+      .eq('user_id', userId)
+      .eq('provider', 'ics')
+      .eq('is_active', false);
+
+    if (deleteError) {
+      throw deleteError;
+    }
+
+    console.log('[Calendar] Pending ICS subscription cancelled:', { userId });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Calendar] Error cancelling pending ICS:', error);
+    res.status(500).json({ error: 'Failed to cancel subscription' });
+  }
+});
+
+/**
+ * GET /api/calendar/ics/:token
+ * Public ICS feed - serves calendar content for subscription
+ * No auth required (token in URL provides access)
+ */
+router.get('/ics/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    // Look up subscription by token
+    const { data: connection, error: connError } = await supabase
+      .from('user_calendar_connections')
+      .select('user_id, is_active')
+      .eq('subscription_token', token)
+      .eq('provider', 'ics')
+      .single();
+
+    if (connError || !connection) {
+      console.warn('[Calendar] ICS feed: Invalid token');
+      return res.status(404).send('Calendar not found');
+    }
+
+    if (!connection.is_active) {
+      console.warn('[Calendar] ICS feed: Inactive subscription');
+      return res.status(404).send('Calendar not found');
+    }
+
+    const userId = connection.user_id;
+
+    // Update last accessed timestamp (fire and forget)
+    supabase
+      .from('user_calendar_connections')
+      .update({ last_accessed_at: new Date().toISOString() })
+      .eq('subscription_token', token)
+      .then(() => {});
+
+    // Get user's meal plans (30 days ago to 60 days ahead)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const sixtyDaysAhead = new Date();
+    sixtyDaysAhead.setDate(sixtyDaysAhead.getDate() + 60);
+
+    const { data: mealPlans, error: mealError } = await supabase
+      .from('meal_plans')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('date', thirtyDaysAgo.toISOString().split('T')[0])
+      .lte('date', sixtyDaysAhead.toISOString().split('T')[0])
+      .order('date', { ascending: true });
+
+    if (mealError) {
+      console.error('[Calendar] Error fetching meal plans:', mealError);
+      throw mealError;
+    }
+
+    // Get user's preferences
+    const { data: preferences } = await supabase
+      .from('user_meal_time_preferences')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
+
+    // Generate ICS content
+    const icsContent = icsService.generateICS(mealPlans || [], preferences || {});
+
+    // Set headers for calendar subscription
+    res.set({
+      'Content-Type': 'text/calendar; charset=utf-8',
+      'Content-Disposition': 'inline; filename="trackabite-meals.ics"',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
+
+    res.send(icsContent);
+  } catch (error) {
+    console.error('[Calendar] ICS feed error:', error);
+    res.status(500).send('Error generating calendar');
+  }
+});
+
+/**
+ * GET /api/calendar/ics/:token/download
+ * Force download of ICS file (for manual import)
+ */
+router.get('/ics/:token/download', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    // Look up subscription by token
+    const { data: connection, error: connError } = await supabase
+      .from('user_calendar_connections')
+      .select('user_id, is_active')
+      .eq('subscription_token', token)
+      .eq('provider', 'ics')
+      .single();
+
+    if (connError || !connection) {
+      return res.status(404).send('Calendar not found');
+    }
+
+    if (!connection.is_active) {
+      return res.status(404).send('Calendar not found');
+    }
+
+    const userId = connection.user_id;
+
+    // Get user's meal plans (30 days ago to 60 days ahead)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const sixtyDaysAhead = new Date();
+    sixtyDaysAhead.setDate(sixtyDaysAhead.getDate() + 60);
+
+    const { data: mealPlans, error: mealError } = await supabase
+      .from('meal_plans')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('date', thirtyDaysAgo.toISOString().split('T')[0])
+      .lte('date', sixtyDaysAhead.toISOString().split('T')[0])
+      .order('date', { ascending: true });
+
+    if (mealError) {
+      throw mealError;
+    }
+
+    // Get user's preferences
+    const { data: preferences } = await supabase
+      .from('user_meal_time_preferences')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
+
+    // Generate ICS content
+    const icsContent = icsService.generateICS(mealPlans || [], preferences || {});
+
+    // Set headers for download
+    res.set({
+      'Content-Type': 'text/calendar; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="trackabite-meals.ics"',
+      'Cache-Control': 'no-cache'
+    });
+
+    res.send(icsContent);
+  } catch (error) {
+    console.error('[Calendar] ICS download error:', error);
+    res.status(500).send('Error generating calendar');
   }
 });
 

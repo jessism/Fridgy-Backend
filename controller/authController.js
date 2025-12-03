@@ -673,22 +673,44 @@ const authController = {
         ? Math.round((new Date(now) - new Date(existingTour.started_at)) / 1000)
         : null;
 
-      const { data: tourData, error } = await supabase
-        .from('user_tours')
-        .update({
-          status: 'skipped',
-          abandoned_at: now,
-          final_step: current_step || 'unknown',
-          skip_reason: reason || 'user_action',
-          updated_at: now
-        })
-        .eq('user_id', userId)
-        .eq('tour_type', tour_type)
-        .select()
-        .single();
+      let tourData;
 
-      if (error) {
-        throw error;
+      if (existingTour) {
+        // Update existing tour record
+        const { data, error } = await supabase
+          .from('user_tours')
+          .update({
+            status: 'skipped',
+            abandoned_at: now,
+            final_step: current_step || 'unknown',
+            skip_reason: reason || 'user_action',
+            updated_at: now
+          })
+          .eq('user_id', userId)
+          .eq('tour_type', tour_type)
+          .select()
+          .single();
+
+        if (error) throw error;
+        tourData = data;
+      } else {
+        // Create new tour record with skipped status (user skipped from welcome screen)
+        const { data, error } = await supabase
+          .from('user_tours')
+          .insert({
+            user_id: userId,
+            tour_type: tour_type,
+            status: 'skipped',
+            abandoned_at: now,
+            final_step: current_step || 'welcome_screen',
+            skip_reason: reason || 'user_action',
+            source: 'auto'
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+        tourData = data;
       }
 
       // Also update has_seen_welcome_tour for backwards compatibility

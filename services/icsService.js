@@ -181,10 +181,15 @@ class ICSService {
   /**
    * Build webcal URL from https URL
    * @param {string} httpsUrl - HTTPS URL
-   * @returns {string} webcal:// URL
+   * @returns {string} webcal:// or webcals:// URL
    */
   httpsToWebcal(httpsUrl) {
-    return httpsUrl.replace(/^https?:\/\//, 'webcal://');
+    // Use webcals:// for HTTPS sources (secure webcal)
+    // Use webcal:// for HTTP sources
+    if (httpsUrl.startsWith('https://')) {
+      return httpsUrl.replace(/^https:\/\//, 'webcals://');
+    }
+    return httpsUrl.replace(/^http:\/\//, 'webcal://');
   }
 }
 

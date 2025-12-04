@@ -540,15 +540,15 @@ router.post('/connect-ics', authenticateToken, async (req, res) => {
     // Generate new subscription token
     const subscriptionToken = icsService.generateSubscriptionToken();
 
-    // Create ICS connection in PENDING state (is_active: false)
-    // Will be activated when user confirms via /confirm-ics
+    // Create ICS connection as ACTIVE immediately
+    // Apple Calendar needs to validate the feed right away when subscribing
     const { error: dbError } = await supabase
       .from('user_calendar_connections')
       .insert({
         user_id: userId,
         provider: 'ics',
         subscription_token: subscriptionToken,
-        is_active: false  // Pending until user confirms
+        is_active: true  // Must be active for Apple Calendar to validate
       });
 
     if (dbError) {
@@ -572,11 +572,10 @@ router.post('/connect-ics', authenticateToken, async (req, res) => {
     const webcalUrl = icsService.httpsToWebcal(httpsUrl);
     const downloadUrl = `${httpsUrl}/download`;
 
-    console.log('[Calendar] ICS subscription created (pending):', { userId, webcalUrl });
+    console.log('[Calendar] ICS subscription created:', { userId, webcalUrl });
 
     res.json({
       success: true,
-      pending: true,
       webcalUrl,
       downloadUrl
     });

@@ -181,15 +181,12 @@ class ICSService {
   /**
    * Build webcal URL from https URL
    * @param {string} httpsUrl - HTTPS URL
-   * @returns {string} webcal:// or webcals:// URL
+   * @returns {string} webcal:// URL
    */
   httpsToWebcal(httpsUrl) {
-    // Use webcals:// for HTTPS sources (secure webcal)
-    // Use webcal:// for HTTP sources
-    if (httpsUrl.startsWith('https://')) {
-      return httpsUrl.replace(/^https:\/\//, 'webcals://');
-    }
-    return httpsUrl.replace(/^http:\/\//, 'webcal://');
+    // webcal:// is the standard protocol recognized by Safari/iOS
+    // The calendar app will automatically use HTTPS when fetching from HTTPS domains
+    return httpsUrl.replace(/^https?:\/\//, 'webcal://');
   }
 }
 

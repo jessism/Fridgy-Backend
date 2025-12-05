@@ -181,7 +181,7 @@ class GoogleCalendarService {
    */
   buildCalendarEvent(mealPlan, preferences) {
     const timezone = preferences?.timezone || 'America/Los_Angeles';
-    const duration = preferences?.meal_duration_minutes || 30;
+    const duration = preferences?.meal_duration_minutes || 60;
 
     // Get the scheduled time or default time for this meal type
     const mealTime = mealPlan.scheduled_time || this.getDefaultTime(mealPlan.meal_type, preferences);

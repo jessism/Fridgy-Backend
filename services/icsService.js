@@ -49,7 +49,7 @@ class ICSService {
   mealToVEvent(mealPlan, preferences) {
     const uid = `meal-${mealPlan.id}@trackabite.app`;
     const startTime = this.getStartDateTime(mealPlan, preferences);
-    const endTime = this.getEndDateTime(startTime, preferences?.meal_duration_minutes || 30);
+    const endTime = this.getEndDateTime(startTime, preferences?.meal_duration_minutes || 60);
     const emoji = this.getMealEmoji(mealPlan.meal_type);
     const title = mealPlan.recipe_snapshot?.title || mealPlan.recipe?.title || 'Planned Meal';
     const mealLabel = this.capitalize(mealPlan.meal_type);

@@ -222,7 +222,7 @@ router.get('/preferences', authenticateToken, async (req, res) => {
         lunch_time: '12:00',
         dinner_time: '19:00',
         snack_time: '15:00',
-        meal_duration_minutes: 30,
+        meal_duration_minutes: 60,
         auto_sync: false,
         timezone: 'America/Los_Angeles'
       };
@@ -259,7 +259,7 @@ router.put('/preferences', authenticateToken, async (req, res) => {
         lunch_time: lunch_time || '12:00',
         dinner_time: dinner_time || '19:00',
         snack_time: snack_time || '15:00',
-        meal_duration_minutes: meal_duration_minutes || 30,
+        meal_duration_minutes: meal_duration_minutes || 60,
         auto_sync: auto_sync ?? false,
         timezone: timezone || 'America/Los_Angeles',
         updated_at: new Date().toISOString()

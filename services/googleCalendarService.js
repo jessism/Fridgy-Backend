@@ -174,6 +174,38 @@ class GoogleCalendarService {
   }
 
   /**
+   * List all Trackabite events in the user's calendar
+   * Used for cleanup of orphaned events
+   * @param {Object} tokens - { access_token, refresh_token }
+   * @returns {Array} List of calendar events
+   */
+  async listTrackabiteEvents(tokens) {
+    if (!this.oauth2Client) {
+      throw new Error('Google Calendar service not configured');
+    }
+
+    this.oauth2Client.setCredentials(tokens);
+    const calendar = google.calendar({ version: 'v3', auth: this.oauth2Client });
+
+    // Get events from past 30 days to future 60 days
+    const timeMin = new Date();
+    timeMin.setDate(timeMin.getDate() - 30);
+    const timeMax = new Date();
+    timeMax.setDate(timeMax.getDate() + 60);
+
+    const response = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      q: 'Trackabite', // Search for our events by description
+      singleEvents: true,
+      maxResults: 500
+    });
+
+    return response.data.items || [];
+  }
+
+  /**
    * Build a calendar event object from meal plan data
    * @param {Object} mealPlan - Meal plan data
    * @param {Object} preferences - User's preferences

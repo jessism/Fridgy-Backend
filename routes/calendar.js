@@ -434,15 +434,12 @@ router.delete('/sync/:mealPlanId', authenticateToken, async (req, res) => {
 
 /**
  * POST /api/calendar/sync-week
- * Sync all meals for a date range
+ * Sync meals to calendar. If startDate/endDate provided, syncs that range.
+ * If no dates provided, syncs ALL meals.
  */
 router.post('/sync-week', authenticateToken, async (req, res) => {
   try {
     const { startDate, endDate } = req.body;
-
-    if (!startDate || !endDate) {
-      return res.status(400).json({ error: 'startDate and endDate are required' });
-    }
 
     // Get connection tokens
     const tokens = await getConnectionWithTokens(req.user.id);
@@ -450,16 +447,31 @@ router.post('/sync-week', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Calendar not connected' });
     }
 
-    // Get all meal plans in date range
-    const { data: mealPlans, error: mealError } = await supabase
+    // Build query - if no dates provided, sync ALL meals
+    let query = supabase
       .from('meal_plans')
       .select('*')
-      .eq('user_id', req.user.id)
-      .gte('date', startDate)
-      .lte('date', endDate);
+      .eq('user_id', req.user.id);
+
+    if (startDate && endDate) {
+      console.log(`[Calendar] Sync request: ${startDate} to ${endDate}`);
+      query = query.gte('date', startDate).lte('date', endDate);
+    } else {
+      console.log(`[Calendar] Sync ALL meals for user ${req.user.id}`);
+    }
+
+    const { data: mealPlans, error: mealError } = await query;
 
     if (mealError) {
       throw mealError;
+    }
+
+    // Log what we found
+    console.log(`[Calendar] Found ${mealPlans?.length || 0} meals to sync`);
+    if (mealPlans?.length) {
+      console.log('[Calendar] Meals:', mealPlans.map(m =>
+        `${m.date} ${m.meal_type}: ${m.recipe_snapshot?.title || 'No title'}`
+      ));
     }
 
     // Get preferences
@@ -496,12 +508,37 @@ router.post('/sync-week', authenticateToken, async (req, res) => {
             synced_at: new Date().toISOString()
           })
           .eq('id', mealPlan.id);
+
+        console.log(`[Calendar] ✓ Synced: ${mealPlan.date} ${mealPlan.meal_type}`);
       } catch (syncError) {
-        console.error(`[Calendar] Failed to sync meal ${mealPlan.id}:`, syncError);
+        console.error(`[Calendar] ✗ Failed to sync meal ${mealPlan.id}:`, syncError.message || syncError);
         results.failed++;
       }
     }
 
+    // Cleanup: Delete orphaned events (events in Google Calendar that no longer have matching meals)
+    try {
+      console.log('[Calendar] Checking for orphaned events...');
+      const calendarEvents = await googleCalendarService.listTrackabiteEvents(tokens);
+      const validEventIds = new Set(mealPlans.map(m => m.calendar_event_id).filter(Boolean));
+
+      results.deleted = 0;
+      for (const event of calendarEvents) {
+        if (!validEventIds.has(event.id)) {
+          await googleCalendarService.deleteMealEvent(tokens, event.id);
+          console.log(`[Calendar] 🗑️ Deleted orphaned event: ${event.summary}`);
+          results.deleted++;
+        }
+      }
+
+      if (results.deleted > 0) {
+        console.log(`[Calendar] Cleaned up ${results.deleted} orphaned events`);
+      }
+    } catch (cleanupError) {
+      console.warn('[Calendar] Cleanup failed:', cleanupError.message);
+    }
+
+    console.log(`[Calendar] Sync complete:`, results);
     res.json({ success: true, results });
   } catch (error) {
     console.error('[Calendar] Sync week error:', error);

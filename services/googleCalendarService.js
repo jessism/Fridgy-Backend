@@ -272,11 +272,13 @@ class GoogleCalendarService {
    * Google Calendar will use the timeZone field to interpret this time
    */
   buildDateTime(dateStr, timeStr, timezone) {
-    // Parse the time string (HH:MM format), default to noon
     const time = timeStr || '12:00';
-    // Return ISO format without timezone suffix
-    // e.g., "2025-01-15T08:00:00" - Google uses timeZone field to interpret
-    return `${dateStr}T${time}:00`;
+    // Extract just HH:MM - handles both "08:00" and "08:00:00" formats (from DB TIME type)
+    const [hours, minutes] = time.split(':');
+    // Ensure proper zero-padding for single-digit hours
+    const paddedHours = hours.padStart(2, '0');
+    const paddedMinutes = (minutes || '00').padStart(2, '0');
+    return `${dateStr}T${paddedHours}:${paddedMinutes}:00`;
   }
 }
 

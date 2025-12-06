@@ -186,22 +186,26 @@ class GoogleCalendarService {
     // Get the scheduled time or default time for this meal type
     const mealTime = mealPlan.scheduled_time || this.getDefaultTime(mealPlan.meal_type, preferences);
 
-    // Build start datetime
+    // Build start datetime string (no Z suffix - Google uses timeZone field)
     const startDateTime = this.buildDateTime(mealPlan.date, mealTime, timezone);
 
-    // Build end datetime
-    const endDateTime = new Date(startDateTime);
-    endDateTime.setMinutes(endDateTime.getMinutes() + duration);
+    // Calculate end time by adding duration to start time
+    const [hours, minutes] = mealTime.split(':').map(Number);
+    const totalMinutes = hours * 60 + minutes + duration;
+    const endHours = Math.floor(totalMinutes / 60) % 24;
+    const endMins = totalMinutes % 60;
+    const endTime = `${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')}`;
+    const endDateTime = `${mealPlan.date}T${endTime}:00`;
 
     return {
       summary: this.buildEventTitle(mealPlan),
       description: this.buildEventDescription(mealPlan),
       start: {
-        dateTime: startDateTime.toISOString(),
+        dateTime: startDateTime,
         timeZone: timezone
       },
       end: {
-        dateTime: endDateTime.toISOString(),
+        dateTime: endDateTime,
         timeZone: timezone
       },
       colorId: '2' // Green color
@@ -264,19 +268,15 @@ class GoogleCalendarService {
   }
 
   /**
-   * Build a Date object from date string and time string
+   * Build an ISO datetime string without timezone suffix
+   * Google Calendar will use the timeZone field to interpret this time
    */
   buildDateTime(dateStr, timeStr, timezone) {
-    // Parse the time string (HH:MM format)
-    const [hours, minutes] = (timeStr || '12:00').split(':').map(Number);
-
-    // Parse the date
-    const date = new Date(dateStr);
-
-    // Set the time
-    date.setHours(hours, minutes, 0, 0);
-
-    return date;
+    // Parse the time string (HH:MM format), default to noon
+    const time = timeStr || '12:00';
+    // Return ISO format without timezone suffix
+    // e.g., "2025-01-15T08:00:00" - Google uses timeZone field to interpret
+    return `${dateStr}T${time}:00`;
   }
 }
 

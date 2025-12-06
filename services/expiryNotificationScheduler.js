@@ -117,6 +117,15 @@ class ExpiryNotificationScheduler {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
+      // Fetch user's first name for personalized notifications
+      const { data: userData } = await supabase
+        .from('users')
+        .select('first_name')
+        .eq('id', userId)
+        .single();
+
+      const userName = userData?.first_name || 'Hey';
+
       // Check each expiry window
       for (const days of daysBeforeExpiry) {
         const targetDate = new Date(today);
@@ -143,7 +152,7 @@ class ExpiryNotificationScheduler {
 
           if (!alreadySent) {
             // Send notification
-            const results = await pushNotificationService.sendExpiryNotification(userId, items);
+            const results = await pushNotificationService.sendExpiryNotification(userId, items, userName);
 
             // Log the notification
             await this.logNotification(userId, items, 'expiry', results);
@@ -167,7 +176,7 @@ class ExpiryNotificationScheduler {
         if (!alreadySent) {
           // Send expired notification with different wording
           const payload = {
-            title: '⚠️ Expired Food Alert',
+            title: `${userName}, your food's gone bad`,
             body: `You have ${expiredItems.length} expired item(s) in your inventory!`,
             icon: '/logo192.png',
             badge: '/logo192.png',
@@ -677,6 +686,15 @@ class ExpiryNotificationScheduler {
   // Manual trigger for testing
   async testNotification(userId) {
     try {
+      // Fetch user's first name for personalized notifications
+      const { data: userData } = await supabase
+        .from('users')
+        .select('first_name')
+        .eq('id', userId)
+        .single();
+
+      const userName = userData?.first_name || 'Hey';
+
       // Get a sample of items for testing
       const { data: items, error } = await supabase
         .from('fridge_items')
@@ -690,7 +708,7 @@ class ExpiryNotificationScheduler {
         return false;
       }
 
-      const results = await pushNotificationService.sendExpiryNotification(userId, items);
+      const results = await pushNotificationService.sendExpiryNotification(userId, items, userName);
       await this.logNotification(userId, items, 'test', results);
 
       return true;

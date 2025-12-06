@@ -127,9 +127,9 @@ class PushNotificationService {
   }
 
   // Send expiry notifications
-  async sendExpiryNotification(userId, items) {
+  async sendExpiryNotification(userId, items, userName = 'Hey') {
     const itemCount = items.length;
-    let title = 'Food Expiring Soon!';
+    let title = `${userName}, your food's about to expire`;
     let body = '';
 
     if (itemCount === 1) {

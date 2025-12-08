@@ -7,8 +7,65 @@ const express = require('express');
 const router = express.Router();
 const subscriptionController = require('../controller/subscriptionController');
 const { authenticateToken } = require('../middleware/auth');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// All subscription routes require authentication
+// Cache for price data (5 minute TTL)
+let priceCache = null;
+let priceCacheTime = 0;
+const PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * GET /api/subscriptions/price
+ * Get subscription price from Stripe (PUBLIC - no auth required)
+ * Returns: { price: number, formatted: string, interval: string }
+ */
+router.get('/price', async (req, res) => {
+  try {
+    const now = Date.now();
+
+    // Return cached price if still valid
+    if (priceCache && (now - priceCacheTime) < PRICE_CACHE_TTL) {
+      return res.json(priceCache);
+    }
+
+    // Fetch price from Stripe
+    const priceId = process.env.STRIPE_PRICE_ID;
+    if (!priceId) {
+      return res.status(500).json({ error: 'Price ID not configured' });
+    }
+
+    const price = await stripe.prices.retrieve(priceId);
+
+    // Format the price
+    const amount = price.unit_amount / 100; // Convert cents to dollars
+    const formatted = `$${amount.toFixed(2)}`;
+    const interval = price.recurring?.interval || 'month';
+
+    // Cache the result
+    priceCache = {
+      price: price.unit_amount,
+      amount,
+      formatted,
+      interval,
+      formattedWithInterval: `${formatted}/${interval}`
+    };
+    priceCacheTime = now;
+
+    res.json(priceCache);
+  } catch (error) {
+    console.error('Error fetching price from Stripe:', error);
+    // Return fallback price if Stripe fails
+    res.json({
+      price: 333,
+      amount: 3.33,
+      formatted: '$3.33',
+      interval: 'month',
+      formattedWithInterval: '$3.33/month'
+    });
+  }
+});
+
+// All other subscription routes require authentication
 router.use(authenticateToken);
 
 /**

@@ -1,5 +1,6 @@
 const postmark = require('postmark');
 const moment = require('moment-timezone');
+const { getSubscriptionPrice } = require('../utils/stripePrice');
 
 // Initialize Postmark client
 const client = new postmark.ServerClient(process.env.POSTMARK_API_KEY);
@@ -36,13 +37,17 @@ async function sendTrialStartEmail(user, trialEndDate, timezone = 'America/Los_A
     const formattedDate = formatDateInTimezone(trialEndDate, timezone);
     console.log(`[Email] Trial end date formatted: ${formattedDate}`);
 
-    // Default pricing if not provided
-    const pricing = pricingInfo || {
-      hasDiscount: false,
-      regularAmount: '$4.99',
-      firstChargeAmount: '$4.99',
-      discountDescription: ''
-    };
+    // Default pricing if not provided - fetch from Stripe
+    let pricing = pricingInfo;
+    if (!pricing) {
+      const priceData = await getSubscriptionPrice();
+      pricing = {
+        hasDiscount: false,
+        regularAmount: priceData.formatted,
+        firstChargeAmount: priceData.formatted,
+        discountDescription: ''
+      };
+    }
 
     console.log('[Email] Pricing info:', pricing);
 

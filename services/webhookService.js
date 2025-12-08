@@ -7,6 +7,7 @@ const { getServiceClient } = require('../config/supabase');
 const subscriptionService = require('./subscriptionService');
 const emailService = require('./emailService');
 const { trackEvent } = require('../config/posthog');
+const { getSubscriptionPrice } = require('../utils/stripePrice');
 
 /**
  * Get pricing information from Stripe's upcoming invoice
@@ -60,11 +61,12 @@ async function getPricingFromStripeInvoice(customerId, subscriptionId) {
   } catch (error) {
     console.error('[WebhookService] Error fetching Stripe invoice:', error.message);
 
-    // Fallback to safe default
+    // Fallback to dynamic price from Stripe
+    const priceData = await getSubscriptionPrice();
     return {
       hasDiscount: false,
-      firstChargeAmount: '$4.99',
-      regularAmount: '$4.99',
+      firstChargeAmount: priceData.formatted,
+      regularAmount: priceData.formatted,
       discountDescription: ''
     };
   }

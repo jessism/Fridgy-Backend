@@ -6,7 +6,7 @@ const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
 // POST /api/saved-recipes - Create a new saved recipe
@@ -274,6 +274,65 @@ router.delete('/:id', authMiddleware.authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('[SavedRecipes] Delete error:', error);
     res.status(500).json({ error: 'Failed to delete recipe' });
+  }
+});
+
+// POST /api/saved-recipes/from-ai - Save AI recipe as favorite
+router.post('/from-ai', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
+    const aiRecipe = req.body;
+
+    console.log(`[SavedRecipes] Saving AI recipe as favorite for user ${userId}`);
+    console.log(`[SavedRecipes] AI Recipe title: ${aiRecipe.title}`);
+
+    // Map AI recipe fields to saved_recipes schema
+    const newRecipe = {
+      user_id: userId,
+      source_type: 'ai_generated',
+      is_favorite: true,
+      title: aiRecipe.title,
+      summary: aiRecipe.description || '',
+      image: aiRecipe._imageUrl || aiRecipe.image || null,
+      extendedIngredients: aiRecipe.ingredients?.map(ing => ({
+        original: `${ing.amount} ${ing.item}`,
+        name: ing.item,
+        amount: ing.amount
+      })) || [],
+      analyzedInstructions: [{
+        steps: aiRecipe.instructions?.map((step, i) => ({
+          number: i + 1,
+          step: step
+        })) || []
+      }],
+      readyInMinutes: parseInt(aiRecipe.total_time) || null,
+      servings: aiRecipe.servings || 4,
+      vegetarian: aiRecipe.dietary_info?.vegetarian || false,
+      vegan: aiRecipe.dietary_info?.vegan || false,
+      glutenFree: aiRecipe.dietary_info?.gluten_free || false,
+      dairyFree: aiRecipe.dietary_info?.dairy_free || false,
+      cuisines: aiRecipe.cuisine_type ? [aiRecipe.cuisine_type] : [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await supabase
+      .from('saved_recipes')
+      .insert(newRecipe)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[SavedRecipes] Insert error:', error);
+      throw error;
+    }
+
+    console.log(`[SavedRecipes] AI recipe saved successfully with ID: ${data.id}`);
+    res.json({ success: true, recipe: data });
+
+  } catch (error) {
+    console.error('[SavedRecipes] Save AI recipe error:', error);
+    res.status(500).json({ error: 'Failed to save AI recipe' });
   }
 });
 

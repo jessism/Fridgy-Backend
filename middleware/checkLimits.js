@@ -84,6 +84,9 @@ const checkShoppingListLimit = checkLimit('owned_shopping_lists');
 // Joined shopping lists limit (1 for free tier)
 const checkJoinedListLimit = checkLimit('joined_shopping_lists');
 
+// Joined cookbooks limit (1 for free tier)
+const checkJoinedCookbookLimit = checkLimit('joined_cookbooks');
+
 // AI recipe generation limit (3 for free tier)
 const checkAIRecipeLimit = checkLimit('ai_recipes');
 
@@ -192,6 +195,7 @@ module.exports = {
   checkMealLogLimit,
   checkShoppingListLimit,
   checkJoinedListLimit,
+  checkJoinedCookbookLimit,
   checkAIRecipeLimit,
 
   // Premium feature gate

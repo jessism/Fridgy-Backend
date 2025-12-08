@@ -5,7 +5,19 @@ const authService = require('../services/authService');
 const { createDefaultRecipe } = require('../services/defaultRecipe');
 const emailService = require('../services/emailService');
 
-// Initialize Supabase client
+// Helper function to get Supabase client with service role for backend operations
+const getSupabaseClient = () => {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+
+  if (!supabaseUrl || !supabaseKey) {
+    throw new Error('Supabase configuration missing');
+  }
+
+  return createClient(supabaseUrl, supabaseKey);
+};
+
+// Also keep anon client for read operations that don't need elevated privileges
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
@@ -26,8 +38,12 @@ const validatePassword = (password) => {
 };
 
 const validateName = (name) => {
-  const nameRegex = /^[a-zA-Z\s]{2,}$/;
-  return nameRegex.test(name.trim());
+  if (!name || typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (trimmed.length < 2) return false;
+  // Allow letters, spaces, hyphens, apostrophes, and common accented characters
+  const nameRegex = /^[a-zA-ZÀ-ÿ\s'-]{2,}$/;
+  return nameRegex.test(trimmed);
 };
 
 // Generate JWT token (1 hour expiry)
@@ -735,6 +751,94 @@ const authController = {
       res.status(500).json({
         success: false,
         error: 'Failed to mark tour skipped'
+      });
+    }
+  },
+
+  // Update user profile (name and email)
+  async updateProfile(req, res) {
+    try {
+      const userId = req.user.id;
+      const { firstName, email } = req.body;
+
+      // Build update object with only provided fields
+      const updates = {};
+
+      if (firstName !== undefined) {
+        if (!validateName(firstName)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Name must be at least 2 characters long and contain only letters and spaces'
+          });
+        }
+        updates.first_name = firstName.trim();
+      }
+
+      if (email !== undefined) {
+        if (!validateEmail(email)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Please enter a valid email address'
+          });
+        }
+
+        // Check if email is already taken by another user
+        const { data: existingUser } = await supabase
+          .from('users')
+          .select('id')
+          .eq('email', email.toLowerCase())
+          .neq('id', userId)
+          .single();
+
+        if (existingUser) {
+          return res.status(400).json({
+            success: false,
+            error: 'Email is already in use by another account'
+          });
+        }
+
+        updates.email = email.toLowerCase();
+      }
+
+      // If no updates provided, return error
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'No fields to update'
+        });
+      }
+
+      // Update user in database (use service key for write operations)
+      const serviceClient = getSupabaseClient();
+      const { data: updatedUser, error } = await serviceClient
+        .from('users')
+        .update(updates)
+        .eq('id', userId)
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      res.json({
+        success: true,
+        message: 'Profile updated successfully',
+        user: {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          firstName: updatedUser.first_name,
+          createdAt: updatedUser.created_at,
+          tier: updatedUser.tier || 'free',
+          isGrandfathered: updatedUser.is_grandfathered || false
+        }
+      });
+
+    } catch (error) {
+      console.error('Update profile error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to update profile'
       });
     }
   }

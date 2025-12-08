@@ -19,6 +19,7 @@ function getLimitsForTier(tier) {
       meal_logs: Infinity, // Unlimited - historical tracking shouldn't be limited
       owned_shopping_lists: 5,
       joined_shopping_lists: 1,
+      joined_cookbooks: 1, // 1 joined cookbook for free tier
       ai_recipes: 3, // 3 generations per month (9 recipes total)
       analytics: false, // Not allowed
     },
@@ -29,6 +30,7 @@ function getLimitsForTier(tier) {
       meal_logs: Infinity,
       owned_shopping_lists: Infinity,
       joined_shopping_lists: Infinity,
+      joined_cookbooks: Infinity,
       ai_recipes: Infinity,
       analytics: true,
     },
@@ -40,6 +42,7 @@ function getLimitsForTier(tier) {
       meal_logs: Infinity,
       owned_shopping_lists: Infinity,
       joined_shopping_lists: Infinity,
+      joined_cookbooks: Infinity,
       ai_recipes: Infinity,
       analytics: true,
     },

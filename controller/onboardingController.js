@@ -114,7 +114,19 @@ const onboardingController = {
         onboarding_completed,
         onboarding_version
       } = req.body;
-      
+
+      // Sanitize data - convert empty strings to null for numeric/optional fields
+      // This prevents PostgreSQL errors when empty strings are sent for DECIMAL columns
+      const sanitizedData = {
+        primary_goal: primary_goal === '' ? null : (primary_goal || null),
+        household_size: household_size || 1,
+        weekly_budget: weekly_budget === '' || weekly_budget === undefined ? null : weekly_budget,
+        budget_currency: budget_currency || 'USD',
+        notification_preferences: notification_preferences || {},
+        onboarding_completed: onboarding_completed ?? false,
+        onboarding_version: onboarding_version || '1.0'
+      };
+
       const supabase = getSupabaseClient();
       
       // Check if onboarding data already exists
@@ -131,13 +143,13 @@ const onboardingController = {
         const { data: updatedData, error: updateError } = await supabase
           .from('user_onboarding_data')
           .update({
-            primary_goal,
-            household_size,
-            weekly_budget,
-            budget_currency,
-            notification_preferences,
-            onboarding_completed,
-            onboarding_version,
+            primary_goal: sanitizedData.primary_goal,
+            household_size: sanitizedData.household_size,
+            weekly_budget: sanitizedData.weekly_budget,
+            budget_currency: sanitizedData.budget_currency,
+            notification_preferences: sanitizedData.notification_preferences,
+            onboarding_completed: sanitizedData.onboarding_completed,
+            onboarding_version: sanitizedData.onboarding_version,
             updated_at: new Date().toISOString()
           })
           .eq('user_id', userId)
@@ -155,13 +167,13 @@ const onboardingController = {
           .from('user_onboarding_data')
           .insert({
             user_id: userId,
-            primary_goal,
-            household_size,
-            weekly_budget,
-            budget_currency,
-            notification_preferences,
-            onboarding_completed,
-            onboarding_version
+            primary_goal: sanitizedData.primary_goal,
+            household_size: sanitizedData.household_size,
+            weekly_budget: sanitizedData.weekly_budget,
+            budget_currency: sanitizedData.budget_currency,
+            notification_preferences: sanitizedData.notification_preferences,
+            onboarding_completed: sanitizedData.onboarding_completed,
+            onboarding_version: sanitizedData.onboarding_version
           })
           .select()
           .single();

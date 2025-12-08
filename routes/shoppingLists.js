@@ -3,6 +3,7 @@ const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/auth');
 const { checkShoppingListLimit, checkJoinedListLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
+const categoryService = require('../services/categoryService');
 
 // Initialize Supabase
 const supabase = createClient(
@@ -318,6 +319,18 @@ router.post('/:id/items', authMiddleware.authenticateToken, async (req, res) => 
     // Add new item at the top (order_index = 0)
     const orderIndex = 0;
 
+    // Auto-categorize if no category provided or if 'Other'
+    let finalCategory = category;
+    if (!category || category === 'Other') {
+      const autoCategory = categoryService.categorizeItem(name);
+      if (autoCategory) {
+        finalCategory = autoCategory;
+        console.log(`[ShoppingLists] Auto-categorized "${name}" as "${autoCategory}"`);
+      } else {
+        finalCategory = 'Other';
+      }
+    }
+
     // Add item
     const { data: item, error } = await supabase
       .from('shopping_list_items')
@@ -326,7 +339,7 @@ router.post('/:id/items', authMiddleware.authenticateToken, async (req, res) => 
         name,
         quantity,
         unit,
-        category: category || 'Other',
+        category: finalCategory,
         notes,
         added_by: userId,
         added_by_name: userName,
@@ -898,6 +911,28 @@ router.get('/:id/activities', authMiddleware.authenticateToken, async (req, res)
   } catch (error) {
     console.error('Error fetching activities:', error);
     res.status(500).json({ error: 'Failed to fetch activities' });
+  }
+});
+
+// POST /api/shopping-lists/categorize - Batch categorize items
+router.post('/categorize', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { items } = req.body; // Array of item names
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array required' });
+    }
+
+    // Limit batch size
+    if (items.length > 50) {
+      return res.status(400).json({ error: 'Maximum 50 items per request' });
+    }
+
+    const categories = await categoryService.categorizeItems(items);
+    res.json({ categories });
+  } catch (error) {
+    console.error('Error categorizing items:', error);
+    res.status(500).json({ error: 'Failed to categorize items' });
   }
 });
 

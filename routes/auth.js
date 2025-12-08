@@ -19,6 +19,9 @@ router.post('/refresh', authController.refreshToken);
 // Logout endpoint
 router.post('/logout', authController.logout);
 
+// Update profile endpoint
+router.patch('/profile', authenticateToken, authController.updateProfile);
+
 // Mark welcome tour as completed (DEPRECATED - use /tour/complete instead)
 router.patch('/welcome-tour/complete', authenticateToken, authController.markWelcomeTourComplete);
 

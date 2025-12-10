@@ -105,6 +105,21 @@ class ApifyInstagramService {
       // Parse and enhance results
       const parsedData = this.parseApifyResponse(results.data);
 
+      // NEW: Extract author comments (optional enhancement - graceful if fails)
+      let authorComments = [];
+      try {
+        if (parsedData.author?.username && parsedData.author.username !== 'unknown') {
+          console.log('[ApifyInstagram] Attempting to extract author comments...');
+          authorComments = await this.extractComments(instagramUrl, parsedData.author.username);
+        } else {
+          console.log('[ApifyInstagram] Skipping comments - no author username available');
+        }
+      } catch (commentError) {
+        console.warn('[ApifyInstagram] Comment extraction skipped:', commentError.message);
+        // Continue without comments - existing behavior preserved
+      }
+      parsedData.authorComments = authorComments;
+
       // Increment usage
       await this.incrementUsage(userId);
 
@@ -114,7 +129,8 @@ class ApifyInstagramService {
       console.log('[ApifyInstagram] Extraction successful:', {
         hasVideo: !!parsedData.videoUrl,
         hasCaption: !!parsedData.caption,
-        imageCount: parsedData.images?.length || 0
+        imageCount: parsedData.images?.length || 0,
+        authorCommentsCount: authorComments.length
       });
 
       return parsedData;
@@ -761,6 +777,146 @@ class ApifyInstagramService {
       console.error('[ApifyInstagram] Error constructing proxy URL:', error.message);
       return null;
     }
+  }
+
+  /**
+   * Extract comments from Instagram post using dedicated Comments Scraper
+   * Filters for author's comments only (where recipe details are often posted)
+   * @param {string} instagramUrl - URL of the Instagram post/reel
+   * @param {string} ownerUsername - Username of the post owner to filter for
+   * @returns {Promise<Array>} - Array of author comments { text, username, isAuthor }
+   */
+  async extractComments(instagramUrl, ownerUsername) {
+    // Note: Apify API uses ~ instead of / for actor IDs in URLs
+    const commentsActorId = 'apify~instagram-comment-scraper';
+
+    try {
+      console.log('[ApifyInstagram] Extracting comments for:', instagramUrl);
+      console.log('[ApifyInstagram] Looking for comments by author:', ownerUsername);
+
+      // Start the comments scraper actor
+      const inputData = {
+        directUrls: [instagramUrl],
+        resultsLimit: 15  // Get first 15 comments (author's recipe is usually in first few)
+      };
+
+      const response = await axios.post(
+        `https://api.apify.com/v2/acts/${commentsActorId}/runs`,
+        inputData,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.apiToken}`,
+            'Content-Type': 'application/json'
+          },
+          params: {
+            timeout: 60,  // 60 second timeout for comments
+            memory: 256
+          }
+        }
+      );
+
+      const runId = response.data.data.id;
+      console.log('[ApifyInstagram] Comments scraper started, run ID:', runId);
+
+      // Poll for results (shorter polling for comments)
+      // Use the same actor ID format for polling
+      const results = await this.pollForCommentsResults(commentsActorId, runId, 20);
+      console.log('[ApifyInstagram] Comments polling results:', results.success ? 'SUCCESS' : results.error);
+
+      if (!results.success || !results.data) {
+        console.warn('[ApifyInstagram] No comments data returned');
+        return [];
+      }
+
+      // Parse and filter for author's comments
+      const allComments = Array.isArray(results.data) ? results.data : [results.data];
+
+      console.log('[ApifyInstagram] Total comments fetched:', allComments.length);
+
+      // Filter for author's comments and extract text
+      const authorComments = allComments
+        .filter(comment => {
+          const commentUsername = comment.ownerUsername || comment.username || '';
+          const isAuthor = commentUsername.toLowerCase() === ownerUsername.toLowerCase();
+          if (isAuthor) {
+            console.log('[ApifyInstagram] Found author comment:', comment.text?.substring(0, 100) + '...');
+          }
+          return isAuthor;
+        })
+        .map(comment => ({
+          text: comment.text || '',
+          username: comment.ownerUsername || comment.username || '',
+          isAuthor: true,
+          timestamp: comment.timestamp
+        }));
+
+      console.log('[ApifyInstagram] Author comments found:', authorComments.length);
+
+      return authorComments;
+
+    } catch (error) {
+      // Graceful fallback - don't break the extraction if comments fail
+      console.warn('[ApifyInstagram] Comment extraction failed, continuing without:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Poll for comments scraper results (separate from main scraper polling)
+   * @param {string} actorId - The actor ID
+   * @param {string} runId - The run ID to poll
+   * @param {number} maxAttempts - Maximum polling attempts
+   * @returns {Promise<object>} - Results from the scraper
+   */
+  async pollForCommentsResults(actorId, runId, maxAttempts = 20) {
+    let attempts = 0;
+    const pollInterval = 2000;
+
+    while (attempts < maxAttempts) {
+      try {
+        const statusResponse = await axios.get(
+          `https://api.apify.com/v2/acts/${actorId}/runs/${runId}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${this.apiToken}`
+            }
+          }
+        );
+
+        const status = statusResponse.data.data.status;
+        console.log(`[ApifyInstagram] Comments run status: ${status} (attempt ${attempts + 1}/${maxAttempts})`);
+
+        if (status === 'SUCCEEDED') {
+          const datasetId = statusResponse.data.data.defaultDatasetId;
+          const itemsResponse = await axios.get(
+            `https://api.apify.com/v2/datasets/${datasetId}/items`,
+            {
+              headers: {
+                'Authorization': `Bearer ${this.apiToken}`
+              }
+            }
+          );
+
+          return {
+            success: true,
+            data: itemsResponse.data
+          };
+        } else if (status === 'FAILED' || status === 'ABORTED' || status === 'TIMED-OUT') {
+          console.warn('[ApifyInstagram] Comments scraper failed with status:', status);
+          return { success: false, error: `Comments scraper ${status}` };
+        }
+
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        attempts++;
+
+      } catch (error) {
+        console.error('[ApifyInstagram] Comments polling error:', error.message);
+        return { success: false, error: error.message };
+      }
+    }
+
+    console.warn('[ApifyInstagram] Comments polling timed out');
+    return { success: false, error: 'Comments polling timeout' };
   }
 }
 

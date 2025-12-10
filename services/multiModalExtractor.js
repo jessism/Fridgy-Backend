@@ -135,19 +135,16 @@ class MultiModalExtractor {
   }
 
   /**
-   * Extract and process caption data
+   * Extract and process caption data (enhanced with author comments)
    * @param {object} apifyData - Instagram post data
-   * @returns {object} - Processed caption data
+   * @returns {object} - Processed caption data including author comments
    */
   async extractCaptionData(apifyData) {
-    if (!apifyData.caption) {
-      return { text: '', hashtags: [], isEmpty: true };
-    }
-
-    // Clean and structure caption
-    const cleanCaption = apifyData.caption
-      .replace(/\n+/g, '\n')
-      .replace(/\s+/g, ' ')
+    // Clean and structure caption (graceful if empty)
+    // IMPORTANT: Preserve newlines! They separate recipe sections (ingredients, steps, etc.)
+    const cleanCaption = (apifyData.caption || '')
+      .replace(/\n{3,}/g, '\n\n')    // Collapse 3+ newlines to 2 (keep structure)
+      .replace(/[ \t]+/g, ' ')       // Only collapse spaces/tabs (NOT newlines)
       .trim();
 
     // Extract hashtags for context
@@ -157,11 +154,29 @@ class MultiModalExtractor {
       tag.toLowerCase().includes('cooking')
     );
 
+    // NEW: Include author comments if available (often contains full recipe)
+    const authorComments = apifyData.authorComments || [];
+    const commentsText = authorComments.length > 0
+      ? '\n\n--- AUTHOR\'S COMMENTS (Recipe details) ---\n' +
+        authorComments.map(c => c.text).join('\n\n')
+      : '';
+
+    // Combine caption with author comments for AI extraction
+    const combinedText = cleanCaption + commentsText;
+
+    if (authorComments.length > 0) {
+      console.log('[MultiModal] Including', authorComments.length, 'author comments in extraction');
+      console.log('[MultiModal] Combined text length:', combinedText.length, '(caption:', cleanCaption.length, '+ comments)');
+    }
+
     return {
-      text: cleanCaption,
+      text: combinedText,
+      captionOnly: cleanCaption,  // Keep original caption for reference
       hashtags: hashtags,
-      length: cleanCaption.length,
-      isEmpty: false
+      length: combinedText.length,
+      isEmpty: !cleanCaption && authorComments.length === 0,
+      hasAuthorComments: authorComments.length > 0,
+      authorCommentsCount: authorComments.length
     };
   }
 
@@ -725,12 +740,20 @@ RETURN COMPREHENSIVE JSON:
     const caption = apifyData.caption || 'No caption available';
     const hashtags = apifyData.hashtags?.join(', ') || 'None';
 
+    // Include author comments if available (often contains full recipe!)
+    const authorComments = apifyData.authorComments || [];
+    const commentsSection = authorComments.length > 0
+      ? '\n\n📝 AUTHOR\'S COMMENTS (HIGH PRIORITY - Often contains full recipe!):\n' +
+        authorComments.map(c => c.text).join('\n\n')
+      : '';
+
     return `🚨 CRITICAL: This is a recipe video analysis. TEXT OVERLAYS CONTAIN THE ACTUAL RECIPE!
 
 INSTAGRAM CAPTION:
 ${caption}
 
 HASHTAGS: ${hashtags}
+${commentsSection}
 
 ⚠️ PRIORITY #1 - TEXT EXTRACTION (OCR) ⚠️
 YOU MUST PERFORM OCR ON EVERY SINGLE FRAME OF THE VIDEO!
@@ -773,6 +796,14 @@ EXTRACTION REQUIREMENTS:
 2. Every instruction must be detailed and actionable
 3. Include ALL text that appears on screen
 4. If multiple text overlays show different info, include ALL of them
+5. A complete recipe typically has 5-15 steps - if you only find 1-2 steps, keep looking!
+6. This recipe may have MULTIPLE COMPONENTS (main dish, sauce, sides) - extract ALL of them
+
+🚨 MULTI-COMPONENT RECIPES:
+Many recipes include multiple parts, like:
+- Main dish + sauce + side dish
+- "Steak Ingredients:" + "Sauce Ingredients:" + "Mashed Potato Ingredients:"
+Extract ALL components as one complete recipe!
 
 COMMON TEXT PATTERNS IN RECIPE VIDEOS:
 - "Ingredients:" followed by a list
@@ -955,10 +986,18 @@ READ EVERY PIECE OF TEXT IN THE VIDEO. Text is MORE important than visuals!`;
     // Ensure images structure exists
     const imageCount = images?.images?.length || 0;
 
-    return `Extract a recipe from this Instagram post.
+    // Note: caption.text already includes author comments from extractCaptionData()
+    // but we add explicit instruction if comments were included
+    const hasComments = caption?.hasAuthorComments || false;
+    const commentsNote = hasComments
+      ? '\n\n⚠️ IMPORTANT: The caption above includes AUTHOR\'S COMMENTS which often contain the full recipe with exact ingredients and instructions. Extract ALL details from both caption and comments!'
+      : '';
 
-CAPTION:
+    return `Extract a COMPLETE recipe from this Instagram post.
+
+CAPTION (may include author's comments with full recipe):
 ${caption?.text || 'No caption available'}
+${commentsNote}
 
 IMAGES:
 You are provided with ${imageCount} images from the post. Analyze them for:
@@ -966,12 +1005,31 @@ You are provided with ${imageCount} images from the post. Analyze them for:
 - Cooking steps
 - Final dish presentation
 
+🚨 CRITICAL EXTRACTION RULES:
+1. Extract ALL ingredients - this recipe may have MULTIPLE COMPONENTS (main dish, sauce, sides, etc.)
+2. Extract ALL cooking steps - recipes often have 5-15 steps, NOT just 1
+3. If the caption shows separate sections (like "Steak Ingredients:" and "Sauce Ingredients:"), include ALL sections
+4. Parse the FULL caption - newlines separate different recipe sections
+5. A recipe with only 1 step is INCOMPLETE - read the entire caption carefully!
+6. Look for "How to:" sections - these contain the cooking instructions
+
+EXTRACTION PRIORITY:
+1. Author's comments (if present) - these often contain the FULL RECIPE
+2. Caption text with ALL sections - may have multiple recipe components
+3. Visual analysis - use for missing details only
+
+COMMON INSTAGRAM RECIPE PATTERNS:
+- "Ingredients:" followed by ingredient list
+- "How to:" or "Instructions:" followed by steps
+- Multiple sections for different components (main, sauce, sides)
+- Measurements like "1 cup", "2 tbsp", "6 Yukon Gold Potatoes"
+
 Return a JSON object with this EXACT structure:
 {
   "success": true,
   "recipe": {
     "title": "Recipe name here",
-    "summary": "Brief description of the dish",
+    "summary": "Brief description of the dish (2-3 sentences)",
     "extendedIngredients": [
       {
         "name": "ingredient name",
@@ -986,17 +1044,24 @@ Return a JSON object with this EXACT structure:
         "steps": [
           {
             "number": 1,
-            "step": "Step description here"
+            "step": "First step description here"
+          },
+          {
+            "number": 2,
+            "step": "Second step description here"
           }
         ]
       }
     ],
-    "readyInMinutes": 20,
+    "readyInMinutes": 45,
     "servings": 4
   }
 }
 
-Ensure all ingredient amounts are in decimal format (not fractions).`;
+REMEMBER:
+- Ensure all ingredient amounts are in decimal format (1/2 → 0.5)
+- Include EVERY step mentioned in the caption
+- A complete recipe typically has 3-15 steps`;
   }
 
   /**

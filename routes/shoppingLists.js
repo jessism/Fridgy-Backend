@@ -80,7 +80,7 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
 // POST /api/shopping-lists - Create new list
 router.post('/', authMiddleware.authenticateToken, checkShoppingListLimit, async (req, res) => {
   try {
-    const { name, color, items } = req.body;
+    const { name, color, items, settings } = req.body;
     const userId = req.user.id;
     const userName = `${req.user.firstName || ''}`.trim() || req.user.email;
 
@@ -104,7 +104,8 @@ router.post('/', authMiddleware.authenticateToken, checkShoppingListLimit, async
         name,
         color: color || '#c3f0ca',
         owner_id: userId,
-        share_code: shareCode
+        share_code: shareCode,
+        settings: settings || {}
       })
       .select()
       .single();
@@ -933,6 +934,62 @@ router.post('/categorize', authMiddleware.authenticateToken, async (req, res) =>
   } catch (error) {
     console.error('Error categorizing items:', error);
     res.status(500).json({ error: 'Failed to categorize items' });
+  }
+});
+
+// POST /api/shopping-lists/:id/add-recipe - Add recipe metadata to list settings
+router.post('/:id/add-recipe', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { recipe } = req.body;
+    const userId = req.user.id;
+
+    if (!recipe || !recipe.id) {
+      return res.status(400).json({ error: 'Recipe data required' });
+    }
+
+    // Check access
+    const hasAccess = await canUserModifyList(userId, id);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Get current settings
+    const { data: list, error: fetchError } = await supabase
+      .from('shopping_lists')
+      .select('settings')
+      .eq('id', id)
+      .single();
+
+    if (fetchError) throw fetchError;
+
+    const currentSettings = list?.settings || {};
+    const sourceRecipes = currentSettings.source_recipes || [];
+
+    // Don't add duplicates
+    if (!sourceRecipes.some(r => r.id === recipe.id)) {
+      sourceRecipes.push({
+        id: recipe.id,
+        title: recipe.title,
+        image: recipe.image,
+        readyInMinutes: recipe.readyInMinutes,
+        servings: recipe.servings || 1
+      });
+
+      const { error: updateError } = await supabase
+        .from('shopping_lists')
+        .update({
+          settings: { ...currentSettings, source_recipes: sourceRecipes }
+        })
+        .eq('id', id);
+
+      if (updateError) throw updateError;
+    }
+
+    res.json({ success: true, source_recipes: sourceRecipes });
+  } catch (error) {
+    console.error('Error adding recipe to list:', error);
+    res.status(500).json({ error: 'Failed to add recipe to list' });
   }
 });
 

@@ -591,16 +591,153 @@ RETURN COMPREHENSIVE JSON:
   }
 
   /**
+   * Extract recipe from caption text ONLY (no video)
+   * This forces the AI to focus entirely on the caption content
+   * @param {string} caption - Instagram caption text
+   * @param {object} apifyData - Full apify data for metadata
+   * @returns {object} - Recipe extraction result
+   */
+  async extractFromCaptionOnly(caption, apifyData) {
+    console.log('[MultiModal] Caption-only extraction starting...');
+    console.log('[MultiModal] Caption length:', caption?.length || 0);
+    console.log('[MultiModal] Caption preview:', caption?.substring(0, 300) + '...');
+
+    if (!caption || caption.length < 50) {
+      console.log('[MultiModal] Caption too short for extraction');
+      return { success: false, hasCompleteRecipe: false };
+    }
+
+    const prompt = `Extract a COMPLETE recipe from this Instagram caption. This is TEXT ONLY - no images or video.
+
+═══════════════════════════════════════════════════════════════
+INSTAGRAM CAPTION:
+═══════════════════════════════════════════════════════════════
+${caption}
+═══════════════════════════════════════════════════════════════
+
+CRITICAL RULES:
+1. The "original" field for each ingredient MUST be the EXACT text from the caption
+   - If caption says "4 minced garlic cloves" → original: "4 minced garlic cloves"
+   - Include ALL descriptors: minced, diced, chopped, boneless, skinless, etc.
+
+2. Extract ALL instructions/steps - look for:
+   - Numbered lists (1. 2. 3.)
+   - Section headers like "assemble:", "for the sauce:", "instructions:"
+   - Bullet points or dashes
+   - Paragraph-style instructions
+
+3. Extract nutrition if mentioned (calories, protein, carbs, fat)
+
+Return this JSON:
+{
+  "title": "Recipe name",
+  "summary": "Brief description",
+  "extendedIngredients": [
+    {
+      "original": "EXACT text from caption including prep method",
+      "name": "ingredient name",
+      "amount": number,
+      "unit": "unit"
+    }
+  ],
+  "analyzedInstructions": [
+    {
+      "name": "",
+      "steps": [
+        {"number": 1, "step": "Full step text"},
+        {"number": 2, "step": "Next step"},
+        {"number": 3, "step": "Continue for ALL steps"}
+      ]
+    }
+  ],
+  "readyInMinutes": 30,
+  "servings": 4,
+  "nutrition": {
+    "calories": number or null,
+    "protein": number or null,
+    "carbohydrates": number or null,
+    "fat": number or null
+  }
+}`;
+
+    try {
+      // Use Gemini for text-only extraction (faster and no video processing needed)
+      if (this.geminiModel) {
+        const result = await this.geminiModel.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+
+        console.log('[MultiModal] Caption-only Gemini response length:', text.length);
+
+        const recipe = this.parseGeminiResponse(text);
+
+        // Check if we got a complete recipe
+        const hasIngredients = recipe.extendedIngredients?.length >= 3;
+        const hasSteps = recipe.analyzedInstructions?.[0]?.steps?.length >= 2;
+        const hasCompleteRecipe = hasIngredients && hasSteps;
+
+        console.log('[MultiModal] Caption-only extraction result:', {
+          ingredients: recipe.extendedIngredients?.length || 0,
+          steps: recipe.analyzedInstructions?.[0]?.steps?.length || 0,
+          hasCompleteRecipe
+        });
+
+        // Add image from apifyData
+        const selectedImageUrl = this.selectBestRecipeImage(recipe, apifyData);
+        recipe.image = selectedImageUrl;
+
+        return {
+          success: true,
+          recipe: recipe,
+          hasCompleteRecipe: hasCompleteRecipe,
+          confidence: hasCompleteRecipe ? 0.9 : 0.5,
+          extractionMethod: 'caption-only'
+        };
+      }
+
+      return { success: false, hasCompleteRecipe: false };
+    } catch (error) {
+      console.error('[MultiModal] Caption-only extraction failed:', error.message);
+      return { success: false, hasCompleteRecipe: false, error: error.message };
+    }
+  }
+
+  /**
    * Analyze video directly with Google Gemini
    * @param {object} apifyData - Instagram post data with video URL
    * @returns {object} - Recipe extraction result
    */
   async analyzeVideoWithGemini(apifyData) {
-    console.log('[MultiModal] Step 1: Starting Gemini video analysis');
+    console.log('[MultiModal] Step 1: Starting extraction process');
+
+    // STEP 1: First try caption-only extraction (more reliable for detailed ingredients)
+    console.log('[MultiModal] Step 2: Trying caption-only extraction first...');
+    const captionResult = await this.extractFromCaptionOnly(apifyData.caption, apifyData);
+
+    if (captionResult.success && captionResult.hasCompleteRecipe) {
+      console.log('[MultiModal] ✅ Caption-only extraction successful - using caption data');
+      console.log('[MultiModal] Ingredients found:', captionResult.recipe.extendedIngredients?.length);
+      console.log('[MultiModal] Steps found:', captionResult.recipe.analyzedInstructions?.[0]?.steps?.length);
+
+      return {
+        success: true,
+        recipe: captionResult.recipe,
+        confidence: captionResult.confidence,
+        sourcesUsed: {
+          video: false,
+          caption: true,
+          images: false
+        },
+        extractionMethod: 'caption-only'
+      };
+    }
+
+    // STEP 2: If caption extraction incomplete, fall back to video analysis
+    console.log('[MultiModal] Caption extraction incomplete, falling back to video analysis...');
 
     try {
       // Download video to temp file
-      console.log('[MultiModal] Step 2: Downloading video from:', apifyData.videoUrl?.substring(0, 100) + '...');
+      console.log('[MultiModal] Step 3: Downloading video from:', apifyData.videoUrl?.substring(0, 100) + '...');
       const videoPath = await this.downloadVideoToTemp(apifyData.videoUrl);
       console.log('[MultiModal] Step 3: Video downloaded to:', videoPath);
 
@@ -743,112 +880,90 @@ RETURN COMPREHENSIVE JSON:
     // Include author comments if available (often contains full recipe!)
     const authorComments = apifyData.authorComments || [];
     const commentsSection = authorComments.length > 0
-      ? '\n\n📝 AUTHOR\'S COMMENTS (HIGH PRIORITY - Often contains full recipe!):\n' +
+      ? '\n\n📝 AUTHOR\'S COMMENTS (Contains full recipe!):\n' +
         authorComments.map(c => c.text).join('\n\n')
       : '';
 
-    return `🚨 CRITICAL: This is a recipe video analysis. TEXT OVERLAYS CONTAIN THE ACTUAL RECIPE!
+    return `You are extracting a recipe from an Instagram post. The caption contains the COMPLETE recipe.
 
-INSTAGRAM CAPTION:
+═══════════════════════════════════════════════════════════════
+📝 INSTAGRAM CAPTION (THIS IS YOUR PRIMARY DATA SOURCE):
+═══════════════════════════════════════════════════════════════
 ${caption}
+═══════════════════════════════════════════════════════════════
 
 HASHTAGS: ${hashtags}
 ${commentsSection}
 
-⚠️ PRIORITY #1 - TEXT EXTRACTION (OCR) ⚠️
-YOU MUST PERFORM OCR ON EVERY SINGLE FRAME OF THE VIDEO!
+🔴 CRITICAL RULE FOR INGREDIENTS:
+The "original" field MUST contain the COMPLETE text exactly as written in the caption.
 
-Recipe videos show text overlays with:
-- Ingredient lists (often at the beginning)
-- Exact measurements (e.g., "2 cups flour", "1/2 tsp salt")
-- Temperatures (e.g., "350°F", "180°C")
-- Timing (e.g., "Bake 25 minutes", "Mix for 30 seconds")
-- Instructions (e.g., "Mix until combined", "Fold gently")
+EXAMPLES:
+- Caption says "4 minced garlic cloves" → original: "4 minced garlic cloves" ✅
+- Caption says "4 minced garlic cloves" → original: "4 garlic cloves" ❌ WRONG - missing "minced"
+- Caption says "1 lb boneless skinless chicken thighs" → original: "1 lb boneless skinless chicken thighs" ✅
+- Caption says "1 lb boneless skinless chicken thighs" → original: "1 lb chicken thighs" ❌ WRONG
 
-🔍 HOW TO EXTRACT TEXT:
-1. PAUSE on EVERY frame that contains text
-2. READ ALL text completely - don't skip any text!
-3. Text appears in these locations:
-   - Center of screen (main instructions)
-   - Bottom third (subtitles/captions)
-   - Top or bottom corners (ingredients/measurements)
-   - Over the food (quantities/descriptions)
-   - Transition screens between steps
+Copy-paste the ingredient text from the caption into the "original" field. Include:
+- Preparation methods: minced, diced, chopped, sliced, cubed, grated, etc.
+- Descriptors: boneless, skinless, fresh, dried, low-sodium, etc.
+- Specific types: Yukon gold potatoes, cherry tomatoes, Italian seasoning, etc.
 
-⚠️ TEXT HIERARCHY RULE:
-- If text says "2 cups" but visually looks like 3 cups → USE "2 cups" (text wins!)
-- If text shows "350°F" → USE exactly "350°F" (not "medium heat")
-- Text overlays are EXACT, visuals are APPROXIMATE
+🔴 CRITICAL RULE FOR INSTRUCTIONS:
+Extract EVERY step mentioned in the caption. Look for:
+- Numbered steps (1. 2. 3.)
+- Bullet points or dashes
+- "Instructions:", "Directions:", "How to:", "Method:"
+- Paragraph-style instructions separated by periods
 
-PRIORITY #2 - VISUAL ANALYSIS:
-- Watch cooking techniques and methods
-- Identify ingredients if not shown in text
-- Observe cooking progression and transformations
-- Note visual cues for doneness
+A complete recipe has 5-15 steps. If you only have 1-2 steps, READ THE CAPTION AGAIN.
 
-PRIORITY #3 - AUDIO (if present):
-- Listen for any verbal instructions
-- Note mentioned temperatures or times
-- Capture cooking tips or variations
+🔴 NUTRITION (if mentioned in caption):
+Look for: calories, protein, carbs, fat, macros, "per serving"
 
-EXTRACTION REQUIREMENTS:
-1. Every ingredient MUST have a measurement (from text or visual estimate)
-2. Every instruction must be detailed and actionable
-3. Include ALL text that appears on screen
-4. If multiple text overlays show different info, include ALL of them
-5. A complete recipe typically has 5-15 steps - if you only find 1-2 steps, keep looking!
-6. This recipe may have MULTIPLE COMPONENTS (main dish, sauce, sides) - extract ALL of them
+Use the video only to supplement information NOT in the caption.
 
-🚨 MULTI-COMPONENT RECIPES:
-Many recipes include multiple parts, like:
-- Main dish + sauce + side dish
-- "Steak Ingredients:" + "Sauce Ingredients:" + "Mashed Potato Ingredients:"
-Extract ALL components as one complete recipe!
-
-COMMON TEXT PATTERNS IN RECIPE VIDEOS:
-- "Ingredients:" followed by a list
-- Measurements overlaid on ingredients as they're added
-- Step numbers with instructions
-- Timer countdowns
-- Temperature displays
-- "Serves: X" or "Prep: X min"
-
-Return a JSON object with this EXACT structure:
+Return this JSON structure:
 {
-  "title": "Recipe name (from text or caption)",
-  "summary": "2-3 sentence description of the dish",
+  "title": "Recipe name from caption",
+  "summary": "2-3 sentence description",
   "image": null,
   "extendedIngredients": [
     {
-      "original": "EXACTLY as shown in text overlay",
-      "name": "ingredient name",
+      "original": "COPY EXACT TEXT FROM CAPTION - include all descriptors like 'minced', 'diced', etc.",
+      "name": "base ingredient name",
       "amount": number,
-      "unit": "unit"
+      "unit": "measurement unit"
     }
   ],
   "analyzedInstructions": [
     {
       "name": "",
       "steps": [
-        {
-          "number": 1,
-          "step": "Detailed instruction including text overlay info"
-        }
+        {"number": 1, "step": "First step from caption"},
+        {"number": 2, "step": "Second step from caption"},
+        {"number": 3, "step": "Continue for ALL steps..."}
       ]
     }
   ],
   "readyInMinutes": 30,
   "servings": 4,
+  "nutrition": {
+    "calories": number or null,
+    "protein": number or null,
+    "carbohydrates": number or null,
+    "fat": number or null
+  },
   "vegetarian": false,
   "vegan": false,
   "glutenFree": false,
-  "dairyFree": false,
-  "cuisines": ["Italian"],
-  "dishTypes": ["main course"]
+  "dairyFree": false
 }
 
-🚨 FINAL REMINDER: A recipe without text overlay content is INCOMPLETE!
-READ EVERY PIECE OF TEXT IN THE VIDEO. Text is MORE important than visuals!`;
+BEFORE RETURNING, VERIFY:
+1. Each ingredient "original" field contains the FULL text from caption (including minced, diced, chopped, etc.)
+2. You extracted ALL cooking steps (not just 1-2)
+3. Nutrition values are included if mentioned in caption`;
   }
 
   /**
@@ -993,75 +1108,73 @@ READ EVERY PIECE OF TEXT IN THE VIDEO. Text is MORE important than visuals!`;
       ? '\n\n⚠️ IMPORTANT: The caption above includes AUTHOR\'S COMMENTS which often contain the full recipe with exact ingredients and instructions. Extract ALL details from both caption and comments!'
       : '';
 
-    return `Extract a COMPLETE recipe from this Instagram post.
+    return `Extract a COMPLETE recipe from this Instagram post caption.
 
-CAPTION (may include author's comments with full recipe):
+═══════════════════════════════════════════════════════════════
+📝 CAPTION (PRIMARY DATA SOURCE):
+═══════════════════════════════════════════════════════════════
 ${caption?.text || 'No caption available'}
+═══════════════════════════════════════════════════════════════
 ${commentsNote}
 
-IMAGES:
-You are provided with ${imageCount} images from the post. Analyze them for:
-- Ingredients shown
-- Cooking steps
-- Final dish presentation
+IMAGES: ${imageCount} images provided (use only to supplement caption)
 
-🚨 CRITICAL EXTRACTION RULES:
-1. Extract ALL ingredients - this recipe may have MULTIPLE COMPONENTS (main dish, sauce, sides, etc.)
-2. Extract ALL cooking steps - recipes often have 5-15 steps, NOT just 1
-3. If the caption shows separate sections (like "Steak Ingredients:" and "Sauce Ingredients:"), include ALL sections
-4. Parse the FULL caption - newlines separate different recipe sections
-5. A recipe with only 1 step is INCOMPLETE - read the entire caption carefully!
-6. Look for "How to:" sections - these contain the cooking instructions
+🔴 CRITICAL RULE FOR INGREDIENTS:
+The "original" field MUST contain the COMPLETE text exactly as written in the caption.
 
-EXTRACTION PRIORITY:
-1. Author's comments (if present) - these often contain the FULL RECIPE
-2. Caption text with ALL sections - may have multiple recipe components
-3. Visual analysis - use for missing details only
+EXAMPLES:
+- Caption says "4 minced garlic cloves" → original: "4 minced garlic cloves" ✅
+- Caption says "4 minced garlic cloves" → original: "4 garlic cloves" ❌ WRONG
+- Caption says "1 lb boneless skinless chicken" → original: "1 lb boneless skinless chicken" ✅
 
-COMMON INSTAGRAM RECIPE PATTERNS:
-- "Ingredients:" followed by ingredient list
-- "How to:" or "Instructions:" followed by steps
-- Multiple sections for different components (main, sauce, sides)
-- Measurements like "1 cup", "2 tbsp", "6 Yukon Gold Potatoes"
+Include ALL descriptors: minced, diced, chopped, boneless, skinless, fresh, etc.
 
-Return a JSON object with this EXACT structure:
+🔴 CRITICAL RULE FOR INSTRUCTIONS:
+Extract EVERY step. Look for numbered lists, "How to:", "Instructions:", or sentences describing actions.
+A complete recipe has 5-15 steps. If you only have 1-2, you're missing steps!
+
+🔴 NUTRITION (if in caption):
+Extract calories, protein, carbs, fat if mentioned.
+
+Return this JSON:
 {
   "success": true,
   "recipe": {
-    "title": "Recipe name here",
-    "summary": "Brief description of the dish (2-3 sentences)",
+    "title": "Recipe name",
+    "summary": "2-3 sentence description",
     "extendedIngredients": [
       {
-        "name": "ingredient name",
+        "original": "EXACT TEXT from caption with ALL descriptors (minced, diced, etc.)",
+        "name": "base ingredient",
         "amount": 1.0,
-        "unit": "cup",
-        "original": "1 cup ingredient name"
+        "unit": "cup"
       }
     ],
     "analyzedInstructions": [
       {
         "name": "",
         "steps": [
-          {
-            "number": 1,
-            "step": "First step description here"
-          },
-          {
-            "number": 2,
-            "step": "Second step description here"
-          }
+          {"number": 1, "step": "First step"},
+          {"number": 2, "step": "Second step"},
+          {"number": 3, "step": "Continue for ALL steps"}
         ]
       }
     ],
     "readyInMinutes": 45,
-    "servings": 4
+    "servings": 4,
+    "nutrition": {
+      "calories": number or null,
+      "protein": number or null,
+      "carbohydrates": number or null,
+      "fat": number or null
+    }
   }
 }
 
-REMEMBER:
-- Ensure all ingredient amounts are in decimal format (1/2 → 0.5)
-- Include EVERY step mentioned in the caption
-- A complete recipe typically has 3-15 steps`;
+VERIFY BEFORE RETURNING:
+1. Each "original" field has FULL text including prep methods (minced, diced, etc.)
+2. ALL steps extracted (5-15 typically)
+3. Amounts in decimal format (1/2 → 0.5)`;
   }
 
   /**

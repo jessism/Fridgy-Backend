@@ -3,6 +3,7 @@ const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const { createClient } = require('@supabase/supabase-js');
 const googleCalendarService = require('../services/googleCalendarService');
+const ingredientAggregationService = require('../services/ingredientAggregationService');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -113,7 +114,7 @@ router.get('/date/:date', authMiddleware.authenticateToken, async (req, res) => 
       .from('meal_plans')
       .select(`
         *,
-        recipe:saved_recipes(id, title, image, readyInMinutes, source_type, extendedIngredients, analyzedInstructions)
+        recipe:saved_recipes(id, title, image, readyInMinutes, source_type, extendedIngredients, analyzedInstructions, nutrition, source_author, source_url, servings, summary)
       `)
       .eq('user_id', userId)
       .eq('date', date)
@@ -194,6 +195,208 @@ router.get('/week-counts', authMiddleware.authenticateToken, async (req, res) =>
     res.status(500).json({
       success: false,
       error: 'Failed to fetch meal counts'
+    });
+  }
+});
+
+// POST /api/meal-plans/generate-grocery-list - Generate consolidated grocery list from meal plans
+router.post('/generate-grocery-list', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
+    const { start_date, end_date, list_name, list_color } = req.body;
+
+    console.log(`[MealPlans] Generating grocery list for user ${userId}, range: ${start_date} to ${end_date}`);
+
+    // Validate required fields
+    if (!start_date || !end_date) {
+      return res.status(400).json({
+        success: false,
+        error: 'start_date and end_date are required'
+      });
+    }
+
+    // 1. Fetch meal plans in date range with full recipe data (including extendedIngredients)
+    const { data: mealPlans, error: fetchError } = await supabase
+      .from('meal_plans')
+      .select(`
+        *,
+        recipe:saved_recipes(id, title, image, readyInMinutes, source_type, extendedIngredients)
+      `)
+      .eq('user_id', userId)
+      .gte('date', start_date)
+      .lte('date', end_date)
+      .order('date', { ascending: true });
+
+    if (fetchError) {
+      console.error('[MealPlans] Fetch error for grocery list:', fetchError);
+      throw fetchError;
+    }
+
+    console.log(`[MealPlans] Found ${mealPlans?.length || 0} meal plans for grocery list`);
+
+    if (!mealPlans || mealPlans.length === 0) {
+      return res.json({
+        success: true,
+        ingredients: {},
+        recipe_count: 0,
+        meal_count: 0,
+        message: 'No meals found in the selected date range'
+      });
+    }
+
+    // 2. Extract recipes (from saved_recipes or recipe_snapshot)
+    const recipes = mealPlans
+      .map(plan => {
+        // Prefer saved recipe, fall back to snapshot
+        if (plan.recipe?.extendedIngredients) {
+          return {
+            title: plan.recipe.title,
+            extendedIngredients: plan.recipe.extendedIngredients
+          };
+        } else if (plan.recipe_snapshot?.extendedIngredients) {
+          return {
+            title: plan.recipe_snapshot.title,
+            extendedIngredients: plan.recipe_snapshot.extendedIngredients
+          };
+        }
+        return null;
+      })
+      .filter(r => r !== null && r.extendedIngredients?.length > 0);
+
+    console.log(`[MealPlans] Found ${recipes.length} recipes with ingredients`);
+
+    // 2b. Extract unique recipe metadata for carousel display
+    const uniqueRecipes = [];
+    const seenRecipeIds = new Set();
+    mealPlans.forEach((plan) => {
+      const recipe = plan.recipe || plan.recipe_snapshot;
+      if (!recipe || !recipe.title) return;
+
+      // Use recipe.id, plan.recipe_id, or generate unique key from title
+      const recipeId = recipe?.id || plan.recipe_id || `snapshot_${recipe.title}`;
+
+      if (!seenRecipeIds.has(recipeId)) {
+        seenRecipeIds.add(recipeId);
+        uniqueRecipes.push({
+          id: recipeId,
+          title: recipe.title,
+          image: recipe.image,
+          readyInMinutes: recipe.readyInMinutes,
+          servings: recipe.servings || 1
+        });
+      }
+    });
+    console.log(`[MealPlans] Found ${uniqueRecipes.length} unique recipes for carousel`);
+
+    // 3. Aggregate ingredients with unit conversion
+    const aggregatedByCategory = await ingredientAggregationService.aggregateIngredients(recipes);
+    const summary = ingredientAggregationService.getSummary(aggregatedByCategory);
+
+    console.log(`[MealPlans] Aggregated ${summary.totalItems} ingredients into ${summary.categoryCount} categories`);
+
+    // 4. If list_name provided, create the shopping list
+    if (list_name) {
+      // Flatten grouped ingredients for shopping list creation
+      const items = ingredientAggregationService.flattenGrouped(aggregatedByCategory);
+
+      // Generate unique share code
+      const generateShareCode = () => {
+        const part1 = Math.random().toString(36).substring(2, 6).toUpperCase();
+        const part2 = Math.random().toString(36).substring(2, 6).toUpperCase();
+        return `${part1}-${part2}`;
+      };
+
+      let shareCode;
+      let codeIsUnique = false;
+      while (!codeIsUnique) {
+        shareCode = generateShareCode();
+        const { data: existing } = await supabase
+          .from('shopping_lists')
+          .select('id')
+          .eq('share_code', shareCode)
+          .single();
+        codeIsUnique = !existing;
+      }
+
+      // Create the shopping list with recipe metadata for carousel
+      const { data: newList, error: listError } = await supabase
+        .from('shopping_lists')
+        .insert({
+          name: list_name,
+          color: list_color || '#c3f0ca',
+          owner_id: userId,
+          share_code: shareCode,
+          settings: { source_recipes: uniqueRecipes }
+        })
+        .select()
+        .single();
+
+      if (listError) {
+        console.error('[MealPlans] Shopping list creation error:', listError);
+        throw listError;
+      }
+
+      // Add owner as member
+      await supabase
+        .from('shopping_list_members')
+        .insert({
+          list_id: newList.id,
+          user_id: userId,
+          role: 'owner',
+          invited_by_name: 'Meal Plan'
+        });
+
+      // Add items to the shopping list
+      if (items.length > 0) {
+        const itemsToInsert = items.map((item, index) => ({
+          list_id: newList.id,
+          name: item.name,
+          quantity: item.quantity,
+          unit: item.unit,
+          category: item.category || 'Other',
+          added_by: userId,
+          added_by_name: 'Meal Plan',
+          order_index: index,
+          is_checked: false
+        }));
+
+        const { error: itemsError } = await supabase
+          .from('shopping_list_items')
+          .insert(itemsToInsert);
+
+        if (itemsError) {
+          console.error('[MealPlans] Shopping list items insertion error:', itemsError);
+          // Don't throw - list was created, items just failed
+        }
+      }
+
+      console.log(`[MealPlans] Created shopping list ${newList.id} with ${items.length} items`);
+
+      return res.json({
+        success: true,
+        list: newList,
+        ingredients: aggregatedByCategory,
+        recipe_count: recipes.length,
+        meal_count: mealPlans.length,
+        item_count: items.length,
+        message: `Created grocery list with ${items.length} items from ${recipes.length} recipes`
+      });
+    }
+
+    // 5. Return preview only (no list_name provided)
+    res.json({
+      success: true,
+      ingredients: aggregatedByCategory,
+      recipe_count: recipes.length,
+      meal_count: mealPlans.length,
+      item_count: summary.totalItems
+    });
+
+  } catch (error) {
+    console.error('[MealPlans] Generate grocery list error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to generate grocery list'
     });
   }
 });

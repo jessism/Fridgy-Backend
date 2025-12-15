@@ -70,15 +70,24 @@ class NutritionExtractor {
     const keywords = [
       /calor(ie)?s?/i,
       /kcal/i,
+      /\bcal\b/i,           // "450 cal"
       /macro(s)?/i,
       /protein/i,
       /carb(s|ohydrate)?s?/i,
       /\bfat\b/i,
       /nutrition/i,
-      /\d+p\b/i,  // Pattern like "25p" for protein
-      /\d+c\b/i,  // Pattern like "30c" for carbs
-      /\d+f\b/i,  // Pattern like "12f" for fat
-      /per serving/i
+      /\d+p\b/i,            // Pattern like "25p" for protein
+      /\d+c\b/i,            // Pattern like "30c" for carbs
+      /\d+f\b/i,            // Pattern like "12f" for fat
+      /per serving/i,
+      /\d+\s*g\s*protein/i, // "30g protein" or "30 g protein"
+      /\d+\s*g\s*carb/i,    // "40g carbs"
+      /\d+\s*g\s*fat/i,     // "15g fat"
+      /P:\s*\d+/i,          // "P: 30" or "P:30"
+      /C:\s*\d+/i,          // "C: 40"
+      /F:\s*\d+/i,          // "F: 15"
+      /\d+P\s*\/\s*\d+C/i,  // "25P/40C" format
+      /serving.*\d+/i,      // "serving size 200g" or "per serving: 450"
     ];
 
     return keywords.some(pattern => pattern.test(caption));

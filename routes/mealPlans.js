@@ -265,9 +265,8 @@ router.post('/generate-grocery-list', authMiddleware.authenticateToken, async (r
 
     console.log(`[MealPlans] Found ${recipes.length} recipes with ingredients`);
 
-    // 2b. Extract unique recipe metadata for carousel display
-    const uniqueRecipes = [];
-    const seenRecipeIds = new Set();
+    // 2b. Extract unique recipe metadata for carousel display with occurrence counts
+    const recipeCountMap = new Map(); // recipeId -> { recipe metadata, count }
     mealPlans.forEach((plan) => {
       const recipe = plan.recipe || plan.recipe_snapshot;
       if (!recipe || !recipe.title) return;
@@ -275,17 +274,27 @@ router.post('/generate-grocery-list', authMiddleware.authenticateToken, async (r
       // Use recipe.id, plan.recipe_id, or generate unique key from title
       const recipeId = recipe?.id || plan.recipe_id || `snapshot_${recipe.title}`;
 
-      if (!seenRecipeIds.has(recipeId)) {
-        seenRecipeIds.add(recipeId);
-        uniqueRecipes.push({
+      if (recipeCountMap.has(recipeId)) {
+        // Increment count for existing recipe
+        recipeCountMap.get(recipeId).count++;
+      } else {
+        // Add new recipe with count of 1 and full data for modal display
+        recipeCountMap.set(recipeId, {
           id: recipeId,
           title: recipe.title,
           image: recipe.image,
           readyInMinutes: recipe.readyInMinutes,
-          servings: recipe.servings || 1
+          servings: recipe.servings || 1,
+          count: 1,
+          // Full recipe data for RecipeDetailModal
+          extendedIngredients: recipe.extendedIngredients || [],
+          analyzedInstructions: recipe.analyzedInstructions || [],
+          summary: recipe.summary || '',
+          nutrition: recipe.nutrition || null
         });
       }
     });
+    const uniqueRecipes = Array.from(recipeCountMap.values());
     console.log(`[MealPlans] Found ${uniqueRecipes.length} unique recipes for carousel`);
 
     // 3. Aggregate ingredients with unit conversion

@@ -50,6 +50,42 @@ class MessengerBot {
   }
 
   /**
+   * Look up a Facebook page/user name from their numeric ID
+   * Uses Graph API to resolve ID to display name
+   */
+  async lookupPageName(pageId) {
+    // Skip if not a numeric ID
+    if (!pageId || !/^\d+$/.test(pageId)) {
+      return pageId;
+    }
+
+    try {
+      console.log('[MessengerBot] Looking up page name for ID:', pageId);
+
+      const response = await fetch(
+        `https://graph.facebook.com/${this.graphApiVersion}/${pageId}?fields=name&access_token=${this.pageAccessToken}`
+      );
+
+      if (!response.ok) {
+        console.log('[MessengerBot] Page lookup failed:', response.status);
+        return null; // Return null so we don't show numeric ID
+      }
+
+      const data = await response.json();
+
+      if (data.name) {
+        console.log('[MessengerBot] Resolved page name:', data.name);
+        return data.name;
+      }
+
+      return null;
+    } catch (error) {
+      console.error('[MessengerBot] Page lookup error:', error.message);
+      return null;
+    }
+  }
+
+  /**
    * Handle incoming webhook event from Facebook
    */
   async handleEvent(event) {
@@ -220,12 +256,18 @@ class MessengerBot {
       const PLACEHOLDER_IMAGE = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
       const finalImageUrl = permanentImageUrl || PLACEHOLDER_IMAGE;
 
+      // Resolve author name (lookup if it's a numeric ID)
+      let authorName = apifyData.author?.username;
+      if (authorName && /^\d+$/.test(authorName)) {
+        authorName = await this.lookupPageName(authorName);
+      }
+
       // Sanitize recipe data
       const sanitizedRecipe = sanitizeRecipeData({
         ...result.recipe,
         source_type: 'facebook',
         source_url: url,
-        source_author: apifyData.author?.username,
+        source_author: authorName,
         source_author_image: apifyData.author?.profilePic,
         image: finalImageUrl
       });

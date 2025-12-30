@@ -28,6 +28,7 @@
     "openai": "^4.67.3",
     "posthog-node": "^5.13.2",
     "postmark": "^4.0.5",
+    "puppeteer": "^24.34.0",
     "stripe": "^19.1.0",
     "uuid": "^9.0.1",
     "web-push": "^3.6.7"

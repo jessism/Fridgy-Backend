@@ -290,7 +290,11 @@ router.post('/generate-grocery-list', authMiddleware.authenticateToken, async (r
           extendedIngredients: recipe.extendedIngredients || [],
           analyzedInstructions: recipe.analyzedInstructions || [],
           summary: recipe.summary || '',
-          nutrition: recipe.nutrition || null
+          nutrition: recipe.nutrition || null,
+          // Source attribution for Instagram recipes
+          source_type: recipe.source_type || null,
+          source_author: recipe.source_author || null,
+          source_url: recipe.source_url || null
         });
       }
     });

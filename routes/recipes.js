@@ -1345,7 +1345,7 @@ router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
     // Prepare recipe for database with case-sensitive column names
     const recipeToSave = {
       user_id: userId,
-      source_type: source_url?.includes('instagram') ? 'instagram' : 'web',
+      source_type: recipe.source_type || (source_url?.includes('instagram') ? 'instagram' : source_url?.includes('facebook.com') || source_url?.includes('fb.watch') ? 'facebook' : 'web'),
       source_url: source_url || null,
       import_method: import_method || 'manual',
       // extraction_method column doesn't exist - removed

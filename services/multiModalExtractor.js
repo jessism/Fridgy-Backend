@@ -910,13 +910,18 @@ Copy-paste the ingredient text from the caption into the "original" field. Inclu
 - Specific types: Yukon gold potatoes, cherry tomatoes, Italian seasoning, etc.
 
 🔴 CRITICAL RULE FOR INSTRUCTIONS:
-Extract EVERY step mentioned in the caption. Look for:
-- Numbered steps (1. 2. 3.)
-- Bullet points or dashes
-- "Instructions:", "Directions:", "How to:", "Method:"
-- Paragraph-style instructions separated by periods
+If the caption has NUMBERED STEPS (1., 2., 3., etc.), preserve them EXACTLY AS WRITTEN:
+- COUNT the numbered steps in the caption FIRST (e.g., steps 1-9 = 9 steps)
+- Your output MUST have the SAME number of steps (9 steps in caption → 9 steps output)
+- NEVER split a numbered step into multiple steps
+- Keep ALL sentences from that numbered step TOGETHER as ONE step
 
-A complete recipe has 5-15 steps. If you only have 1-2 steps, READ THE CAPTION AGAIN.
+EXAMPLE - Preserve long steps as ONE:
+Caption: "3. Prepare all the veggies and aromatics. Make sure to wash and rinse bok choy thoroughly and drain. Strain rice cakes from water."
+✅ CORRECT: ONE step: "Prepare all the veggies and aromatics. Make sure to wash and rinse bok choy thoroughly and drain. Strain rice cakes from water."
+❌ WRONG: Three steps: "Prepare veggies" + "Wash bok choy" + "Strain rice cakes"
+
+If NO numbered steps exist, look for "Instructions:", "Directions:", bullets, or action sentences.
 
 🔴 NUTRITION (if mentioned in caption):
 Look for: calories, protein, carbs, fat, macros, "per serving"
@@ -962,8 +967,9 @@ Return this JSON structure:
 
 BEFORE RETURNING, VERIFY:
 1. Each ingredient "original" field contains the FULL text from caption (including minced, diced, chopped, etc.)
-2. You extracted ALL cooking steps (not just 1-2)
-3. Nutrition values are included if mentioned in caption`;
+2. Step count MATCHES the original recipe (if caption has 9 numbered steps, your output has exactly 9 steps)
+3. Nutrition values are included if mentioned in caption
+4. If caption had numbered steps (1., 2., 3., etc.), confirm you did NOT split any step into multiple steps`;
   }
 
   /**
@@ -1130,8 +1136,18 @@ EXAMPLES:
 Include ALL descriptors: minced, diced, chopped, boneless, skinless, fresh, etc.
 
 🔴 CRITICAL RULE FOR INSTRUCTIONS:
-Extract EVERY step. Look for numbered lists, "How to:", "Instructions:", or sentences describing actions.
-A complete recipe has 5-15 steps. If you only have 1-2, you're missing steps!
+If the caption has NUMBERED STEPS (1., 2., 3., etc.), preserve them EXACTLY AS WRITTEN:
+- COUNT the numbered steps in the caption FIRST (e.g., steps 1-9 = 9 steps)
+- Your output MUST have the SAME number of steps (9 steps in caption → 9 steps output)
+- NEVER split a numbered step into multiple steps
+- Keep ALL sentences from that numbered step TOGETHER as ONE step
+
+EXAMPLE - Preserve long steps as ONE:
+Caption: "3. Prepare all the veggies and aromatics. Make sure to wash and rinse bok choy thoroughly and drain. Strain rice cakes from water."
+✅ CORRECT: ONE step: "Prepare all the veggies and aromatics. Make sure to wash and rinse bok choy thoroughly and drain. Strain rice cakes from water."
+❌ WRONG: Three steps: "Prepare veggies" + "Wash bok choy" + "Strain rice cakes"
+
+If NO numbered steps exist, look for "How to:", "Instructions:", or action sentences.
 
 🔴 NUTRITION (if in caption):
 Extract calories, protein, carbs, fat if mentioned.
@@ -1173,8 +1189,9 @@ Return this JSON:
 
 VERIFY BEFORE RETURNING:
 1. Each "original" field has FULL text including prep methods (minced, diced, etc.)
-2. ALL steps extracted (5-15 typically)
-3. Amounts in decimal format (1/2 → 0.5)`;
+2. Step count MATCHES the original recipe (if caption has 9 numbered steps, your output has exactly 9 steps)
+3. Amounts in decimal format (1/2 → 0.5)
+4. If caption had numbered steps (1., 2., 3., etc.), confirm you did NOT split any step into multiple steps`;
   }
 
   /**

@@ -612,7 +612,8 @@ class MessengerBot {
     }
 
     const frontendUrl = process.env.FRONTEND_URL || 'https://trackabite.com';
-    const recipeUrl = `${frontendUrl}/recipes/${recipe.id}`;
+    // Use smart landing page that attempts to open PWA instead of browser
+    const recipeUrl = `${frontendUrl}/open-recipe/${recipe.id}`;
 
     const text = `Recipe saved!\n\n${recipe.title}${recipe.source_author ? `\nby ${recipe.source_author}` : ''}${recipe.readyInMinutes ? `\n\n${recipe.readyInMinutes} min` : ''}${recipe.servings ? ` | ${recipe.servings} servings` : ''}`;
 

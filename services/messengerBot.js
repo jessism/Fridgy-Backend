@@ -12,6 +12,19 @@ const NutritionExtractor = require('./nutritionExtractor');
 const NutritionAnalysisService = require('./nutritionAnalysisService');
 const { sanitizeRecipeData } = require('../middleware/validation');
 
+// Friendly extraction messages - randomly selected for personality
+const EXTRACTING_MESSAGES = [
+  "Ooh, this looks delicious! Let me grab that recipe for you... 🍳",
+  "On it! Give me a sec to work my magic... ✨",
+  "Yum! Saving this one for you now...",
+  "Chef's kiss! 👨‍🍳 Snagging this recipe...",
+  "Adding to your collection... (I'm a little jealous tbh)",
+  "Great pick! Extracting the goods...",
+  "Love this choice! Saving it to your recipes...",
+  "Nice find! Let me save this for you...",
+  "Good taste! Getting this recipe ready for you..."
+];
+
 class MessengerBot {
   constructor() {
     this.supabase = createClient(
@@ -158,8 +171,9 @@ class MessengerBot {
         return;
       }
 
-      // Send processing message
-      await this.sendMessage(psid, "Extracting recipe... This takes 10-15 seconds.");
+      // Send processing message (randomly selected for personality)
+      const extractingMsg = EXTRACTING_MESSAGES[Math.floor(Math.random() * EXTRACTING_MESSAGES.length)];
+      await this.sendMessage(psid, extractingMsg);
 
       // Extract and save recipe
       const result = await this.extractAndSaveRecipe(url, connection.user_id);

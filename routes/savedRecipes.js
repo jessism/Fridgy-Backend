@@ -83,6 +83,55 @@ router.post('/', authMiddleware.authenticateToken, checkUploadedRecipeLimit, asy
   }
 });
 
+// GET /api/saved-recipes/:id/public - Public recipe view (NO AUTH REQUIRED)
+// Used for Messenger "Open in Trackabite" button - shows full recipe without login
+router.get('/:id/public', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    console.log(`[SavedRecipes] Public recipe request for ID: ${id}`);
+
+    const { data: recipe, error } = await supabase
+      .from('saved_recipes')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error || !recipe) {
+      console.log(`[SavedRecipes] Public recipe not found: ${id}`);
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+
+    console.log(`[SavedRecipes] Public recipe found: ${recipe.title}`);
+
+    // Return recipe data (exclude user_id for privacy)
+    res.json({
+      id: recipe.id,
+      title: recipe.title,
+      summary: recipe.summary,
+      image: recipe.image,
+      extendedIngredients: recipe.extendedIngredients,
+      analyzedInstructions: recipe.analyzedInstructions,
+      readyInMinutes: recipe.readyInMinutes,
+      servings: recipe.servings,
+      source_author: recipe.source_author,
+      source_type: recipe.source_type,
+      source_url: recipe.source_url,
+      nutrition: recipe.nutrition,
+      vegetarian: recipe.vegetarian,
+      vegan: recipe.vegan,
+      glutenFree: recipe.glutenFree,
+      dairyFree: recipe.dairyFree,
+      cuisines: recipe.cuisines,
+      dishTypes: recipe.dishTypes
+    });
+
+  } catch (error) {
+    console.error('[SavedRecipes] Public recipe error:', error);
+    res.status(500).json({ error: 'Failed to fetch recipe' });
+  }
+});
+
 // GET /api/saved-recipes - Get user's saved recipes
 router.get('/', authMiddleware.authenticateToken, async (req, res) => {
   try {

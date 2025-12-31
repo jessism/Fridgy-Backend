@@ -159,7 +159,7 @@ class MessengerBot {
       const url = this.extractUrl(message);
 
       if (!url) {
-        await this.sendMessage(psid, "Please share a Facebook recipe post with me! Just tap 'Share' on any recipe post and send it here.");
+        await this.sendMessage(psid, "Found a recipe on Facebook you want to save? Just hit Share and send it my way!");
         return;
       }
 

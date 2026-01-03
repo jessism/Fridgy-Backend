@@ -13,16 +13,17 @@ const NutritionAnalysisService = require('./nutritionAnalysisService');
 const { sanitizeRecipeData } = require('../middleware/validation');
 
 // Friendly extraction messages - randomly selected for personality
+// Each returns personalized message if name provided, generic otherwise
 const EXTRACTING_MESSAGES = [
-  "Ooh, this looks delicious! Let me grab that recipe for you... 🍳",
-  "On it! Give me a sec to work my magic... ✨",
-  "Yum! Saving this one for you now...",
-  "Chef's kiss! 👨‍🍳 Snagging this recipe...",
-  "Adding to your collection... (I'm a little jealous tbh)",
-  "Great pick! Extracting the goods...",
-  "Love this choice! Saving it to your recipes...",
-  "Nice find! Let me save this for you...",
-  "Good taste! Getting this recipe ready for you..."
+  (name) => name ? `Ooh, this looks delicious, ${name}! Let me grab that recipe for you... 🍳` : "Ooh, this looks delicious! Let me grab that recipe for you... 🍳",
+  (name) => name ? `On it, ${name}! Give me a sec to work my magic... ✨` : "On it! Give me a sec to work my magic... ✨",
+  (name) => name ? `Yum! Saving this one for you now, ${name}...` : "Yum! Saving this one for you now...",
+  (name) => name ? `Chef's kiss, ${name}! 👨‍🍳 Snagging this recipe...` : "Chef's kiss! 👨‍🍳 Snagging this recipe...",
+  (name) => name ? `Adding to your collection, ${name}... (I'm a little jealous tbh)` : "Adding to your collection... (I'm a little jealous tbh)",
+  (name) => name ? `Great pick, ${name}! Extracting the goods now...` : "Great pick! Extracting the goods...",
+  (name) => name ? `Love this choice, ${name}! Saving it to your recipes...` : "Love this choice! Saving it to your recipes...",
+  (name) => name ? `Nice find, ${name}! Let me save this for you...` : "Nice find! Let me save this for you...",
+  (name) => name ? `Good taste, ${name}! Getting this recipe ready for you...` : "Good taste! Getting this recipe ready for you..."
 ];
 
 class MessengerBot {
@@ -99,6 +100,25 @@ class MessengerBot {
   }
 
   /**
+   * Get user's first name from the users table
+   */
+  async getUserName(userId) {
+    try {
+      const { data, error } = await this.supabase
+        .from('users')
+        .select('first_name')
+        .eq('id', userId)
+        .single();
+
+      if (error || !data) return null;
+      return data.first_name || null;
+    } catch (error) {
+      console.error('[MessengerBot] Get user name error:', error);
+      return null;
+    }
+  }
+
+  /**
    * Handle incoming webhook event from Facebook
    */
   async handleEvent(event) {
@@ -152,6 +172,9 @@ class MessengerBot {
 
       console.log('[MessengerBot] User linked to account:', connection.user_id);
 
+      // Get user's name for personalized messages
+      const userName = await this.getUserName(connection.user_id);
+
       // Update last message timestamp
       await this.updateLastMessage(psid);
 
@@ -171,15 +194,15 @@ class MessengerBot {
         return;
       }
 
-      // Send processing message (randomly selected for personality)
-      const extractingMsg = EXTRACTING_MESSAGES[Math.floor(Math.random() * EXTRACTING_MESSAGES.length)];
-      await this.sendMessage(psid, extractingMsg);
+      // Send processing message (randomly selected for personality, personalized with user's name)
+      const extractingMsgFn = EXTRACTING_MESSAGES[Math.floor(Math.random() * EXTRACTING_MESSAGES.length)];
+      await this.sendMessage(psid, extractingMsgFn(userName));
 
       // Extract and save recipe
       const result = await this.extractAndSaveRecipe(url, connection.user_id);
 
       if (result.success) {
-        await this.sendRecipeConfirmation(psid, result.recipe);
+        await this.sendRecipeConfirmation(psid, result.recipe, userName);
       } else {
         await this.sendErrorMessage(psid, result.error);
       }
@@ -501,8 +524,14 @@ class MessengerBot {
       return false;
     }
 
-    // Send confirmation message to Messenger
-    await this.sendMessage(psid, "You're connected! From now on, just share any Facebook recipe post to me and I'll save it to your Trackabite account.");
+    // Get user's name for personalized message
+    const userName = await this.getUserName(userId);
+
+    // Send confirmation message to Messenger (personalized if name available)
+    const confirmationMsg = userName
+      ? `You're connected, ${userName}! From now on, just share any Facebook recipe post to me and I'll save it to your Trackabite account.`
+      : "You're connected! From now on, just share any Facebook recipe post to me and I'll save it to your Trackabite account.";
+    await this.sendMessage(psid, confirmationMsg);
 
     return true;
   }
@@ -605,7 +634,7 @@ class MessengerBot {
   /**
    * Send recipe confirmation with button to open in app
    */
-  async sendRecipeConfirmation(psid, recipe) {
+  async sendRecipeConfirmation(psid, recipe, userName = null) {
     if (!this.pageAccessToken) {
       console.error('[MessengerBot] Page access token not configured');
       return false;
@@ -615,7 +644,8 @@ class MessengerBot {
     // Use smart landing page that attempts to open PWA instead of browser
     const recipeUrl = `${frontendUrl}/open-recipe/${recipe.id}`;
 
-    const text = `Recipe saved!\n\n${recipe.title}${recipe.source_author ? `\nby ${recipe.source_author}` : ''}${recipe.readyInMinutes ? `\n\n${recipe.readyInMinutes} min` : ''}${recipe.servings ? ` | ${recipe.servings} servings` : ''}`;
+    const savedText = userName ? `Recipe saved, ${userName}!` : 'Recipe saved!';
+    const text = `${savedText}\n\n${recipe.title}${recipe.source_author ? `\nby ${recipe.source_author}` : ''}${recipe.readyInMinutes ? `\n\n${recipe.readyInMinutes} min` : ''}${recipe.servings ? ` | ${recipe.servings} servings` : ''}`;
 
     try {
       const response = await fetch(
@@ -634,7 +664,7 @@ class MessengerBot {
                   buttons: [{
                     type: 'web_url',
                     url: recipeUrl,
-                    title: 'Open in Trackabite',
+                    title: 'View extracted recipe',
                     webview_height_ratio: 'tall'
                   }]
                 }
@@ -649,7 +679,10 @@ class MessengerBot {
       if (data.error) {
         console.error('[MessengerBot] Send confirmation error:', data.error);
         // Fall back to simple text message
-        await this.sendMessage(psid, `Recipe saved! "${recipe.title}" has been added to your Trackabite account.`);
+        const fallbackText = userName
+          ? `Recipe saved, ${userName}! "${recipe.title}" has been added to your Trackabite account.`
+          : `Recipe saved! "${recipe.title}" has been added to your Trackabite account.`;
+        await this.sendMessage(psid, fallbackText);
       }
 
       return true;
@@ -657,7 +690,10 @@ class MessengerBot {
     } catch (error) {
       console.error('[MessengerBot] Send confirmation error:', error);
       // Fall back to simple text message
-      await this.sendMessage(psid, `Recipe saved! "${recipe.title}" has been added to your Trackabite account.`);
+      const fallbackText = userName
+        ? `Recipe saved, ${userName}! "${recipe.title}" has been added to your Trackabite account.`
+        : `Recipe saved! "${recipe.title}" has been added to your Trackabite account.`;
+      await this.sendMessage(psid, fallbackText);
       return false;
     }
   }

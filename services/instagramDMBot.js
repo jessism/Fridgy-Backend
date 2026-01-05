@@ -39,6 +39,10 @@ class InstagramDMBot {
     this.appSecret = process.env.INSTAGRAM_APP_SECRET || process.env.MESSENGER_APP_SECRET;
     this.graphApiVersion = 'v18.0';
 
+    // Instagram Business Account ID - required for messaging API
+    // This is the ID that appears as "recipient" in incoming webhook events
+    this.instagramBusinessAccountId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
+
     // Initialize extractors
     this.apifyService = new ApifyInstagramService();
     this.multiModalExtractor = new MultiModalExtractor();
@@ -513,12 +517,18 @@ class InstagramDMBot {
       return false;
     }
 
-    // Debug: Log token info (first 20 chars only for security)
-    console.log('[InstagramDMBot] Token debug - length:', this.pageAccessToken?.length, 'starts with:', this.pageAccessToken?.substring(0, 20));
+    if (!this.instagramBusinessAccountId) {
+      console.error('[InstagramDMBot] Instagram Business Account ID not configured');
+      return false;
+    }
+
+    // Debug: Log token and account info
+    console.log('[InstagramDMBot] Sending to IGSID:', igsid, 'via IG Business Account:', this.instagramBusinessAccountId);
 
     try {
+      // Instagram Messaging API requires using the Instagram Business Account ID, not /me
       const response = await fetch(
-        `https://graph.facebook.com/${this.graphApiVersion}/me/messages?access_token=${this.pageAccessToken}`,
+        `https://graph.facebook.com/${this.graphApiVersion}/${this.instagramBusinessAccountId}/messages?access_token=${this.pageAccessToken}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -553,6 +563,11 @@ class InstagramDMBot {
       return false;
     }
 
+    if (!this.instagramBusinessAccountId) {
+      console.error('[InstagramDMBot] Instagram Business Account ID not configured');
+      return false;
+    }
+
     // Generate and store link token
     const token = this.generateLinkToken(igsid);
     await this.storeLinkToken(igsid, token);
@@ -563,7 +578,7 @@ class InstagramDMBot {
     try {
       // Instagram Messaging API supports generic templates similar to Messenger
       const response = await fetch(
-        `https://graph.facebook.com/${this.graphApiVersion}/me/messages?access_token=${this.pageAccessToken}`,
+        `https://graph.facebook.com/${this.graphApiVersion}/${this.instagramBusinessAccountId}/messages?access_token=${this.pageAccessToken}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -618,6 +633,11 @@ class InstagramDMBot {
       return false;
     }
 
+    if (!this.instagramBusinessAccountId) {
+      console.error('[InstagramDMBot] Instagram Business Account ID not configured');
+      return false;
+    }
+
     const frontendUrl = process.env.FRONTEND_URL || 'https://trackabite.com';
     const recipeUrl = `${frontendUrl}/open-recipe/${recipe.id}`;
 
@@ -625,7 +645,7 @@ class InstagramDMBot {
 
     try {
       const response = await fetch(
-        `https://graph.facebook.com/${this.graphApiVersion}/me/messages?access_token=${this.pageAccessToken}`,
+        `https://graph.facebook.com/${this.graphApiVersion}/${this.instagramBusinessAccountId}/messages?access_token=${this.pageAccessToken}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

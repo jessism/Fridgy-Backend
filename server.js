@@ -34,6 +34,7 @@ const cookbooksRoutes = require('./routes/cookbooks');
 const facebookRecipesRoutes = require('./routes/facebookRecipes');
 const driveRoutes = require('./routes/drive');
 const messengerRoutes = require('./routes/messenger');
+const instagramDMRoutes = require('./routes/instagramDM');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -119,6 +120,7 @@ app.use('/api/cookbooks', cookbooksRoutes);
 app.use('/api/facebook-recipes', facebookRecipesRoutes);
 app.use('/api/drive', driveRoutes);
 app.use('/api/messenger', messengerRoutes);
+app.use('/api/instagram-dm', instagramDMRoutes);
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)
 app.get('/api/proxy-image', async (req, res) => {

@@ -664,7 +664,7 @@ class MessengerBot {
                   buttons: [{
                     type: 'web_url',
                     url: recipeUrl,
-                    title: 'View extracted recipe',
+                    title: 'View recipe',
                     webview_height_ratio: 'tall'
                   }]
                 }

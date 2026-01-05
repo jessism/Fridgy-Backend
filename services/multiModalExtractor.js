@@ -715,30 +715,49 @@ Return this JSON:
     const captionResult = await this.extractFromCaptionOnly(apifyData.caption, apifyData);
 
     if (captionResult.success && captionResult.hasCompleteRecipe) {
-      console.log('[MultiModal] ✅ Caption-only extraction successful - using caption data');
+      console.log('[MultiModal] Caption extraction found recipe');
       console.log('[MultiModal] Ingredients found:', captionResult.recipe.extendedIngredients?.length);
       console.log('[MultiModal] Steps found:', captionResult.recipe.analyzedInstructions?.[0]?.steps?.length);
 
-      return {
-        success: true,
-        recipe: captionResult.recipe,
-        confidence: captionResult.confidence,
-        sourcesUsed: {
-          video: false,
-          caption: true,
-          images: false
-        },
-        extractionMethod: 'caption-only'
-      };
+      // NEW: Check if we should force video analysis despite caption having "content"
+      // This handles cases where caption is minimal but AI extracted generic/incomplete data
+      const captionIsMinimal = !apifyData.caption || apifyData.caption.length < 200;
+      const captionIndicatesVideoRecipe = /recipe.*(in|on).*(video|watch)|full.*recipe.*(video|watch)|watch.*(for|the).*recipe|instructions?.*(in|on).*video|check.*(video|link)|see.*video/i.test(apifyData.caption || '');
+
+      const forceVideoAnalysis = captionIsMinimal || captionIndicatesVideoRecipe;
+
+      if (forceVideoAnalysis) {
+        console.log('[MultiModal] ⚠️ Caption is minimal or indicates video recipe - forcing video analysis');
+        console.log('[MultiModal] Caption length:', apifyData.caption?.length || 0);
+        console.log('[MultiModal] Indicates video recipe:', captionIndicatesVideoRecipe);
+        // Continue to video analysis below
+      } else {
+        // Caption has substantial recipe content - use it (UNCHANGED BEHAVIOR)
+        console.log('[MultiModal] ✅ Caption-only extraction successful - using caption data');
+        return {
+          success: true,
+          recipe: captionResult.recipe,
+          confidence: captionResult.confidence,
+          sourcesUsed: {
+            video: false,
+            caption: true,
+            images: false
+          },
+          extractionMethod: 'caption-only'
+        };
+      }
     }
 
-    // STEP 2: If caption extraction incomplete, fall back to video analysis
-    console.log('[MultiModal] Caption extraction incomplete, falling back to video analysis...');
+    // STEP 2: Caption incomplete OR force video analysis - fall back to video
+    console.log('[MultiModal] Proceeding with video analysis...');
+
+    // Declare videoPath outside try so it's accessible in catch for paid fallback
+    let videoPath = null;
 
     try {
       // Download video to temp file
       console.log('[MultiModal] Step 3: Downloading video from:', apifyData.videoUrl?.substring(0, 100) + '...');
-      const videoPath = await this.downloadVideoToTemp(apifyData.videoUrl);
+      videoPath = await this.downloadVideoToTemp(apifyData.videoUrl);
       console.log('[MultiModal] Step 3: Video downloaded to:', videoPath);
 
       // Get file stats
@@ -795,19 +814,67 @@ Return this JSON:
         console.warn('[MultiModal] Failed to clean up temp file:', cleanupError.message);
       }
 
+      // Determine extraction mode for logging
+      const captionIsMinimal = !apifyData.caption || apifyData.caption.length < 200;
+      const captionIndicatesVideoRecipe = /recipe.*(in|on).*(video|watch)|full.*recipe.*(video|watch)|watch.*(for|the).*recipe|instructions?.*(in|on).*video|check.*(video|link)|see.*video/i.test(apifyData.caption || '');
+      const usedVideoFirstMode = captionIsMinimal || captionIndicatesVideoRecipe;
+
+      console.log('[MultiModal] ✅ Video analysis complete:', {
+        extractionMode: usedVideoFirstMode ? 'video-primary' : 'video-supplementary',
+        captionLength: apifyData.caption?.length || 0,
+        ingredientsExtracted: recipe.extendedIngredients?.length || 0,
+        stepsExtracted: recipe.analyzedInstructions?.[0]?.steps?.length || 0
+      });
+
       return {
         success: true,
         recipe: recipe,
         confidence: 0.95, // High confidence for direct video analysis
         sourcesUsed: {
           video: true,
-          caption: true,
+          videoAudioTranscribed: usedVideoFirstMode,
+          videoTextExtracted: usedVideoFirstMode,
+          caption: !!apifyData.caption,
           images: false
-        }
+        },
+        extractionMethod: usedVideoFirstMode ? 'gemini-video-multimodal' : 'gemini-video-supplementary'
       };
 
     } catch (error) {
       console.error('[MultiModal] Gemini video analysis failed:', error);
+
+      // If rate limited, try paid model via OpenRouter
+      const isRateLimited = error.message?.includes('429') ||
+                            error.message?.includes('quota') ||
+                            error.message?.includes('rate') ||
+                            error.message?.includes('Too Many Requests');
+
+      if (isRateLimited && videoPath) {
+        console.log('[MultiModal] Free Gemini rate limited, trying paid model via OpenRouter...');
+
+        try {
+          const paidResult = await this.analyzeVideoWithOpenRouterPaid(videoPath, apifyData);
+
+          // Clean up temp file after paid attempt
+          try {
+            await fs.unlink(videoPath);
+            console.log('[MultiModal] Temp video file cleaned up after paid fallback');
+          } catch (cleanupError) {
+            console.warn('[MultiModal] Failed to clean up temp file:', cleanupError.message);
+          }
+
+          if (paidResult.success) {
+            console.log('[MultiModal] ✅ Paid OpenRouter video analysis successful');
+            return paidResult;
+          }
+        } catch (paidError) {
+          console.error('[MultiModal] Paid OpenRouter also failed:', paidError.message);
+
+          // Clean up temp file
+          try { await fs.unlink(videoPath); } catch (e) {}
+        }
+      }
+
       throw error;
     }
   }
@@ -837,6 +904,108 @@ Return this JSON:
 
     // Return placeholder if nothing else works
     return imageCandidates[imageCandidates.length - 1];
+  }
+
+  /**
+   * Analyze video with OpenRouter paid model (fallback when free Gemini is rate limited)
+   * @param {string} videoPath - Path to downloaded video file
+   * @param {object} apifyData - Instagram/Facebook post data
+   * @returns {object} - Recipe extraction result
+   */
+  async analyzeVideoWithOpenRouterPaid(videoPath, apifyData) {
+    console.log('[MultiModal] Sending video to OpenRouter paid model...');
+
+    try {
+      // Read video as base64
+      const videoData = await fs.readFile(videoPath);
+      const videoBase64 = `data:video/mp4;base64,${videoData.toString('base64')}`;
+      const fileSizeMB = (videoData.length / (1024 * 1024)).toFixed(2);
+      console.log('[MultiModal] Video size for OpenRouter:', fileSizeMB, 'MB');
+
+      // Build prompt (reuse the video-first prompt)
+      const prompt = this.buildGeminiVideoPrompt(apifyData);
+
+      // Call OpenRouter with video
+      const messages = [{
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          {
+            type: 'image_url',
+            image_url: {
+              url: videoBase64,
+              detail: 'high'
+            }
+          }
+        ]
+      }];
+
+      console.log('[MultiModal] Calling OpenRouter paid model: google/gemini-2.0-flash-lite-001');
+
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://fridgy.app',
+          'X-Title': 'Fridgy Video Analysis (Paid Fallback)'
+        },
+        body: JSON.stringify({
+          model: 'google/gemini-2.0-flash-lite-001',  // Paid model with video support
+          messages,
+          response_format: { type: 'json_object' },
+          temperature: 0.3,
+          max_tokens: 3000
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error('[MultiModal] OpenRouter paid API error:', {
+          status: response.status,
+          error: data.error
+        });
+        throw new Error(data.error?.message || `OpenRouter API error: ${response.status}`);
+      }
+
+      console.log('[MultiModal] OpenRouter paid model response received');
+
+      const responseText = data.choices[0].message.content;
+      const recipe = this.parseGeminiResponse(responseText);
+
+      // Apply image selection logic
+      const selectedImageUrl = this.selectBestRecipeImage(recipe, apifyData);
+      recipe.image = selectedImageUrl;
+
+      // Determine extraction mode for logging
+      const captionIsMinimal = !apifyData.caption || apifyData.caption.length < 200;
+
+      console.log('[MultiModal] ✅ OpenRouter paid video analysis complete:', {
+        extractionMode: 'paid-video-fallback',
+        captionLength: apifyData.caption?.length || 0,
+        ingredientsExtracted: recipe.extendedIngredients?.length || 0,
+        stepsExtracted: recipe.analyzedInstructions?.[0]?.steps?.length || 0
+      });
+
+      return {
+        success: true,
+        recipe: recipe,
+        confidence: 0.90,  // Slightly lower confidence for fallback
+        sourcesUsed: {
+          video: true,
+          videoAudioTranscribed: captionIsMinimal,
+          videoTextExtracted: captionIsMinimal,
+          caption: !!apifyData.caption,
+          images: false
+        },
+        extractionMethod: 'openrouter-paid-video-fallback'
+      };
+
+    } catch (error) {
+      console.error('[MultiModal] OpenRouter paid video analysis failed:', error);
+      throw error;
+    }
   }
 
   /**
@@ -874,16 +1043,110 @@ Return this JSON:
    * @returns {string} - Prompt for Gemini
    */
   buildGeminiVideoPrompt(apifyData) {
-    const caption = apifyData.caption || 'No caption available';
+    const caption = apifyData.caption || '';
     const hashtags = apifyData.hashtags?.join(', ') || 'None';
 
     // Include author comments if available (often contains full recipe!)
     const authorComments = apifyData.authorComments || [];
     const commentsSection = authorComments.length > 0
-      ? '\n\n📝 AUTHOR\'S COMMENTS (Contains full recipe!):\n' +
+      ? '\n\n📝 AUTHOR\'S COMMENTS:\n' +
         authorComments.map(c => c.text).join('\n\n')
       : '';
 
+    // Determine if caption is minimal - if so, prioritize video content
+    const captionIsMinimal = caption.length < 200;
+    const captionIndicatesVideoRecipe = /recipe.*(in|on).*(video|watch)|full.*recipe.*(video|watch)|watch.*(for|the).*recipe|instructions?.*(in|on).*video|check.*(video|link)|see.*video/i.test(caption);
+    const prioritizeVideo = captionIsMinimal || captionIndicatesVideoRecipe;
+
+    if (prioritizeVideo) {
+      // MINIMAL CAPTION MODE: Video is the primary source
+      return `You are extracting a recipe from a social media video. The caption is minimal or says "recipe in video" - THE RECIPE IS IN THE VIDEO.
+
+═══════════════════════════════════════════════════════════════
+🎤 VIDEO AUDIO - TRANSCRIBE EVERYTHING (PRIMARY SOURCE):
+═══════════════════════════════════════════════════════════════
+Listen to the ENTIRE video and transcribe ALL spoken content:
+- ALL ingredients with exact quantities ("two cups of flour", "a tablespoon of olive oil")
+- Verbal cooking instructions ("mix until combined", "bake for 25 minutes")
+- Temperature and timing callouts ("preheat to 375 degrees", "let it rest for 10 minutes")
+- Tips, techniques, and any recipe details mentioned
+
+═══════════════════════════════════════════════════════════════
+📺 ON-SCREEN TEXT (OCR) - READ ALL TEXT IN VIDEO (PRIMARY SOURCE):
+═══════════════════════════════════════════════════════════════
+Extract ALL text visible in the video frames:
+- Ingredient lists shown on screen
+- Recipe steps/instructions displayed as text overlays
+- Measurements, temperatures, and timings shown
+- Recipe title or name
+- Any captions or subtitles
+
+═══════════════════════════════════════════════════════════════
+📝 CAPTION (Reference only - recipe is in video):
+═══════════════════════════════════════════════════════════════
+${caption || 'No caption'}
+${commentsSection}
+HASHTAGS: ${hashtags}
+
+═══════════════════════════════════════════════════════════════
+
+🔴 CRITICAL: The recipe IS in the video (audio or text overlays), NOT the caption.
+- Transcribe EVERYTHING you hear in the video
+- Extract ALL on-screen text
+- Do NOT return empty/incomplete recipe
+- If you hear ingredients spoken, include them ALL
+- If you see text overlays with recipe steps, include them ALL
+
+PRIORITY ORDER:
+1. On-screen text overlays (most reliable)
+2. Spoken audio from the video
+3. Caption (only for supplementary info like title/author)
+
+Return this JSON structure:
+{
+  "title": "Recipe name (from video title/audio/text)",
+  "summary": "2-3 sentence description based on video content",
+  "image": null,
+  "extendedIngredients": [
+    {
+      "original": "Exact text from video audio or on-screen text",
+      "name": "ingredient name",
+      "amount": number,
+      "unit": "measurement unit"
+    }
+  ],
+  "analyzedInstructions": [
+    {
+      "name": "",
+      "steps": [
+        {"number": 1, "step": "Step from video audio or on-screen text"},
+        {"number": 2, "step": "Next step..."},
+        {"number": 3, "step": "Continue for ALL steps heard/seen in video"}
+      ]
+    }
+  ],
+  "readyInMinutes": 30,
+  "servings": 4,
+  "nutrition": {
+    "calories": number or null,
+    "protein": number or null,
+    "carbohydrates": number or null,
+    "fat": number or null
+  },
+  "vegetarian": false,
+  "vegan": false,
+  "glutenFree": false,
+  "dairyFree": false
+}
+
+BEFORE RETURNING, VERIFY:
+1. You transcribed ingredients from video audio OR extracted them from on-screen text
+2. You transcribed cooking steps from video audio OR extracted them from on-screen text
+3. Recipe is COMPLETE - if video shows a full recipe, your output should have full recipe
+4. Do NOT return minimal/empty results - the recipe IS in this video`;
+    }
+
+    // FULL CAPTION MODE: Caption is the primary source (original behavior)
     return `You are extracting a recipe from an Instagram post. The caption contains the COMPLETE recipe.
 
 ═══════════════════════════════════════════════════════════════

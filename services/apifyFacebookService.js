@@ -510,7 +510,38 @@ class ApifyFacebookService {
     } else {
       // Posts scraper response format
       caption = data.postText || data.text || (typeof data.message === 'object' ? data.message?.text : data.message) || '';
-      isVideo = false;
+
+      // Check if this is actually a video post (posts scraper used as fallback for reels)
+      // Look for video indicators in the response
+      const hasVideoAttachment = data.attachments?.[0]?.media?.__typename === 'Video';
+      const hasShortFormVideo = !!data.short_form_video_context;
+      const hasBrowserVideoUrl = !!(data.videoDeliveryLegacyFields?.browser_native_hd_url ||
+                                    data.videoDeliveryLegacyFields?.browser_native_sd_url ||
+                                    data.short_form_video_context?.playback_video?.videoDeliveryLegacyFields?.browser_native_hd_url ||
+                                    data.short_form_video_context?.playback_video?.videoDeliveryLegacyFields?.browser_native_sd_url);
+
+      if (hasVideoAttachment || hasShortFormVideo || hasBrowserVideoUrl) {
+        // This is actually a video post, extract video URL
+        isVideo = true;
+        console.log('[ApifyFacebook] Detected video in posts scraper response');
+
+        // Extract video URL from multiple possible locations
+        videoUrl = data.videoDeliveryLegacyFields?.browser_native_hd_url ||
+                   data.videoDeliveryLegacyFields?.browser_native_sd_url ||
+                   data.short_form_video_context?.playback_video?.videoDeliveryLegacyFields?.browser_native_hd_url ||
+                   data.short_form_video_context?.playback_video?.videoDeliveryLegacyFields?.browser_native_sd_url ||
+                   null;
+
+        // Extract video duration
+        videoDuration = data.short_form_video_context?.playback_video?.length_in_second ||
+                        data.short_form_video_context?.video?.playable_duration_in_ms / 1000 ||
+                        null;
+
+        console.log('[ApifyFacebook] Extracted video URL from posts response:', !!videoUrl);
+        console.log('[ApifyFacebook] Video duration:', videoDuration);
+      } else {
+        isVideo = false;
+      }
 
       // Extract images from media attachments - only if not found by priority search
       if (images.length === 0 && data.mediaAttachments && Array.isArray(data.mediaAttachments)) {

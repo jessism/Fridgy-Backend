@@ -513,6 +513,9 @@ class InstagramDMBot {
       return false;
     }
 
+    // Debug: Log token info (first 20 chars only for security)
+    console.log('[InstagramDMBot] Token debug - length:', this.pageAccessToken?.length, 'starts with:', this.pageAccessToken?.substring(0, 20));
+
     try {
       const response = await fetch(
         `https://graph.facebook.com/${this.graphApiVersion}/me/messages?access_token=${this.pageAccessToken}`,

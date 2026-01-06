@@ -33,15 +33,23 @@ class InstagramDMBot {
       process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY
     );
 
-    // Instagram uses the same page access token as Facebook Messenger
-    // (they're managed through the same Meta Business Suite)
-    this.pageAccessToken = process.env.INSTAGRAM_PAGE_ACCESS_TOKEN || process.env.MESSENGER_PAGE_ACCESS_TOKEN;
-    this.appSecret = process.env.INSTAGRAM_APP_SECRET || process.env.MESSENGER_APP_SECRET;
+    // ISOLATED: Instagram bot uses its OWN token - NO fallback to Messenger
+    // This ensures Messenger bot is never affected by Instagram bot changes
+    this.pageAccessToken = process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+    this.appSecret = process.env.INSTAGRAM_APP_SECRET || process.env.MESSENGER_APP_SECRET; // App secret can be shared (same Meta app)
     this.graphApiVersion = 'v18.0';
 
     // Instagram Business Account ID - required for messaging API
     // This is the ID that appears as "recipient" in incoming webhook events
     this.instagramBusinessAccountId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
+
+    // Warn if Instagram bot is not properly configured
+    if (!this.pageAccessToken) {
+      console.warn('[InstagramDMBot] WARNING: INSTAGRAM_PAGE_ACCESS_TOKEN not configured - bot cannot send messages');
+    }
+    if (!this.instagramBusinessAccountId) {
+      console.warn('[InstagramDMBot] WARNING: INSTAGRAM_BUSINESS_ACCOUNT_ID not configured - bot cannot send messages');
+    }
 
     // Initialize extractors
     this.apifyService = new ApifyInstagramService();

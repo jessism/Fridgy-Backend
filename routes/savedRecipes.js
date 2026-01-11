@@ -251,18 +251,33 @@ router.put('/:id', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user?.userId || req.user?.id;
-    const updates = req.body;
-    
+    const body = req.body;
+
     console.log(`[SavedRecipes] Updating recipe ${id} for user ${userId}`);
-    
+
+    // Whitelist only valid database columns to prevent errors from frontend-only fields
+    const allowedFields = [
+      'title', 'summary', 'image', 'image_urls',
+      'extendedIngredients', 'analyzedInstructions',
+      'readyInMinutes', 'cookingMinutes', 'servings',
+      'vegetarian', 'vegan', 'glutenFree', 'dairyFree',
+      'veryHealthy', 'cheap', 'veryPopular',
+      'cuisines', 'dishTypes', 'diets', 'occasions',
+      'nutrition', 'user_notes', 'rating', 'is_favorite',
+      'source_type', 'source_url', 'source_author'
+    ];
+
+    const updates = {};
+    for (const field of allowedFields) {
+      if (body[field] !== undefined) {
+        updates[field] = body[field];
+      }
+    }
+
     // Mark as user edited
     updates.user_edited = true;
     updates.updated_at = new Date().toISOString();
-    
-    // Ensure we're not changing the user_id
-    delete updates.user_id;
-    delete updates.id;
-    
+
     const { data, error } = await supabase
       .from('saved_recipes')
       .update(updates)
@@ -270,16 +285,17 @@ router.put('/:id', authMiddleware.authenticateToken, async (req, res) => {
       .eq('user_id', userId)
       .select()
       .single();
-    
+
     if (error) {
+      console.error('[SavedRecipes] Supabase error:', error);
       if (error.code === 'PGRST116') {
         return res.status(404).json({ error: 'Recipe not found' });
       }
       throw error;
     }
-    
+
     res.json(data);
-    
+
   } catch (error) {
     console.error('[SavedRecipes] Update error:', error);
     res.status(500).json({ error: 'Failed to update recipe' });

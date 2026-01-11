@@ -152,6 +152,74 @@ const ingredientAggregationService = {
   },
 
   /**
+   * Aggregate duplicate ingredients within a single recipe
+   * Used when a recipe may have the same ingredient listed multiple times
+   * (e.g., salt for steak, salt for sauce, salt for mashed potatoes)
+   * @param {Array} ingredients - Array of ingredient objects from recipe
+   * @returns {Array} Aggregated ingredients with duplicates combined
+   */
+  aggregateSingleRecipe(ingredients) {
+    if (!Array.isArray(ingredients) || ingredients.length === 0) {
+      return ingredients;
+    }
+
+    const ingredientMap = new Map();
+
+    for (const ing of ingredients) {
+      const rawName = this.extractIngredientName(ing);
+      if (!rawName) continue;
+
+      const normalizedName = this.normalizeIngredientName(rawName);
+      if (!normalizedName) continue;
+
+      const amount = parseFloat(ing.amount) || 0;
+      const unit = ing.unit || '';
+
+      const existing = ingredientMap.get(normalizedName);
+
+      if (existing) {
+        // Try to combine quantities
+        if (unitConversionService.canCombine(existing.unit, unit)) {
+          const combined = unitConversionService.combineQuantities(
+            existing.amount,
+            existing.unit,
+            amount,
+            unit
+          );
+
+          if (combined) {
+            existing.amount = combined.amount;
+            existing.unit = combined.unit;
+            existing.aggregatedCount = (existing.aggregatedCount || 1) + 1;
+          } else if (existing.unit === unit || (!existing.unit && !unit)) {
+            // Same unit or both unitless - just add amounts
+            existing.amount = unitConversionService.roundForDisplay(existing.amount + amount);
+            existing.aggregatedCount = (existing.aggregatedCount || 1) + 1;
+          }
+          // Otherwise units are incompatible - keep first occurrence
+        } else if (existing.unit === unit || (!existing.unit && !unit)) {
+          // Same unit or both unitless - just add amounts
+          existing.amount = unitConversionService.roundForDisplay(existing.amount + amount);
+          existing.aggregatedCount = (existing.aggregatedCount || 1) + 1;
+        }
+        // If units are truly incompatible (e.g., "1 head" + "2 cups"), keep first occurrence
+      } else {
+        // First occurrence of this ingredient
+        ingredientMap.set(normalizedName, {
+          original: ing.original,
+          name: rawName,
+          amount: amount || null,
+          unit: unit,
+          aggregatedCount: 1
+        });
+      }
+    }
+
+    // Convert Map back to array, preserving order of first occurrence
+    return Array.from(ingredientMap.values());
+  },
+
+  /**
    * Group ingredients by their category
    * @param {Array} ingredients - Array of ingredient objects with category field
    * @returns {Object} Ingredients grouped by category

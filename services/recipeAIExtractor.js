@@ -1,4 +1,5 @@
 const fetch = require('node-fetch');
+const cheerio = require('cheerio');
 const VideoProcessor = require('./videoProcessor');
 
 class RecipeAIExtractor {
@@ -7,8 +8,8 @@ class RecipeAIExtractor {
     this.videoProcessor = new VideoProcessor();
     // Primary model: Free Gemini 2.0 Flash (faster, newer)
     this.primaryModel = 'google/gemini-2.0-flash-exp:free';
-    // Fallback model: Paid Gemini Flash 1.5 (reliable backup)
-    this.fallbackModel = 'google/gemini-flash-1.5-8b';
+    // Fallback model: Gemini 2.5 Flash (reliable, fast)
+    this.fallbackModel = 'google/gemini-2.5-flash';
     // Track usage for intelligent switching
     this.freeModelFailures = 0;
     this.freeModelSuccesses = 0;
@@ -88,6 +89,192 @@ class RecipeAIExtractor {
     }
 
     return sanitized;
+  }
+
+  /**
+   * Extract recipe from any web URL using AI
+   * Fallback method when Spoonacular fails with 502/503/timeout
+   * @param {string} url - The recipe page URL
+   * @returns {object} - Recipe in Spoonacular-compatible format
+   */
+  async extractFromWebUrl(url) {
+    console.log('[RecipeAIExtractor] 🌐 Starting web URL extraction:', url);
+
+    try {
+      // 1. Fetch the webpage
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
+        },
+        timeout: 15000
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch page: ${response.status}`);
+      }
+
+      const html = await response.text();
+      console.log('[RecipeAIExtractor] Fetched HTML, length:', html.length);
+
+      // 2. Extract text content using cheerio
+      const $ = cheerio.load(html);
+
+      // Remove non-content elements
+      $('script, style, nav, footer, header, aside, [role="navigation"], .ad, .advertisement, .sidebar').remove();
+
+      const title = $('title').text().trim() || $('h1').first().text().trim() || '';
+      const bodyText = $('body').text()
+        .replace(/\s+/g, ' ')
+        .trim()
+        .substring(0, 10000); // Limit context size for AI
+
+      console.log('[RecipeAIExtractor] Extracted content:', {
+        title: title.substring(0, 100),
+        bodyLength: bodyText.length
+      });
+
+      // 3. Build prompt for recipe extraction
+      const prompt = this.buildWebExtractionPrompt(url, title, bodyText);
+
+      // 4. Call AI (no media content for web extraction)
+      const aiResponse = await this.callAI(prompt, []);
+
+      // 5. Parse response
+      const sanitized = this.sanitizeFractions(aiResponse);
+
+      // Extract JSON from response (may have markdown code blocks)
+      let jsonStr = sanitized;
+      const jsonMatch = sanitized.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[1].trim();
+      }
+
+      const result = JSON.parse(jsonStr);
+
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      // 6. Transform to Spoonacular-compatible format
+      const recipe = this.transformWebResultToSpoonacularFormat(result, url);
+
+      console.log('[RecipeAIExtractor] ✅ Web extraction successful:', {
+        title: recipe.title,
+        ingredientCount: recipe.extendedIngredients?.length,
+        stepCount: recipe.analyzedInstructions?.[0]?.steps?.length
+      });
+
+      return recipe;
+
+    } catch (error) {
+      console.error('[RecipeAIExtractor] ❌ Web extraction failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Build prompt for web recipe extraction
+   */
+  buildWebExtractionPrompt(url, pageTitle, bodyText) {
+    return `Extract the recipe from this webpage content.
+
+URL: ${url}
+Page Title: ${pageTitle}
+
+PAGE CONTENT:
+${bodyText}
+
+Extract the recipe and return ONLY valid JSON (no markdown, no explanation) in this exact format:
+{
+  "title": "Recipe name",
+  "summary": "Brief 1-2 sentence description",
+  "image": null,
+  "extendedIngredients": [
+    {"id": 1, "amount": 2, "unit": "cups", "name": "flour", "original": "2 cups flour"}
+  ],
+  "analyzedInstructions": [
+    {"name": "", "steps": [{"number": 1, "step": "First step description"}]}
+  ],
+  "readyInMinutes": 30,
+  "cookingMinutes": 20,
+  "servings": 4,
+  "vegetarian": false,
+  "vegan": false,
+  "glutenFree": false,
+  "dairyFree": false,
+  "cuisines": [],
+  "dishTypes": [],
+  "diets": [],
+  "sourceName": "Website name"
+}
+
+RULES:
+- Extract ALL ingredients with amounts and units
+- Extract ALL cooking steps in order
+- Convert fractions to decimals (1/2 → 0.5, 1 1/2 → 1.5)
+- If no recipe found on this page, return {"error": "No recipe found"}
+- Return ONLY the JSON object, no other text`;
+  }
+
+  /**
+   * Transform AI result to Spoonacular-compatible format
+   */
+  transformWebResultToSpoonacularFormat(aiResult, url) {
+    // Ensure ingredients have proper IDs
+    const ingredients = (aiResult.extendedIngredients || []).map((ing, index) => ({
+      id: ing.id || index + 1,
+      amount: ing.amount || 0,
+      unit: ing.unit || '',
+      name: ing.name || '',
+      original: ing.original || `${ing.amount || ''} ${ing.unit || ''} ${ing.name || ''}`.trim()
+    }));
+
+    // Ensure instructions have proper structure
+    const instructions = aiResult.analyzedInstructions || [];
+    if (instructions.length === 0 && aiResult.steps) {
+      // Handle case where AI returns steps directly
+      instructions.push({
+        name: '',
+        steps: aiResult.steps.map((step, index) => ({
+          number: index + 1,
+          step: typeof step === 'string' ? step : step.step
+        }))
+      });
+    }
+
+    // Extract hostname for source name
+    let sourceName = aiResult.sourceName || '';
+    try {
+      if (!sourceName) {
+        sourceName = new URL(url).hostname.replace('www.', '');
+      }
+    } catch (e) {
+      sourceName = 'Web Recipe';
+    }
+
+    return {
+      title: aiResult.title || 'Recipe',
+      summary: aiResult.summary || '',
+      image: aiResult.image || null,
+      extendedIngredients: ingredients,
+      analyzedInstructions: instructions,
+      readyInMinutes: aiResult.readyInMinutes || null,
+      cookingMinutes: aiResult.cookingMinutes || null,
+      preparationMinutes: aiResult.preparationMinutes || null,
+      servings: aiResult.servings || 4,
+      vegetarian: aiResult.vegetarian || false,
+      vegan: aiResult.vegan || false,
+      glutenFree: aiResult.glutenFree || false,
+      dairyFree: aiResult.dairyFree || false,
+      cuisines: aiResult.cuisines || [],
+      dishTypes: aiResult.dishTypes || [],
+      diets: aiResult.diets || [],
+      sourceName: sourceName,
+      sourceUrl: url,
+      creditsText: sourceName
+    };
   }
 
   async extractFromInstagramData(instagramData) {

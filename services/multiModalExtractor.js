@@ -31,6 +31,29 @@ class MultiModalExtractor {
     // Models for extraction (fallback)
     this.primaryModel = 'google/gemini-2.0-flash-exp:free';
     this.fallbackModel = 'google/gemini-2.0-flash-lite-001';  // Paid, cheapest with video support
+
+    // Ingredient aggregation service for deduplicating ingredients
+    this.ingredientAggregationService = require('./ingredientAggregationService');
+  }
+
+  /**
+   * Aggregate duplicate ingredients in a recipe's ingredient list
+   * @param {Array} ingredients - Array of ingredient objects
+   * @returns {Array} Deduplicated ingredients
+   */
+  aggregateIngredients(ingredients) {
+    if (!ingredients || !Array.isArray(ingredients) || ingredients.length === 0) {
+      return ingredients;
+    }
+
+    try {
+      const aggregated = this.ingredientAggregationService.aggregateSingleRecipe(ingredients);
+      console.log(`[MultiModal] Aggregated ingredients: ${ingredients.length} → ${aggregated.length}`);
+      return aggregated;
+    } catch (error) {
+      console.warn('[MultiModal] Ingredient aggregation failed, using original:', error.message);
+      return ingredients;
+    }
   }
 
   /**
@@ -686,6 +709,9 @@ Return this JSON:
         const selectedImageUrl = this.selectBestRecipeImage(recipe, apifyData);
         recipe.image = selectedImageUrl;
 
+        // Aggregate duplicate ingredients (e.g., "salt" appearing multiple times)
+        recipe.extendedIngredients = this.aggregateIngredients(recipe.extendedIngredients);
+
         return {
           success: true,
           recipe: recipe,
@@ -818,6 +844,9 @@ Return this JSON:
       const captionIsMinimal = !apifyData.caption || apifyData.caption.length < 200;
       const captionIndicatesVideoRecipe = /recipe.*(in|on).*(video|watch)|full.*recipe.*(video|watch)|watch.*(for|the).*recipe|instructions?.*(in|on).*video|check.*(video|link)|see.*video/i.test(apifyData.caption || '');
       const usedVideoFirstMode = captionIsMinimal || captionIndicatesVideoRecipe;
+
+      // Aggregate duplicate ingredients
+      recipe.extendedIngredients = this.aggregateIngredients(recipe.extendedIngredients);
 
       console.log('[MultiModal] ✅ Video analysis complete:', {
         extractionMode: usedVideoFirstMode ? 'video-primary' : 'video-supplementary',
@@ -977,6 +1006,9 @@ Return this JSON:
       // Apply image selection logic
       const selectedImageUrl = this.selectBestRecipeImage(recipe, apifyData);
       recipe.image = selectedImageUrl;
+
+      // Aggregate duplicate ingredients
+      recipe.extendedIngredients = this.aggregateIngredients(recipe.extendedIngredients);
 
       // Determine extraction mode for logging
       const captionIsMinimal = !apifyData.caption || apifyData.caption.length < 200;
@@ -1338,6 +1370,11 @@ BEFORE RETURNING, VERIFY:
       // Call OpenRouter API
       const response = await this.callAI(prompt, imageContent);
       const result = this.parseAIResponse(response);
+
+      // Aggregate duplicate ingredients
+      if (result.recipe?.extendedIngredients) {
+        result.recipe.extendedIngredients = this.aggregateIngredients(result.recipe.extendedIngredients);
+      }
 
       // Calculate confidence
       result.confidence = this.calculateFallbackConfidence(result, sources);

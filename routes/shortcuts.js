@@ -370,40 +370,70 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
 
     } else {
       // ========== WEB URL FLOW ==========
-      // Extract recipe from any website using Spoonacular
+      // Extract recipe from any website using Spoonacular (with AI fallback)
       console.log(`[Shortcuts] Extracting web recipe from URL: ${url}`);
 
       let extractedRecipe;
+      let usedAIFallback = false;
+
       try {
         extractedRecipe = await recipeService.extractRecipeFromUrl(url);
       } catch (extractError) {
         console.error('[Shortcuts] Spoonacular extraction failed:', extractError.message);
 
-        // Send failure notification
-        try {
-          await pushService.sendToUser(tokenData.user_id, {
-            title: 'Import Failed',
-            body: 'Could not extract recipe from this website. The page may not contain a recognizable recipe.',
-            icon: '/logo192.png',
-            badge: '/logo192.png',
-            tag: 'recipe-import-failed',
-            data: { url: '/import' },
-            requireInteraction: false
-          });
-        } catch (pushError) {
-          console.error('[Shortcuts] Failed to send error notification:', pushError);
+        // Check if error is recoverable (502, 503, 504, timeout - site blocking or temp unavailable)
+        const isRecoverableError =
+          extractError.message.includes('502') ||
+          extractError.message.includes('503') ||
+          extractError.message.includes('504') ||
+          extractError.message.includes('timeout') ||
+          extractError.message.includes('ETIMEDOUT') ||
+          extractError.message.includes('ECONNRESET');
+
+        if (isRecoverableError) {
+          console.log('[Shortcuts] 🔄 Attempting AI fallback extraction for:', url);
+          try {
+            extractedRecipe = await recipeAI.extractFromWebUrl(url);
+            usedAIFallback = true;
+            console.log('[Shortcuts] ✅ AI fallback extraction successful:', {
+              title: extractedRecipe.title,
+              ingredientCount: extractedRecipe.extendedIngredients?.length
+            });
+          } catch (fallbackError) {
+            console.error('[Shortcuts] ❌ AI fallback also failed:', fallbackError.message);
+            // Fall through to original error handling
+          }
         }
 
-        return res.status(400).json({
-          success: false,
-          error: 'Could not extract recipe from this URL. The page may not contain a recognizable recipe.'
-        });
+        if (!extractedRecipe) {
+          // Send failure notification
+          try {
+            await pushService.sendToUser(tokenData.user_id, {
+              title: 'Import Failed',
+              body: 'Could not extract recipe from this website. The page may not contain a recognizable recipe.',
+              icon: '/logo192.png',
+              badge: '/logo192.png',
+              tag: 'recipe-import-failed',
+              data: { url: '/import' },
+              requireInteraction: false
+            });
+          } catch (pushError) {
+            console.error('[Shortcuts] Failed to send error notification:', pushError);
+          }
+
+          return res.status(400).json({
+            success: false,
+            error: 'Could not extract recipe from this URL. The page may not contain a recognizable recipe.',
+            fallbackAttempted: isRecoverableError
+          });
+        }
       }
 
       console.log('[Shortcuts] Web extraction successful:', {
         title: extractedRecipe.title,
         ingredientCount: extractedRecipe.extendedIngredients?.length,
-        source: extractedRecipe.sourceName
+        source: extractedRecipe.sourceName,
+        usedAIFallback
       });
 
       // Prepare recipe for database (matches Spoonacular format)
@@ -439,10 +469,12 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
         diets: extractedRecipe.diets || [],
 
         // Extraction metadata
-        extraction_confidence: 0.95, // Spoonacular is highly reliable
-        extraction_notes: 'Extracted via Spoonacular web extraction API (iOS Shortcut)',
+        extraction_confidence: usedAIFallback ? 0.85 : 0.95,
+        extraction_notes: usedAIFallback
+          ? 'AI fallback extraction (Spoonacular unavailable) via iOS Shortcut'
+          : 'Extracted via Spoonacular web extraction API (iOS Shortcut)',
         missing_info: [],
-        ai_model_used: 'spoonacular',
+        ai_model_used: usedAIFallback ? 'gemini-fallback' : 'spoonacular',
 
         // Source info
         source_author: extractedRecipe.sourceName || extractedRecipe.creditsText || null,

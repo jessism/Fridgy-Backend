@@ -18,10 +18,12 @@ const ingredientAggregationService = {
     return name
       .toLowerCase()
       .trim()
-      // Remove leading articles
-      .replace(/^(a |an |the |some |fresh |dried |ground |chopped |minced |diced |sliced |whole |large |medium |small |extra |very )/gi, '')
+      // Remove leading articles and cooking state descriptors
+      .replace(/^(a |an |the |some |fresh |dried |ground |chopped |minced |diced |sliced |whole |large |medium |small |extra |very |uncooked |cooked |raw )/gi, '')
       // Remove parenthetical notes
       .replace(/\([^)]*\)/g, '')
+      // Remove trailing preparation instructions after comma (e.g., ", diced" or ", peeled and diced")
+      .replace(/,\s*(and\s+)?(peeled|diced|sliced|chopped|minced|cubed|julienned|shredded|grated|cut|trimmed|halved|quartered|crushed|torn|roughly|finely|thinly)(\s+(and\s+)?(peeled|diced|sliced|chopped|minced|cubed|julienned|shredded|grated|cut|trimmed|halved|quartered|crushed|torn|roughly|finely|thinly))*.*$/gi, '')
       // Remove extra whitespace
       .replace(/\s+/g, ' ')
       .trim();

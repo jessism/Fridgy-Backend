@@ -105,6 +105,106 @@ class RecipeService {
   }
 
   /**
+   * Detect if extracted recipe content is actually a bot protection page
+   * Returns true if the recipe looks like bot protection garbage
+   */
+  detectBotProtection(recipe) {
+    if (!recipe) return false;
+
+    const botIndicators = {
+      titleKeywords: ['verify', 'human', 'captcha', 'access denied', 'blocked', 'security check', 'please wait', 'checking your browser', 'just a moment'],
+      ingredientKeywords: ['browser', 'cookies', 'javascript', 'blocked', 'denied', 'automation', 'enable', 'disabled'],
+      knownServices: ['perimeterx', 'cloudflare', 'recaptcha', 'ddos', 'akamai', 'incapsula']
+    };
+
+    // Check title
+    const titleLower = (recipe.title || '').toLowerCase();
+    if (botIndicators.titleKeywords.some(k => titleLower.includes(k))) {
+      console.log(`🤖 [WebExtract] Bot protection detected in title: "${recipe.title}"`);
+      return true;
+    }
+
+    // Check ingredients for error messages
+    const ingredients = recipe.extendedIngredients || [];
+    for (const ing of ingredients) {
+      const text = (ing.original || ing.name || '').toLowerCase();
+      if (botIndicators.ingredientKeywords.some(k => text.includes(k))) {
+        console.log(`🤖 [WebExtract] Bot protection detected in ingredient: "${text}"`);
+        return true;
+      }
+      if (botIndicators.knownServices.some(k => text.includes(k))) {
+        console.log(`🤖 [WebExtract] Bot protection service detected: "${text}"`);
+        return true;
+      }
+    }
+
+    // Check if there are no real instructions (bot pages typically have 0 steps)
+    const steps = recipe.analyzedInstructions?.[0]?.steps || [];
+    if (ingredients.length > 0 && steps.length === 0) {
+      // Check if ingredients look like error messages
+      const suspiciousIngredients = ingredients.filter(ing => {
+        const text = (ing.original || ing.name || '').toLowerCase();
+        return text.includes('access') || text.includes('denied') || text.includes('reference id');
+      });
+      if (suspiciousIngredients.length > 2) {
+        console.log(`🤖 [WebExtract] Bot protection detected: suspicious ingredients with no instructions`);
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Try to extract recipe from Wayback Machine archive
+   * @param {string} url - Original URL to find in archive
+   * @returns {object} - Recipe data from archived version
+   */
+  async extractFromWaybackMachine(url) {
+    console.log(`🕰️ [WebExtract] Checking Wayback Machine for: ${url}`);
+
+    try {
+      // Check for available snapshots
+      const availabilityUrl = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`;
+
+      const response = await new Promise((resolve, reject) => {
+        const https = require('https');
+        https.get(availabilityUrl, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(data));
+            } catch (e) {
+              reject(new Error('Failed to parse Wayback response'));
+            }
+          });
+        }).on('error', reject);
+      });
+
+      if (!response.archived_snapshots?.closest?.url) {
+        throw new Error('No archived version available');
+      }
+
+      const archivedUrl = response.archived_snapshots.closest.url;
+      const snapshotDate = response.archived_snapshots.closest.timestamp;
+      console.log(`🕰️ [WebExtract] Found archive from ${snapshotDate}: ${archivedUrl}`);
+
+      // Extract from archived version - skip bot check to avoid infinite loop
+      const recipe = await this.extractRecipeFromUrl(archivedUrl, { skipBotCheck: true });
+
+      // Mark that this came from archive
+      recipe._fromWaybackMachine = true;
+      recipe._archiveDate = snapshotDate;
+
+      return recipe;
+    } catch (error) {
+      console.error(`❌ [WebExtract] Wayback Machine failed:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Normalize ingredient names for better API matching
    * This helps match user's inventory items with recipe ingredients
    */
@@ -205,9 +305,11 @@ class RecipeService {
   /**
    * Extract recipe from any website URL using Spoonacular
    * @param {string} url - The recipe page URL
+   * @param {object} options - Options for extraction
+   * @param {boolean} options.skipBotCheck - Skip bot protection check (for Wayback URLs)
    * @returns {object} Extracted recipe data matching saved_recipes schema
    */
-  async extractRecipeFromUrl(url) {
+  async extractRecipeFromUrl(url, options = {}) {
     const apiKey = process.env.SPOONACULAR_API_KEY;
     if (!apiKey || apiKey === 'your-api-key-here') {
       throw new Error('Spoonacular API key not configured');
@@ -229,9 +331,48 @@ class RecipeService {
       console.log(`📝 [WebExtract] Ingredients: ${recipe.extendedIngredients?.length || 0}`);
       console.log(`📝 [WebExtract] Instructions: ${recipe.analyzedInstructions?.[0]?.steps?.length || 0} steps`);
 
+      // Check for bot protection (unless skipped for Wayback URLs)
+      if (!options.skipBotCheck && this.detectBotProtection(recipe)) {
+        console.log(`⚠️ [WebExtract] Bot protection detected, trying fallbacks...`);
+
+        // Fallback 1: Try Wayback Machine
+        try {
+          console.log(`🕰️ [WebExtract] Trying Wayback Machine...`);
+          return await this.extractFromWaybackMachine(url);
+        } catch (waybackError) {
+          console.error(`❌ [WebExtract] Wayback Machine failed:`, waybackError.message);
+        }
+
+        // Fallback 2: Try AI direct fetch
+        try {
+          console.log(`🤖 [WebExtract] Trying AI direct fetch...`);
+          const RecipeAIExtractor = require('./recipeAIExtractor');
+          const recipeAI = new RecipeAIExtractor();
+          const aiResult = await recipeAI.extractFromWebUrl(url);
+
+          // Check if AI result is also bot-blocked
+          if (this.detectBotProtection(aiResult)) {
+            throw new Error('AI extraction also blocked');
+          }
+
+          console.log(`✅ [WebExtract] AI direct fetch successful: ${aiResult.title}`);
+          aiResult._extractionMethod = 'ai_fallback';
+          return aiResult;
+        } catch (aiError) {
+          console.error(`❌ [WebExtract] AI direct fetch failed:`, aiError.message);
+        }
+
+        // All fallbacks failed
+        throw new Error('BOT_PROTECTION_DETECTED: This website has bot protection and no archived version is available. Please try a different recipe URL or add the recipe manually.');
+      }
+
       return recipe;
     } catch (error) {
       console.error(`❌ [WebExtract] Extraction failed:`, error.message);
+      // Pass through BOT_PROTECTION_DETECTED errors without wrapping
+      if (error.message.includes('BOT_PROTECTION_DETECTED')) {
+        throw error;
+      }
       throw new Error(`Recipe extraction failed: ${error.message}`);
     }
   }

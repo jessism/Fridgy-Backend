@@ -378,8 +378,40 @@ router.post('/import', shortcutImportLimiter, validateShortcutImport, async (req
 
       try {
         extractedRecipe = await recipeService.extractRecipeFromUrl(url);
+        // Check if extraction used AI fallback (marked by recipeService)
+        if (extractedRecipe._extractionMethod === 'ai_fallback') {
+          usedAIFallback = true;
+        }
       } catch (extractError) {
         console.error('[Shortcuts] Spoonacular extraction failed:', extractError.message);
+
+        // Check for bot protection error (handled with fallbacks in recipeService)
+        const isBotProtection = extractError.message.includes('BOT_PROTECTION_DETECTED');
+
+        if (isBotProtection) {
+          console.log('[Shortcuts] ⚠️ Bot protection detected, all fallbacks failed');
+
+          // Send user-friendly error notification
+          try {
+            await pushService.sendToUser(tokenData.user_id, {
+              title: 'Import Failed',
+              body: 'This website has bot protection. Try a different recipe URL or add the recipe manually.',
+              icon: '/logo192.png',
+              badge: '/logo192.png',
+              tag: 'recipe-import-failed',
+              data: { url: '/import' },
+              requireInteraction: false
+            });
+          } catch (pushError) {
+            console.error('[Shortcuts] Failed to send error notification:', pushError);
+          }
+
+          return res.status(400).json({
+            success: false,
+            error: 'This website has bot protection and we couldn\'t access it. Please try a different recipe URL or add the recipe manually.',
+            botProtection: true
+          });
+        }
 
         // Check if error is recoverable (502, 503, 504, timeout - site blocking or temp unavailable)
         const isRecoverableError =

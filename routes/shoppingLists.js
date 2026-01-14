@@ -855,6 +855,211 @@ router.post('/:id/purchase-to-inventory', authMiddleware.authenticateToken, asyn
   }
 });
 
+// POST /api/shopping-lists/:id/items/batch - Add multiple items with aggregation
+router.post('/:id/items/batch', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { items } = req.body; // Array of { name, quantity, unit, category }
+    const userId = req.user.id;
+    const userName = `${req.user.firstName || ''}`.trim() || req.user.email;
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    // Check if user has access
+    const hasAccess = await canUserModifyList(userId, id);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    console.log(`[ShoppingLists] Adding ${items.length} items to list ${id} with aggregation`);
+
+    // Fetch existing items in the list
+    const { data: existingItems, error: fetchError } = await supabase
+      .from('shopping_list_items')
+      .select('*')
+      .eq('list_id', id);
+
+    if (fetchError) throw fetchError;
+
+    // Import aggregation services
+    const ingredientAggregationService = require('../services/ingredientAggregationService');
+    const unitConversionService = require('../services/unitConversionService');
+
+    // Build a map of normalized existing items for fast lookup
+    const existingMap = new Map();
+    for (const item of (existingItems || [])) {
+      const normalized = ingredientAggregationService.normalizeIngredientName(item.name);
+      if (normalized) {
+        existingMap.set(normalized, item);
+      }
+    }
+
+    const itemsToInsert = [];
+    const itemsToUpdate = [];
+
+    // Process each new item
+    for (const newItem of items) {
+      const normalized = ingredientAggregationService.normalizeIngredientName(newItem.name);
+      if (!normalized) continue;
+
+      const existingItem = existingMap.get(normalized);
+
+      if (existingItem) {
+        // Try to aggregate with existing item
+        const newAmount = parseFloat(newItem.quantity) || 0;
+        const existingAmount = parseFloat(existingItem.quantity) || 0;
+        const newUnit = newItem.unit || '';
+        const existingUnit = existingItem.unit || '';
+
+        if (unitConversionService.canCombine(existingUnit, newUnit)) {
+          const combined = unitConversionService.combineQuantities(
+            existingAmount,
+            existingUnit,
+            newAmount,
+            newUnit
+          );
+
+          if (combined) {
+            console.log(`[ShoppingLists] Aggregating "${newItem.name}": ${existingAmount} ${existingUnit} + ${newAmount} ${newUnit} = ${combined.amount} ${combined.unit}`);
+            itemsToUpdate.push({
+              id: existingItem.id,
+              quantity: String(combined.amount),
+              unit: combined.unit
+            });
+            // Remove from existingMap so we don't double-aggregate
+            existingMap.delete(normalized);
+            continue;
+          }
+        }
+
+        // Units incompatible - add as new item (e.g., "1 head" vs "2 cups")
+        console.log(`[ShoppingLists] Units incompatible for "${newItem.name}", adding as new item`);
+      }
+
+      // Auto-categorize if needed
+      let finalCategory = newItem.category;
+      if (!finalCategory || finalCategory === 'Other') {
+        const autoCategory = categoryService.categorizeItem(newItem.name);
+        if (autoCategory) {
+          finalCategory = autoCategory;
+        } else {
+          finalCategory = 'Other';
+        }
+      }
+
+      itemsToInsert.push({
+        list_id: id,
+        name: newItem.name,
+        quantity: newItem.quantity || '1',
+        unit: newItem.unit || '',
+        category: finalCategory,
+        added_by: userId,
+        added_by_name: userName,
+        is_checked: false
+      });
+    }
+
+    const results = { inserted: [], updated: [] };
+
+    // Update existing items that were aggregated
+    if (itemsToUpdate.length > 0) {
+      console.log(`[ShoppingLists] Updating ${itemsToUpdate.length} aggregated items`);
+      for (const update of itemsToUpdate) {
+        const { data, error } = await supabase
+          .from('shopping_list_items')
+          .update({ quantity: update.quantity, unit: update.unit })
+          .eq('id', update.id)
+          .select()
+          .single();
+
+        if (!error && data) {
+          results.updated.push(data);
+        }
+      }
+    }
+
+    // Insert new items
+    if (itemsToInsert.length > 0) {
+      console.log(`[ShoppingLists] Inserting ${itemsToInsert.length} new items`);
+
+      // Shift existing items' order indices to make room at top
+      const shiftCount = itemsToInsert.length;
+      const { error: rpcError } = await supabase.rpc('increment_order_indices_by', {
+        list_id_param: id,
+        increment_by: shiftCount
+      });
+
+      if (rpcError) {
+        // Fallback: manual shift if RPC doesn't exist
+        if (rpcError.message?.includes('function') || rpcError.message?.includes('exist')) {
+          const { data: currentItems } = await supabase
+            .from('shopping_list_items')
+            .select('id, order_index')
+            .eq('list_id', id);
+
+          if (currentItems && currentItems.length > 0) {
+            const updates = currentItems.map(item =>
+              supabase
+                .from('shopping_list_items')
+                .update({ order_index: (item.order_index || 0) + shiftCount })
+                .eq('id', item.id)
+            );
+            await Promise.all(updates);
+          }
+        } else {
+          throw rpcError;
+        }
+      }
+
+      // Assign order indices to new items (0, 1, 2, ...)
+      const itemsWithOrder = itemsToInsert.map((item, index) => ({
+        ...item,
+        order_index: index
+      }));
+
+      const { data: insertedItems, error: insertError } = await supabase
+        .from('shopping_list_items')
+        .insert(itemsWithOrder)
+        .select();
+
+      if (insertError) throw insertError;
+      results.inserted = insertedItems || [];
+    }
+
+    // Log activity
+    await supabase
+      .from('shopping_list_activities')
+      .insert({
+        list_id: id,
+        user_id: userId,
+        user_name: userName,
+        action: 'batch_added_items',
+        metadata: {
+          inserted_count: results.inserted.length,
+          updated_count: results.updated.length,
+          total_items: items.length
+        }
+      });
+
+    console.log(`[ShoppingLists] Batch complete: ${results.inserted.length} inserted, ${results.updated.length} aggregated`);
+
+    res.json({
+      success: true,
+      inserted: results.inserted,
+      updated: results.updated,
+      summary: {
+        inserted_count: results.inserted.length,
+        updated_count: results.updated.length
+      }
+    });
+  } catch (error) {
+    console.error('Error batch adding items:', error);
+    res.status(500).json({ error: 'Failed to add items' });
+  }
+});
+
 // POST /api/shopping-lists/:id/items/reorder - Reorder items
 router.post('/:id/items/reorder', authMiddleware.authenticateToken, async (req, res) => {
   try {

@@ -251,10 +251,24 @@ const unitConversionService = {
       return null;
     }
 
+    // If both units are the same (or equivalent like "lb" and "lbs"), just add directly
+    // This preserves the user's preferred unit (e.g., lbs + lbs = lbs, not kg)
+    const norm1 = this.normalizeUnit(unit1);
+    const norm2 = this.normalizeUnit(unit2);
+    if (norm1 === norm2 || this.areEquivalentUnits(unit1, unit2)) {
+      const total = this.roundForDisplay(amount1 + amount2);
+      const displayUnit = unit1 || unit2; // Use the first non-empty unit
+      return {
+        amount: total,
+        unit: displayUnit,
+        display: `${total}${displayUnit ? ' ' + displayUnit : ''}`,
+      };
+    }
+
     const std1 = this.convertToStandard(amount1, unit1);
     const std2 = this.convertToStandard(amount2, unit2);
 
-    // If both converted to the same base unit
+    // If both converted to the same base unit (different original units like oz + lbs)
     if (std1.unit === std2.unit && (std1.unit === 'ml' || std1.unit === 'g')) {
       const totalStandard = std1.amount + std2.amount;
       return this.convertForDisplay(totalStandard, std1.unit);
@@ -272,6 +286,26 @@ const unitConversionService = {
     }
 
     return null;
+  },
+
+  /**
+   * Check if two units are equivalent (e.g., "lb" and "lbs", "cup" and "cups")
+   */
+  areEquivalentUnits(unit1, unit2) {
+    const norm1 = this.normalizeUnit(unit1);
+    const norm2 = this.normalizeUnit(unit2);
+
+    // Check if they map to the same base unit
+    const base1 = this.getBaseUnitType(unit1);
+    const base2 = this.getBaseUnitType(unit2);
+
+    if (!base1 || !base2) return false;
+
+    // Get conversion factors - if same factor and same base, they're equivalent
+    const conv1 = CONVERSIONS[norm1];
+    const conv2 = CONVERSIONS[norm2];
+
+    return conv1 && conv2 && conv1.base === conv2.base && conv1.factor === conv2.factor;
   },
 };
 

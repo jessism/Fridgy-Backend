@@ -1171,25 +1171,33 @@ router.post('/:id/add-recipe', authMiddleware.authenticateToken, async (req, res
     const currentSettings = list?.settings || {};
     const sourceRecipes = currentSettings.source_recipes || [];
 
-    // Don't add duplicates
-    if (!sourceRecipes.some(r => r.id === recipe.id)) {
+    // Check if recipe already exists
+    const existingIndex = sourceRecipes.findIndex(r => r.id === recipe.id);
+
+    if (existingIndex >= 0) {
+      // Increment count for existing recipe
+      sourceRecipes[existingIndex].count = (sourceRecipes[existingIndex].count || 1) + 1;
+    } else {
+      // Add new recipe with count: 1
       sourceRecipes.push({
         id: recipe.id,
         title: recipe.title,
         image: recipe.image,
         readyInMinutes: recipe.readyInMinutes,
-        servings: recipe.servings || 1
+        servings: recipe.servings || 1,
+        count: 1
       });
-
-      const { error: updateError } = await supabase
-        .from('shopping_lists')
-        .update({
-          settings: { ...currentSettings, source_recipes: sourceRecipes }
-        })
-        .eq('id', id);
-
-      if (updateError) throw updateError;
     }
+
+    // Update settings
+    const { error: updateError } = await supabase
+      .from('shopping_lists')
+      .update({
+        settings: { ...currentSettings, source_recipes: sourceRecipes }
+      })
+      .eq('id', id);
+
+    if (updateError) throw updateError;
 
     res.json({ success: true, source_recipes: sourceRecipes });
   } catch (error) {

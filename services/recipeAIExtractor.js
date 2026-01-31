@@ -7,7 +7,7 @@ class RecipeAIExtractor {
     this.apiKey = process.env.OPENROUTER_API_KEY;
     this.videoProcessor = new VideoProcessor();
     // Primary model: Free Gemini 2.0 Flash (faster, newer)
-    this.primaryModel = 'google/gemini-2.0-flash-exp:free';
+    this.primaryModel = 'google/gemini-2.0-flash:free';
     // Fallback model: Gemini 2.5 Flash (reliable, fast)
     this.fallbackModel = 'google/gemini-2.5-flash';
     // Track usage for intelligent switching

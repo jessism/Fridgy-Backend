@@ -29,8 +29,8 @@ class MultiModalExtractor {
     };
 
     // Models for extraction (fallback)
-    this.primaryModel = 'google/gemini-2.0-flash:free';
-    this.fallbackModel = 'google/gemini-2.0-flash-lite-001';  // Paid, cheapest with video support
+    this.primaryModel = 'google/gemini-2.5-flash-lite';
+    this.fallbackModel = 'google/gemini-2.5-flash';  // Paid fallback with video support
 
     // Ingredient aggregation service for deduplicating ingredients
     this.ingredientAggregationService = require('./ingredientAggregationService');

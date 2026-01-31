@@ -548,7 +548,7 @@ Respond with ONLY the JSON object, no additional text.`
         'X-Title': 'Fridgy Recipe Scanner'
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.0-flash:free',
+        model: 'google/gemini-2.5-flash-lite',
         messages: messages,
         temperature: 0.3,
         max_tokens: 2000
@@ -621,7 +621,7 @@ const callOpenRouterWithFallback = async (requestData, requestId) => {
   const apiKey = process.env.OPENROUTER_API_KEY;
 
   // Try free model first
-  console.log(`🆓 [${requestId}] Trying free model: google/gemini-2.0-flash:free`);
+  console.log(`🆓 [${requestId}] Trying free model: google/gemini-2.5-flash-lite`);
   try {
     const freeResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -633,7 +633,7 @@ const callOpenRouterWithFallback = async (requestData, requestId) => {
       },
       body: JSON.stringify({
         ...requestData,
-        model: 'google/gemini-2.0-flash:free'
+        model: 'google/gemini-2.5-flash-lite'
       })
     });
 
@@ -888,7 +888,7 @@ Respond with ONLY the JSON object, no additional text.`
             'X-Title': 'Fridgy Recipe Scanner - Photo Selection'
           },
           body: JSON.stringify({
-            model: 'google/gemini-2.0-flash:free',
+            model: 'google/gemini-2.5-flash-lite',
             messages: [{ role: "user", content: photoSelectionContent }],
             temperature: 0.1,
             max_tokens: 200

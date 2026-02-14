@@ -111,6 +111,44 @@ router.post('/unsubscribe', authenticateToken, async (req, res) => {
   }
 });
 
+// === MOBILE PUSH NOTIFICATIONS ===
+
+// Register a mobile (Expo) push token
+router.post('/mobile/register', authenticateToken, async (req, res) => {
+  try {
+    const { token, deviceName } = req.body;
+    const userId = req.user.id;
+
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Push token is required' });
+    }
+
+    const result = await pushNotificationService.saveMobileToken(userId, token, deviceName);
+    res.json(result);
+  } catch (error) {
+    console.error('[Push] Mobile register error:', error.message);
+    res.status(500).json({ success: false, message: error.message || 'Failed to register mobile token' });
+  }
+});
+
+// Unregister a mobile (Expo) push token
+router.post('/mobile/unregister', authenticateToken, async (req, res) => {
+  try {
+    const { token } = req.body;
+    const userId = req.user.id;
+
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Push token is required' });
+    }
+
+    const result = await pushNotificationService.removeMobileToken(userId, token);
+    res.json(result);
+  } catch (error) {
+    console.error('[Push] Mobile unregister error:', error.message);
+    res.status(500).json({ success: false, message: 'Failed to unregister mobile token' });
+  }
+});
+
 // Send test notification
 router.post('/test', authenticateToken, async (req, res) => {
   try {

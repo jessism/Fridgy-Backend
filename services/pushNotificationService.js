@@ -1,5 +1,6 @@
 const webpush = require('web-push');
 const { createClient } = require('@supabase/supabase-js');
+const expoPushService = require('./expoPushService');
 
 // Initialize Supabase
 const supabase = createClient(
@@ -91,6 +92,142 @@ class PushNotificationService {
     }
   }
 
+  // === MOBILE PUSH TOKEN MANAGEMENT ===
+  // These methods operate on the separate mobile_push_tokens table.
+  // They do NOT touch push_subscriptions.
+
+  async saveMobileToken(userId, expoToken, deviceName = null) {
+    try {
+      if (!expoPushService.isValidToken(expoToken)) {
+        throw new Error('Invalid Expo push token format');
+      }
+
+      const { data: existing } = await supabase
+        .from('mobile_push_tokens')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('expo_token', expoToken)
+        .single();
+
+      if (existing) {
+        const { error } = await supabase
+          .from('mobile_push_tokens')
+          .update({ device_name: deviceName, updated_at: new Date().toISOString() })
+          .eq('id', existing.id);
+        if (error) throw error;
+        return { success: true, message: 'Mobile token updated' };
+      }
+
+      const { error } = await supabase
+        .from('mobile_push_tokens')
+        .insert({
+          user_id: userId,
+          expo_token: expoToken,
+          device_name: deviceName,
+          created_at: new Date().toISOString(),
+        });
+      if (error) throw error;
+      return { success: true, message: 'Mobile token registered' };
+    } catch (error) {
+      console.error('[PushService] Error saving mobile token:', error);
+      throw error;
+    }
+  }
+
+  async removeMobileToken(userId, expoToken) {
+    try {
+      if (!userId) {
+        throw new Error('userId is required to remove a mobile token');
+      }
+      const { error } = await supabase
+        .from('mobile_push_tokens')
+        .delete()
+        .eq('user_id', userId)
+        .eq('expo_token', expoToken);
+      if (error) throw error;
+      return { success: true, message: 'Mobile token removed' };
+    } catch (error) {
+      console.error('[PushService] Error removing mobile token:', error);
+      throw error;
+    }
+  }
+
+  async getUserMobileTokens(userId) {
+    try {
+      const { data, error } = await supabase
+        .from('mobile_push_tokens')
+        .select('*')
+        .eq('user_id', userId);
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('[PushService] Error fetching mobile tokens:', error);
+      return [];
+    }
+  }
+
+  async sendExpoNotification(expoToken, payload) {
+    const expoPayload = {
+      title: payload.title,
+      body: payload.body,
+      data: {
+        ...(payload.data || {}),
+        screen: this.mapUrlToMobileRoute(payload.data?.url),
+      },
+      sound: 'default',
+      badge: 1,
+      channelId: this.mapTagToChannel(payload.tag),
+      priority: payload.requireInteraction ? 'high' : 'default',
+    };
+
+    const results = await expoPushService.sendNotifications(
+      [expoToken],
+      expoPayload
+    );
+
+    const result = results[0];
+    if (result && !result.success && result.error === 'DeviceNotRegistered') {
+      await this.removeInvalidMobileToken(expoToken);
+    }
+
+    return {
+      success: result?.success || false,
+      platform: 'expo',
+      error: result?.error || null,
+    };
+  }
+
+  mapUrlToMobileRoute(url) {
+    if (!url) return '/(tabs)/inventory';
+    const routes = {
+      '/inventory': '/(tabs)/inventory',
+      '/mealplans': '/(tabs)/meals',
+      '/recipes': '/(tabs)/meals',
+      '/shopping-lists': '/(tabs)/meals',
+    };
+    return routes[url] || '/(tabs)/inventory';
+  }
+
+  mapTagToChannel(tag) {
+    if (!tag) return 'default';
+    if (tag.includes('expir')) return 'expiry-alerts';
+    if (tag.includes('reminder')) return 'daily-reminders';
+    return 'default';
+  }
+
+  async removeInvalidMobileToken(expoToken) {
+    try {
+      const { error } = await supabase
+        .from('mobile_push_tokens')
+        .delete()
+        .eq('expo_token', expoToken);
+      if (error) throw error;
+      console.log('[PushService] Removed invalid mobile token:', expoToken.substring(0, 30));
+    } catch (error) {
+      console.error('[PushService] Error removing invalid mobile token:', error);
+    }
+  }
+
   // Send notification to a specific subscription
   async sendNotification(subscription, payload) {
     try {
@@ -108,19 +245,36 @@ class PushNotificationService {
     }
   }
 
-  // Send notification to all user's devices
+  // Send notification to all user's devices (web + mobile)
   async sendToUser(userId, payload) {
-    const subscriptions = await this.getUserSubscriptions(userId);
     const results = [];
 
+    // 1. Web subscriptions (EXISTING behavior, unchanged)
+    const subscriptions = await this.getUserSubscriptions(userId);
     for (const sub of subscriptions) {
       const subscriptionObject = {
         endpoint: sub.endpoint,
         keys: sub.keys
       };
-
       const result = await this.sendNotification(subscriptionObject, payload);
-      results.push(result);
+      results.push({ ...result, platform: 'web' });
+    }
+
+    // 2. Mobile tokens (NEW, additive only)
+    try {
+      const mobileTokens = await this.getUserMobileTokens(userId);
+      for (const tokenRecord of mobileTokens) {
+        try {
+          const result = await this.sendExpoNotification(tokenRecord.expo_token, payload);
+          results.push(result);
+        } catch (mobileError) {
+          console.error('[PushService] Error sending to mobile token:', mobileError.message);
+          results.push({ success: false, platform: 'expo', error: mobileError.message });
+        }
+      }
+    } catch (mobileQueryError) {
+      // Mobile failure cannot break web notifications
+      console.error('[PushService] Error querying mobile tokens:', mobileQueryError.message);
     }
 
     return results;

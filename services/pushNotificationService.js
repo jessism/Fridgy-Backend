@@ -393,7 +393,7 @@ class PushNotificationService {
           user_id: userId,
           ...preferences,
           updated_at: new Date().toISOString()
-        });
+        }, { onConflict: 'user_id' });
 
       if (error) throw error;
       return { success: true };
@@ -478,7 +478,7 @@ class PushNotificationService {
           user_id: userId,
           daily_reminders: dailyReminders,
           updated_at: new Date().toISOString()
-        });
+        }, { onConflict: 'user_id' });
 
       if (error) throw error;
       return { success: true };
@@ -530,7 +530,7 @@ class PushNotificationService {
           user_id: userId,
           ...emailPreferences,
           updated_at: new Date().toISOString()
-        });
+        }, { onConflict: 'user_id' });
 
       if (error) throw error;
       return { success: true, message: 'Email preferences updated successfully' };

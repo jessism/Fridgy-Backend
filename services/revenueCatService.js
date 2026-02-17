@@ -8,6 +8,13 @@ const fetch = require('node-fetch');
 const REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_API_KEY;
 const REVENUECAT_API_BASE = 'https://api.revenuecat.com/v1';
 
+// Debug: Log if key is set (first 10 chars only for security)
+if (REVENUECAT_SECRET_KEY) {
+  console.log('[RevenueCat] API key loaded:', REVENUECAT_SECRET_KEY.substring(0, 10) + '...');
+} else {
+  console.error('[RevenueCat] ⚠️ WARNING: REVENUECAT_SECRET_API_KEY not set!');
+}
+
 /**
  * Check if a user has an active premium subscription via RevenueCat
  * @param {string} userId - The user's email or ID (must match what mobile app uses)

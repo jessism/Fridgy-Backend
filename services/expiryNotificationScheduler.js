@@ -236,6 +236,11 @@ class ExpiryNotificationScheduler {
     try {
       const successful = results.filter(r => r.success).length;
       const failed = results.filter(r => !r.success).length;
+      const webOk = results.filter(r => r.success && r.platform === 'web').length;
+      const mobileOk = results.filter(r => r.success && r.platform === 'expo').length;
+      if (webOk > 0 || mobileOk > 0) {
+        console.log(`[Scheduler] Notification delivered: ${webOk} web, ${mobileOk} mobile`);
+      }
 
       // Log for each item
       for (const item of items) {

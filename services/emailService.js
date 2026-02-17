@@ -6,6 +6,23 @@ const { getSubscriptionPrice } = require('../utils/stripePrice');
 const client = new postmark.ServerClient(process.env.POSTMARK_API_KEY);
 
 /**
+ * Check if an email should be skipped (e.g., test emails)
+ * @param {string} email - Email address to check
+ * @returns {boolean} True if email should be skipped
+ */
+function shouldSkipEmail(email) {
+  if (!email) return true;
+
+  const lowerEmail = email.toLowerCase();
+  if (lowerEmail.includes('test')) {
+    console.log(`[Email] Skipping email to ${email} - contains 'test'`);
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Format a date in the user's timezone
  * @param {Date} date - The date to format
  * @param {string} timezone - IANA timezone string (e.g., 'America/Los_Angeles')
@@ -28,6 +45,10 @@ function formatDateInTimezone(date, timezone = 'America/Los_Angeles', includeWee
 async function sendTrialStartEmail(user, trialEndDate, timezone = 'America/Los_Angeles', pricingInfo = null) {
   if (!process.env.EMAIL_ENABLED || process.env.EMAIL_ENABLED !== 'true') {
     console.log('[Email] Email sending is disabled');
+    return;
+  }
+
+  if (shouldSkipEmail(user.email)) {
     return;
   }
 
@@ -86,6 +107,10 @@ async function sendTrialEndingEmail(user, trialEndDate, timezone = 'America/Los_
     return;
   }
 
+  if (shouldSkipEmail(user.email)) {
+    return;
+  }
+
   try {
     console.log(`[Email] Sending trial ending email to ${user.email} (timezone: ${timezone})`);
 
@@ -120,6 +145,10 @@ async function sendTrialEndingEmail(user, trialEndDate, timezone = 'America/Los_
 async function sendPaymentSuccessEmail(user, amount, nextBillingDate, timezone = 'America/Los_Angeles') {
   if (!process.env.EMAIL_ENABLED || process.env.EMAIL_ENABLED !== 'true') {
     console.log('[Email] Email sending is disabled');
+    return;
+  }
+
+  if (shouldSkipEmail(user.email)) {
     return;
   }
 
@@ -159,6 +188,10 @@ async function sendWelcomeEmail(user) {
     return;
   }
 
+  if (shouldSkipEmail(user.email)) {
+    return;
+  }
+
   try {
     console.log(`[Email] Sending welcome email to ${user.email}`);
 
@@ -188,6 +221,10 @@ async function sendWelcomeEmail(user) {
 async function sendDailyExpiryEmail(user, items) {
   if (!process.env.EMAIL_ENABLED || process.env.EMAIL_ENABLED !== 'true') {
     console.log('[Email] Email sending is disabled');
+    return;
+  }
+
+  if (shouldSkipEmail(user.email)) {
     return;
   }
 
@@ -263,6 +300,10 @@ async function sendWeeklyExpiryEmail(user, items) {
     return;
   }
 
+  if (shouldSkipEmail(user.email)) {
+    return;
+  }
+
   try {
     console.log(`[Email] Sending weekly expiry summary to ${user.email}`);
 
@@ -333,6 +374,10 @@ async function sendTipsAndUpdatesEmail(user, content) {
     return;
   }
 
+  if (shouldSkipEmail(user.email)) {
+    return;
+  }
+
   try {
     console.log(`[Email] Sending tips & updates email to ${user.email}`);
 
@@ -394,6 +439,10 @@ function getCategoryEmoji(category) {
 async function sendCancellationEmail(user, accessUntilDate, timezone = 'America/Los_Angeles') {
   if (!process.env.EMAIL_ENABLED || process.env.EMAIL_ENABLED !== 'true') {
     console.log('[Email] Email sending is disabled');
+    return;
+  }
+
+  if (shouldSkipEmail(user.email)) {
     return;
   }
 

@@ -23,10 +23,14 @@ if (REVENUECAT_SECRET_KEY) {
 async function checkRevenueCatSubscription(userId) {
   if (!userId || !REVENUECAT_SECRET_KEY) {
     console.log('[RevenueCat] No user ID or API key configured');
+    console.error(`[RevenueCat] DEBUG - userId: ${userId ? 'present' : 'missing'}, API key: ${REVENUECAT_SECRET_KEY ? REVENUECAT_SECRET_KEY.substring(0, 10) + '...' : 'MISSING!'}`);
     return null;
   }
 
   try {
+    console.log(`[RevenueCat] Checking subscription for user: ${userId}`);
+    console.log(`[RevenueCat] Using API key: ${REVENUECAT_SECRET_KEY.substring(0, 10)}...`);
+
     const url = `${REVENUECAT_API_BASE}/subscribers/${encodeURIComponent(userId)}`;
 
     const response = await fetch(url, {
@@ -44,6 +48,8 @@ async function checkRevenueCatSubscription(userId) {
         return null;
       }
       console.error(`[RevenueCat] API error: ${response.status}`);
+      console.error(`[RevenueCat] Request URL: ${url}`);
+      console.error(`[RevenueCat] Auth header: Bearer ${REVENUECAT_SECRET_KEY.substring(0, 15)}...`);
       return null;
     }
 

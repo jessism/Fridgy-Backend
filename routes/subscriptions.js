@@ -65,6 +65,59 @@ router.get('/price', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/subscriptions/debug/revenuecat
+ * Debug endpoint to verify RevenueCat configuration (PUBLIC - no auth required)
+ * Tests if the secret API key is loaded and working
+ */
+router.get('/debug/revenuecat', async (req, res) => {
+  const hasKey = !!process.env.REVENUECAT_SECRET_API_KEY;
+  const keyLength = process.env.REVENUECAT_SECRET_API_KEY?.length || 0;
+  const keyPrefix = hasKey
+    ? process.env.REVENUECAT_SECRET_API_KEY.substring(0, 10) + '...'
+    : 'NOT SET';
+
+  // Test the key with a real API call to RevenueCat
+  let apiTestResult = 'not_tested';
+  if (hasKey) {
+    try {
+      const fetch = require('node-fetch');
+      const response = await fetch(
+        'https://api.revenuecat.com/v1/subscribers/testrevcat2@gmail.com',
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.REVENUECAT_SECRET_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      const responseData = await response.json();
+
+      apiTestResult = {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        hasSubscriberData: !!responseData.subscriber,
+        hasPremiumEntitlement: !!responseData.subscriber?.entitlements?.premium
+      };
+    } catch (error) {
+      apiTestResult = { error: error.message };
+    }
+  }
+
+  res.json({
+    timestamp: new Date().toISOString(),
+    hasRevenueCatKey: hasKey,
+    keyLength: keyLength,
+    keyPrefix: keyPrefix,
+    apiVersion: 'v1',
+    baseUrl: 'https://api.revenuecat.com/v1',
+    apiTestResult: apiTestResult,
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
 // All other subscription routes require authentication
 router.use(authenticateToken);
 

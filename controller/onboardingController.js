@@ -459,6 +459,12 @@ const onboardingController = {
         console.log('[Onboarding] Retrieved existing subscription:', subscription.id);
         console.log('[Onboarding] Subscription status:', subscription.status);
 
+        // Create ephemeral key for mobile PaymentSheet
+        const existingEphemeralKey = await stripe.ephemeralKeys.create(
+          { customer: session.stripe_customer_id },
+          { apiVersion: '2023-10-16' }
+        );
+
         // For TRIAL subscriptions, return SetupIntent
         if (subscription.pending_setup_intent) {
           console.log('✅ Returning existing subscription (trial)');
@@ -466,6 +472,8 @@ const onboardingController = {
             success: true,
             subscriptionId: subscription.id,
             clientSecret: subscription.pending_setup_intent.client_secret,
+            customerId: session.stripe_customer_id,
+            ephemeralKey: existingEphemeralKey.secret,
             requiresSetup: true,
             isTrial: true
           });
@@ -478,6 +486,8 @@ const onboardingController = {
             success: true,
             subscriptionId: subscription.id,
             clientSecret: subscription.latest_invoice.payment_intent.client_secret,
+            customerId: session.stripe_customer_id,
+            ephemeralKey: existingEphemeralKey.secret,
             requiresSetup: false,
             isTrial: false
           });
@@ -511,6 +521,12 @@ const onboardingController = {
           })
           .eq('session_id', sessionId);
       }
+
+      // Create ephemeral key for mobile PaymentSheet
+      const ephemeralKey = await stripe.ephemeralKeys.create(
+        { customer: customerId },
+        { apiVersion: '2023-10-16' }
+      );
 
       // Prepare subscription data
       const subscriptionData = {
@@ -578,6 +594,8 @@ const onboardingController = {
           success: true,
           subscriptionId: subscription.id,
           clientSecret: setupIntent.client_secret,
+          customerId: customerId,
+          ephemeralKey: ephemeralKey.secret,
           requiresSetup: true,
           isTrial: true
         });
@@ -591,6 +609,8 @@ const onboardingController = {
           success: true,
           subscriptionId: subscription.id,
           clientSecret: subscription.latest_invoice.payment_intent.client_secret,
+          customerId: customerId,
+          ephemeralKey: ephemeralKey.secret,
           requiresSetup: false,
           isTrial: false
         });

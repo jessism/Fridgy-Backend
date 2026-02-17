@@ -7,39 +7,54 @@ const stripeService = require('../services/stripeService');
 const subscriptionService = require('../services/subscriptionService');
 const usageService = require('../services/usageService');
 const emailService = require('../services/emailService');
+const revenueCatService = require('../services/revenueCatService');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 /**
  * Get user's subscription status and usage
  * GET /api/subscriptions/status
+ * Now checks BOTH Stripe and RevenueCat for unified premium status
  */
 async function getStatus(req, res) {
   try {
     const userId = req.user.id || req.user.userId;
+    const userEmail = req.user.email;
 
-    // Get subscription
-    const subscription = await subscriptionService.getUserSubscription(userId);
+    // Check BOTH subscription systems in parallel
+    const [stripeSubscription, revenueCatSubscription] = await Promise.all([
+      subscriptionService.getUserSubscription(userId),
+      revenueCatService.checkRevenueCatSubscription(userEmail), // Use email, matches mobile
+    ]);
 
     // Get usage stats
     const usage = await usageService.getUserUsage(userId);
 
-    // Fetch billing details from Stripe if user has active subscription
+    // Determine if user has premium from either source
+    const hasStripeActive = stripeSubscription &&
+      (stripeSubscription.status === 'active' || stripeSubscription.status === 'trialing');
+    const hasRevenueCatActive = revenueCatSubscription?.active || false;
+
+    const isPremium = hasStripeActive || hasRevenueCatActive;
+    const subscriptionSource = hasStripeActive ? 'stripe' :
+                              hasRevenueCatActive ? revenueCatSubscription.source :
+                              null;
+
+    // Fetch billing details from Stripe if user has active Stripe subscription
     let billingInfo = null;
-    if (subscription?.stripe_customer_id &&
-        (subscription.status === 'active' || subscription.status === 'trialing')) {
+    if (hasStripeActive && stripeSubscription?.stripe_customer_id) {
       try {
         // Step 1: Always fetch subscription from Stripe for date and base price
-        const stripeSubscription = await stripe.subscriptions.retrieve(
-          subscription.stripe_subscription_id
+        const stripeSubDetails = await stripe.subscriptions.retrieve(
+          stripeSubscription.stripe_subscription_id
         );
 
         // Get base price from subscription items
-        const baseAmount = stripeSubscription.items.data[0]?.price?.unit_amount || 499;
+        const baseAmount = stripeSubDetails.items.data[0]?.price?.unit_amount || 499;
 
         // Determine the billing/trial end date from Stripe
-        const billingDate = stripeSubscription.trial_end
-          ? new Date(stripeSubscription.trial_end * 1000).toISOString()
-          : new Date(stripeSubscription.current_period_end * 1000).toISOString();
+        const billingDate = stripeSubDetails.trial_end
+          ? new Date(stripeSubDetails.trial_end * 1000).toISOString()
+          : new Date(stripeSubDetails.current_period_end * 1000).toISOString();
 
         // Set base billing info (always available from subscription)
         billingInfo = {
@@ -55,8 +70,8 @@ async function getStatus(req, res) {
         // This may fail for canceled subscriptions (no upcoming invoice)
         try {
           const upcomingInvoice = await stripe.invoices.createPreview({
-            customer: subscription.stripe_customer_id,
-            subscription: subscription.stripe_subscription_id
+            customer: stripeSubscription.stripe_customer_id,
+            subscription: stripeSubscription.stripe_subscription_id
           });
 
           // Update with actual invoice amounts
@@ -79,20 +94,51 @@ async function getStatus(req, res) {
       }
     }
 
+    // If user has RevenueCat subscription, include that info
+    let appleSubscriptionInfo = null;
+    if (hasRevenueCatActive) {
+      appleSubscriptionInfo = {
+        expiresAt: revenueCatSubscription.expiresAt,
+        productId: revenueCatSubscription.productId,
+        willRenew: revenueCatSubscription.willRenew,
+        isSandbox: revenueCatSubscription.isSandbox,
+      };
+      console.log('[SubscriptionController] User has Apple IAP subscription:', appleSubscriptionInfo);
+    }
+
+    // Construct unified response
+    const tier = isPremium ? 'premium' : (stripeSubscription?.is_grandfathered ? 'grandfathered' : 'free');
+
     res.json({
       success: true,
-      subscription: subscription ? {
-        ...subscription,
-        billing: billingInfo
+      subscription: isPremium ? {
+        tier: tier,
+        status: hasStripeActive ? stripeSubscription.status : 'active',
+        source: subscriptionSource,
+        is_grandfathered: stripeSubscription?.is_grandfathered || false,
+        billing: billingInfo,
+        apple: appleSubscriptionInfo, // Include Apple subscription details if applicable
+        // Include Stripe details for backwards compatibility
+        ...(hasStripeActive ? {
+          stripe_customer_id: stripeSubscription.stripe_customer_id,
+          stripe_subscription_id: stripeSubscription.stripe_subscription_id,
+        } : {}),
       } : {
         tier: 'free',
         status: null,
+        source: null,
         is_grandfathered: false,
-        billing: null
+        billing: null,
+        apple: null,
       },
       usage: usage.current,
       limits: usage.limits,
-      tier: subscription?.tier || 'free'
+      tier: tier,
+      // Debug info (can remove in production)
+      _debug: {
+        hasStripe: hasStripeActive,
+        hasRevenueCat: hasRevenueCatActive,
+      }
     });
   } catch (error) {
     console.error('[SubscriptionController] Error getting status:', error);

@@ -20,6 +20,15 @@ async function getStatus(req, res) {
     const userId = req.user.id || req.user.userId;
     const userEmail = req.user.email;
 
+    // CRITICAL: Get user tier from database (updated by webhooks)
+    const { getServiceClient } = require('../config/supabase');
+    const supabase = getServiceClient();
+    const { data: user } = await supabase
+      .from('users')
+      .select('tier, is_grandfathered')
+      .eq('id', userId)
+      .single();
+
     // Check BOTH subscription systems in parallel
     const [stripeSubscription, revenueCatSubscription] = await Promise.all([
       subscriptionService.getUserSubscription(userId),
@@ -34,7 +43,10 @@ async function getStatus(req, res) {
       (stripeSubscription.status === 'active' || stripeSubscription.status === 'trialing');
     const hasRevenueCatActive = revenueCatSubscription?.active || false;
 
-    const isPremium = hasStripeActive || hasRevenueCatActive;
+    // CRITICAL: Check database tier (source of truth - updated by webhooks)
+    const hasDatabasePremium = user && (user.tier === 'premium' || user.tier === 'grandfathered');
+
+    const isPremium = hasStripeActive || hasRevenueCatActive || hasDatabasePremium;
     const subscriptionSource = hasStripeActive ? 'stripe' :
                               hasRevenueCatActive ? revenueCatSubscription.source :
                               null;
@@ -106,8 +118,8 @@ async function getStatus(req, res) {
       console.log('[SubscriptionController] User has Apple IAP subscription:', appleSubscriptionInfo);
     }
 
-    // Construct unified response
-    const tier = isPremium ? 'premium' : (stripeSubscription?.is_grandfathered ? 'grandfathered' : 'free');
+    // Construct unified response - use database tier as source of truth
+    const tier = user?.tier || (isPremium ? 'premium' : 'free');
 
     res.json({
       success: true,
@@ -115,7 +127,7 @@ async function getStatus(req, res) {
         tier: tier,
         status: hasStripeActive ? stripeSubscription.status : 'active',
         source: subscriptionSource,
-        is_grandfathered: stripeSubscription?.is_grandfathered || false,
+        is_grandfathered: user?.is_grandfathered || stripeSubscription?.is_grandfathered || false,
         billing: billingInfo,
         apple: appleSubscriptionInfo, // Include Apple subscription details if applicable
         // Include Stripe details for backwards compatibility
@@ -138,6 +150,8 @@ async function getStatus(req, res) {
       _debug: {
         hasStripe: hasStripeActive,
         hasRevenueCat: hasRevenueCatActive,
+        databaseTier: user?.tier || null,
+        hasDatabasePremium: hasDatabasePremium,
       }
     });
   } catch (error) {

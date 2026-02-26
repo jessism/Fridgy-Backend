@@ -442,13 +442,15 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
       });
     }
 
-    // Extract recipe using Spoonacular
-    console.log('[WebImport] Extracting recipe with Spoonacular...');
+    // Extract recipe using Gemini AI
+    console.log('[WebImport] Extracting recipe with Gemini AI...');
     let extractedRecipe;
     try {
-      extractedRecipe = await recipeService.extractRecipeFromUrl(url);
+      const RecipeAIExtractor = require('../services/recipeAIExtractor');
+      const recipeAI = new RecipeAIExtractor();
+      extractedRecipe = await recipeAI.extractFromWebUrl(url);
     } catch (extractError) {
-      console.error('[WebImport] Spoonacular extraction failed:', extractError.message);
+      console.error('[WebImport] AI extraction failed:', extractError.message);
       return res.status(400).json({
         success: false,
         error: 'Could not extract recipe from this URL. The page may not contain a recognizable recipe.',
@@ -461,7 +463,7 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
       user_id: userId,
       source_type: 'web',
       source_url: url,
-      import_method: 'spoonacular',
+      import_method: 'ai-web-extract',
 
       // Core recipe data
       title: extractedRecipe.title || 'Recipe from Web',
@@ -489,9 +491,9 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
       diets: extractedRecipe.diets || [],
 
       // Extraction metadata
-      extraction_confidence: 0.95, // Spoonacular is highly reliable
-      extraction_notes: 'Extracted via Spoonacular web extraction API',
-      ai_model_used: 'spoonacular',
+      extraction_confidence: 0.85, // AI extraction is reliable
+      extraction_notes: 'Extracted via Gemini AI web extraction',
+      ai_model_used: 'google/gemini-2.5-flash-lite',
 
       // Source info
       source_author: extractedRecipe.sourceName || extractedRecipe.creditsText || null

@@ -97,124 +97,28 @@ class RecipeAIExtractor {
    * @param {string} url - The recipe page URL
    * @returns {object} - Recipe in Spoonacular-compatible format
    */
-  /**
-   * Extract recipe from web URL with automatic fallback to Wayback Machine if bot protection detected
-   * @param {string} url - Web URL to extract recipe from
-   * @param {object} options - Options: { skipWayback: boolean }
-   * @returns {object} - Extracted recipe in Spoonacular-compatible format
-   */
-  async extractFromWebUrl(url, options = {}) {
+  async extractFromWebUrl(url) {
     console.log('[RecipeAIExtractor] 🌐 Starting web URL extraction:', url);
 
     try {
-      // Try direct fetch first
-      const recipe = await this._extractFromWebUrlDirect(url, options);
-
-      // Check for bot protection in the result
-      if (!options.skipWayback && this.detectBotProtection(recipe)) {
-        console.log('[RecipeAIExtractor] ⚠️  Bot protection detected, trying Wayback Machine fallback...');
-        try {
-          return await this.extractFromWaybackMachine(url);
-        } catch (waybackError) {
-          console.error('[RecipeAIExtractor] Wayback fallback failed:', waybackError.message);
-          console.log('[RecipeAIExtractor] Returning original result despite bot detection');
-          // Return original result as last resort
-          return recipe;
-        }
-      }
-
-      return recipe;
-    } catch (error) {
-      // If direct fetch failed with HTTP 403 (likely bot protection), try Wayback
-      if (!options.skipWayback && (error.message.includes('403') || error.message.includes('forbidden'))) {
-        console.log('[RecipeAIExtractor] ⚠️  HTTP 403 detected, trying Wayback Machine fallback...');
-        try {
-          return await this.extractFromWaybackMachine(url);
-        } catch (waybackError) {
-          console.error('[RecipeAIExtractor] Wayback fallback failed:', waybackError.message);
-          // Re-throw original error if Wayback also fails
-          throw error;
-        }
-      }
-
-      throw error;
-    }
-  }
-
-  /**
-   * Direct web URL extraction without fallbacks (internal method)
-   * @param {string} url - Web URL to extract recipe from
-   * @param {object} options - Options: { skipWayback: boolean }
-   * @returns {object} - Extracted recipe
-   */
-  async _extractFromWebUrlDirect(url, options = {}) {
-    console.log('[RecipeAIExtractor] Fetching URL directly:', url);
-
-    try {
-      // 1. Fetch the webpage with enhanced browser headers
+      // 1. Fetch the webpage
       const response = await fetch(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Referer': 'https://www.google.com/',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'cross-site',
-          'Cache-Control': 'max-age=0',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1'
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
         },
-        timeout: 20000  // Increased from 15s to 20s
+        timeout: 15000
       });
 
       if (!response.ok) {
-        console.error('[RecipeAIExtractor] HTTP error:', {
-          status: response.status,
-          statusText: response.statusText,
-          url
-        });
-
-        const error = new Error(`HTTP ${response.status}: ${response.statusText}`);
-        error.code = `HTTP_${response.status}`;
-        error.httpStatus = response.status;
-
-        // Provide specific user messages based on status code
-        if (response.status === 403) {
-          error.userMessage = 'This website is blocking automated access. The recipe may be available via archive.';
-        } else if (response.status === 404) {
-          error.userMessage = 'Recipe not found at this URL. Please check the URL and try again.';
-        } else if (response.status === 429) {
-          error.userMessage = 'Too many requests to this website. Please try again in a few minutes.';
-        } else if (response.status >= 500) {
-          error.userMessage = 'The recipe website is experiencing issues. Please try again later.';
-        } else {
-          error.userMessage = `Could not access recipe (error ${response.status}). Please try a different URL.';
-        }
-
-        throw error;
+        throw new Error(`Failed to fetch page: ${response.status}`);
       }
 
       const html = await response.text();
       console.log('[RecipeAIExtractor] Fetched HTML, length:', html.length);
 
-      // 2. Try JSON-LD structured data extraction first (faster and more reliable)
-      const jsonldRecipe = this.extractJSONLD(html);
-      if (jsonldRecipe) {
-        console.log('[RecipeAIExtractor] ✅ Using JSON-LD structured data (no AI needed)');
-        const recipe = this.transformJSONLDToSpoonacularFormat(jsonldRecipe, url);
-        console.log('[RecipeAIExtractor] ✅ JSON-LD extraction successful:', {
-          title: recipe.title,
-          ingredientCount: recipe.extendedIngredients?.length,
-          stepCount: recipe.analyzedInstructions?.[0]?.steps?.length
-        });
-        return recipe;
-      }
-
-      console.log('[RecipeAIExtractor] No JSON-LD found, falling back to AI extraction');
-
-      // 3. Extract text content using cheerio for AI extraction
+      // 2. Extract text content using cheerio
       const $ = cheerio.load(html);
 
       // Remove non-content elements
@@ -231,32 +135,13 @@ class RecipeAIExtractor {
         bodyLength: bodyText.length
       });
 
-      // Validate sufficient content
-      if (bodyText.length < 200) {
-        console.error('[RecipeAIExtractor] Insufficient content extracted');
-        const error = new Error('Extracted content too short - page may not contain a recipe');
-        error.code = 'INSUFFICIENT_CONTENT';
-        error.userMessage = 'Could not find enough recipe content on this page. Please verify the URL contains a recipe.';
-        throw error;
-      }
-
-      // Detect common bot protection patterns in HTML
-      const htmlLower = html.toLowerCase();
-      if (html.length < 1000 || htmlLower.includes('just a moment') || htmlLower.includes('cloudflare') && htmlLower.includes('ray id')) {
-        console.warn('[RecipeAIExtractor] Possible bot detection page detected');
-        const error = new Error('Bot protection page detected');
-        error.code = 'BOT_DETECTED';
-        error.userMessage = 'This website appears to be blocking automated access.';
-        throw error;
-      }
-
-      // 4. Build prompt for recipe extraction
+      // 3. Build prompt for recipe extraction
       const prompt = this.buildWebExtractionPrompt(url, title, bodyText);
 
-      // 5. Call AI (no media content for web extraction)
+      // 4. Call AI (no media content for web extraction)
       const aiResponse = await this.callAI(prompt, []);
 
-      // 6. Parse response
+      // 5. Parse response
       const sanitized = this.sanitizeFractions(aiResponse);
 
       // Extract JSON from response (may have markdown code blocks)
@@ -266,34 +151,16 @@ class RecipeAIExtractor {
         jsonStr = jsonMatch[1].trim();
       }
 
-      let result;
-      try {
-        result = JSON.parse(jsonStr);
-      } catch (parseError) {
-        console.error('[RecipeAIExtractor] JSON parse failed:', {
-          error: parseError.message,
-          responsePreview: jsonStr.substring(0, 500)
-        });
-
-        const error = new Error('Failed to parse AI response as JSON');
-        error.code = 'JSON_PARSE_FAILED';
-        error.originalError = parseError;
-        error.userMessage = 'Recipe extraction returned invalid data. Please try again.';
-        throw error;
-      }
+      const result = JSON.parse(jsonStr);
 
       if (result.error) {
-        console.error('[RecipeAIExtractor] AI returned error:', result.error);
-        const error = new Error(result.error);
-        error.code = 'AI_NO_RECIPE';
-        error.userMessage = 'No recipe found on this page. Please verify the URL contains a recipe.';
-        throw error;
+        throw new Error(result.error);
       }
 
-      // 7. Transform to Spoonacular-compatible format
+      // 6. Transform to Spoonacular-compatible format
       const recipe = this.transformWebResultToSpoonacularFormat(result, url);
 
-      console.log('[RecipeAIExtractor] ✅ Direct extraction successful:', {
+      console.log('[RecipeAIExtractor] ✅ Web extraction successful:', {
         title: recipe.title,
         ingredientCount: recipe.extendedIngredients?.length,
         stepCount: recipe.analyzedInstructions?.[0]?.steps?.length
@@ -302,246 +169,9 @@ class RecipeAIExtractor {
       return recipe;
 
     } catch (error) {
-      console.error('[RecipeAIExtractor] ❌ Direct extraction failed:', error.message);
+      console.error('[RecipeAIExtractor] ❌ Web extraction failed:', error.message);
       throw error;
     }
-  }
-
-  /**
-   * Detect if the extraction result appears to be a bot protection page
-   * @param {object} recipe - Extracted recipe object
-   * @returns {boolean} - True if bot protection detected
-   */
-  detectBotProtection(recipe) {
-    if (!recipe) return false;
-
-    const botIndicators = {
-      titleKeywords: ['verify', 'human', 'captcha', 'access denied', 'blocked', 'security check', 'please wait', 'checking your browser', 'just a moment', 'cloudflare', 'attention required'],
-      ingredientKeywords: ['browser', 'cookies', 'javascript', 'blocked', 'denied', 'automation', 'enable', 'disabled', 'cloudflare', 'ray id', 'reference id'],
-      knownServices: ['perimeterx', 'cloudflare', 'recaptcha', 'ddos', 'akamai', 'incapsula', 'cf-']
-    };
-
-    // Check title
-    const titleLower = (recipe.title || '').toLowerCase();
-    if (botIndicators.titleKeywords.some(k => titleLower.includes(k))) {
-      console.log(`[RecipeAIExtractor] 🤖 Bot protection detected in title: "${recipe.title}"`);
-      return true;
-    }
-
-    // Check ingredients for error messages
-    const ingredients = recipe.extendedIngredients || [];
-    for (const ing of ingredients) {
-      const text = (ing.original || ing.name || '').toLowerCase();
-      if (botIndicators.ingredientKeywords.some(k => text.includes(k))) {
-        console.log(`[RecipeAIExtractor] 🤖 Bot protection detected in ingredient: "${text}"`);
-        return true;
-      }
-      if (botIndicators.knownServices.some(k => text.includes(k))) {
-        console.log(`[RecipeAIExtractor] 🤖 Bot protection service detected: "${text}"`);
-        return true;
-      }
-    }
-
-    // Check if there are very few ingredients and no instructions (common bot page pattern)
-    const steps = recipe.analyzedInstructions?.[0]?.steps || [];
-    if (ingredients.length < 3 && steps.length === 0) {
-      console.log(`[RecipeAIExtractor] 🤖 Bot protection suspected: insufficient content (${ingredients.length} ingredients, ${steps.length} steps)`);
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Try to extract recipe from Wayback Machine archive
-   * @param {string} url - Original URL to find in archive
-   * @returns {object} - Recipe data from archived version
-   */
-  async extractFromWaybackMachine(url) {
-    console.log(`[RecipeAIExtractor] 🕰️  Checking Wayback Machine for: ${url}`);
-
-    try {
-      // Check for available snapshots
-      const availabilityUrl = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`;
-
-      const availResponse = await fetch(availabilityUrl, { timeout: 10000 });
-      const availData = await availResponse.json();
-
-      if (!availData.archived_snapshots?.closest?.url) {
-        throw new Error('No archived version available');
-      }
-
-      const archivedUrl = availData.archived_snapshots.closest.url;
-      const snapshotDate = availData.archived_snapshots.closest.timestamp;
-      console.log(`[RecipeAIExtractor] 🕰️  Found archive from ${snapshotDate}: ${archivedUrl}`);
-
-      // Extract from archived version - pass skipWayback flag to avoid infinite loop
-      const recipe = await this._extractFromWebUrlDirect(archivedUrl, { skipWayback: true });
-
-      // Mark that this came from archive
-      recipe._fromWaybackMachine = true;
-      recipe._archiveDate = snapshotDate;
-      recipe.sourceName = (recipe.sourceName || 'Web') + ' (archived)';
-
-      console.log(`[RecipeAIExtractor] ✅ Successfully extracted from Wayback Machine`);
-      return recipe;
-    } catch (error) {
-      console.error(`[RecipeAIExtractor] ❌ Wayback Machine failed:`, error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * Extract recipe from JSON-LD structured data if available
-   * @param {string} html - HTML content
-   * @returns {object|null} - Recipe object or null if no structured data found
-   */
-  extractJSONLD(html) {
-    try {
-      const $ = cheerio.load(html);
-      const scripts = $('script[type="application/ld+json"]');
-
-      for (let i = 0; i < scripts.length; i++) {
-        try {
-          const scriptContent = $(scripts[i]).html();
-          if (!scriptContent) continue;
-
-          const json = JSON.parse(scriptContent);
-
-          // Handle single object or array
-          const data = Array.isArray(json) ? json : [json];
-
-          // Find Recipe schema (can be nested in @graph)
-          let recipe = data.find(item =>
-            item['@type'] === 'Recipe' ||
-            (Array.isArray(item['@type']) && item['@type'].includes('Recipe'))
-          );
-
-          // Check @graph for nested recipe
-          if (!recipe) {
-            for (const item of data) {
-              if (item['@graph']) {
-                recipe = item['@graph'].find(graphItem =>
-                  graphItem['@type'] === 'Recipe' ||
-                  (Array.isArray(graphItem['@type']) && graphItem['@type'].includes('Recipe'))
-                );
-                if (recipe) break;
-              }
-            }
-          }
-
-          if (recipe) {
-            console.log('[RecipeAIExtractor] ✨ Found JSON-LD Recipe schema:', recipe.name);
-            return recipe;
-          }
-        } catch (e) {
-          // Skip invalid JSON in this script tag, try next
-          continue;
-        }
-      }
-
-      return null;
-    } catch (error) {
-      console.error('[RecipeAIExtractor] JSON-LD extraction error:', error.message);
-      return null;
-    }
-  }
-
-  /**
-   * Transform JSON-LD Recipe schema to Spoonacular-compatible format
-   * @param {object} jsonld - JSON-LD Recipe object
-   * @param {string} url - Source URL
-   * @returns {object} - Spoonacular-compatible recipe object
-   */
-  transformJSONLDToSpoonacularFormat(jsonld, url) {
-    // Helper to parse ISO 8601 duration (e.g., "PT30M" = 30 minutes)
-    const parseISO8601Duration = (duration) => {
-      if (!duration) return null;
-      const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?/);
-      if (!match) return null;
-      const hours = parseInt(match[1] || 0);
-      const minutes = parseInt(match[2] || 0);
-      return hours * 60 + minutes;
-    };
-
-    // Extract ingredients
-    const ingredients = (jsonld.recipeIngredient || []).map((ing, idx) => ({
-      id: idx + 1,
-      original: ing,
-      name: ing.replace(/^[\d\s\/\-\.]+/, '').trim(), // Remove leading numbers/measurements
-      amount: null,
-      unit: ''
-    }));
-
-    // Extract instructions
-    let steps = [];
-    if (Array.isArray(jsonld.recipeInstructions)) {
-      steps = jsonld.recipeInstructions.map((inst, idx) => {
-        if (typeof inst === 'string') {
-          return { number: idx + 1, step: inst };
-        } else if (inst.text) {
-          return { number: idx + 1, step: inst.text };
-        } else if (inst['@type'] === 'HowToStep' && inst.text) {
-          return { number: idx + 1, step: inst.text };
-        }
-        return { number: idx + 1, step: String(inst) };
-      });
-    } else if (typeof jsonld.recipeInstructions === 'string') {
-      // Split by newlines or periods
-      const instructionText = jsonld.recipeInstructions;
-      steps = instructionText
-        .split(/\n|(?<=\.)\s+/)
-        .filter(s => s.trim().length > 10)
-        .map((step, idx) => ({ number: idx + 1, step: step.trim() }));
-    }
-
-    // Get image URL
-    let imageUrl = null;
-    if (typeof jsonld.image === 'string') {
-      imageUrl = jsonld.image;
-    } else if (jsonld.image?.url) {
-      imageUrl = jsonld.image.url;
-    } else if (Array.isArray(jsonld.image) && jsonld.image[0]) {
-      imageUrl = typeof jsonld.image[0] === 'string' ? jsonld.image[0] : jsonld.image[0].url;
-    }
-
-    // Parse servings
-    let servings = 4; // default
-    if (jsonld.recipeYield) {
-      if (typeof jsonld.recipeYield === 'number') {
-        servings = jsonld.recipeYield;
-      } else if (typeof jsonld.recipeYield === 'string') {
-        const match = jsonld.recipeYield.match(/\d+/);
-        if (match) servings = parseInt(match[0]);
-      } else if (Array.isArray(jsonld.recipeYield)) {
-        const match = String(jsonld.recipeYield[0]).match(/\d+/);
-        if (match) servings = parseInt(match[0]);
-      }
-    }
-
-    return {
-      title: jsonld.name || 'Recipe from Web',
-      summary: jsonld.description || '',
-      image: imageUrl,
-      extendedIngredients: ingredients,
-      analyzedInstructions: [{
-        name: '',
-        steps: steps
-      }],
-      readyInMinutes: parseISO8601Duration(jsonld.totalTime) || parseISO8601Duration(jsonld.prepTime),
-      cookingMinutes: parseISO8601Duration(jsonld.cookTime),
-      servings: servings,
-      vegetarian: false, // Not reliably in JSON-LD
-      vegan: false,
-      glutenFree: false,
-      dairyFree: false,
-      cuisines: jsonld.recipeCuisine ? [jsonld.recipeCuisine] : [],
-      dishTypes: jsonld.recipeCategory ? [jsonld.recipeCategory] : [],
-      diets: [],
-      sourceName: jsonld.author?.name || new URL(url).hostname,
-      sourceUrl: url,
-      _extractedVia: 'JSON-LD'
-    };
   }
 
   /**

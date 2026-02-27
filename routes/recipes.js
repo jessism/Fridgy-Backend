@@ -442,18 +442,46 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
       });
     }
 
-    // Extract recipe using Gemini AI
+    // Extract recipe using Gemini AI with Wayback fallback
     console.log('[WebImport] Extracting recipe with Gemini AI...');
     let extractedRecipe;
     try {
       const RecipeAIExtractor = require('../services/recipeAIExtractor');
       const recipeAI = new RecipeAIExtractor();
       extractedRecipe = await recipeAI.extractFromWebUrl(url);
+
+      // Log if recipe came from archive
+      if (extractedRecipe._fromWaybackMachine) {
+        console.log('[WebImport] ✅ Recipe extracted from Wayback Machine archive:', extractedRecipe._archiveDate);
+      }
     } catch (extractError) {
-      console.error('[WebImport] AI extraction failed:', extractError.message);
-      return res.status(400).json({
+      // Enhanced error logging with categorization
+      console.error('[WebImport] AI extraction failed:', {
+        url,
+        code: extractError.code,
+        message: extractError.message,
+        userMessage: extractError.userMessage,
+        httpStatus: extractError.httpStatus
+      });
+
+      // Determine appropriate HTTP status code based on error type
+      let httpStatus = 400;
+      if (extractError.code === 'HTTP_403' || extractError.code === 'BOT_DETECTED') {
+        httpStatus = 403; // Forbidden - bot protection
+      } else if (extractError.code === 'HTTP_404') {
+        httpStatus = 404; // Not found
+      } else if (extractError.code === 'HTTP_429') {
+        httpStatus = 429; // Rate limit
+      } else if (extractError.code === 'FETCH_TIMEOUT') {
+        httpStatus = 504; // Gateway timeout
+      } else if (extractError.httpStatus >= 500) {
+        httpStatus = 502; // Bad gateway - upstream server error
+      }
+
+      return res.status(httpStatus).json({
         success: false,
-        error: 'Could not extract recipe from this URL. The page may not contain a recognizable recipe.',
+        error: extractError.userMessage || 'Could not extract recipe from this URL. The page may not contain a recognizable recipe.',
+        errorCode: extractError.code || 'EXTRACTION_FAILED',
         requiresManualInput: true
       });
     }

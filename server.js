@@ -32,6 +32,7 @@ const supportRoutes = require('./routes/support');
 const calendarRoutes = require('./routes/calendar');
 const cookbooksRoutes = require('./routes/cookbooks');
 const facebookRecipesRoutes = require('./routes/facebookRecipes');
+const youtubeRecipesRoutes = require('./routes/youtubeRecipes');
 const driveRoutes = require('./routes/drive');
 const messengerRoutes = require('./routes/messenger');
 const instagramDMRoutes = require('./routes/instagramDM');
@@ -119,6 +120,7 @@ app.use('/api/meal-plans', mealPlansRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/cookbooks', cookbooksRoutes);
 app.use('/api/facebook-recipes', facebookRecipesRoutes);
+app.use('/api/youtube-recipes', youtubeRecipesRoutes);
 app.use('/api/drive', driveRoutes);
 app.use('/api/messenger', messengerRoutes);
 app.use('/api/instagram-dm', instagramDMRoutes);
@@ -1387,6 +1389,7 @@ app.get('/api/test', (req, res) => {
 // Import notification scheduler
 const expiryNotificationScheduler = require('./services/expiryNotificationScheduler');
 const trialReminderScheduler = require('./services/trialReminderScheduler');
+const accountDeletionScheduler = require('./services/accountDeletionScheduler');
 
 // Import PostHog for analytics
 const { getPostHogClient } = require('./config/posthog');
@@ -1429,4 +1432,9 @@ app.listen(PORT, () => {
   console.log('\n📧 Starting trial reminder scheduler...');
   trialReminderScheduler.startScheduler();
   console.log('📧 Trial reminder scheduler is running (runs daily at 9:00 AM)');
+
+  // Start the account deletion scheduler
+  console.log('\n🗑️  Starting account deletion scheduler...');
+  accountDeletionScheduler.startScheduler();
+  console.log('🗑️  Account deletion scheduler is running (runs daily at 2:00 AM)');
 }); 

@@ -708,8 +708,10 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImpor
     // Prepare recipe data with permanent image URLs only
     const sanitizedRecipe = sanitizeRecipeData({
       ...result.recipe,
+      source_type: 'instagram',
       source_url: url,
       source_author: apifyData.author?.username,
+      source_author_image: apifyData.author?.profilePic,
       image: finalImageUrl,
       image_urls: permanentImageUrls.length > 0 ? permanentImageUrls : undefined
     });

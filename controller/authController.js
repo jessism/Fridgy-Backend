@@ -841,6 +841,157 @@ const authController = {
         error: 'Failed to update profile'
       });
     }
+  },
+
+  // Request account deletion (30-day grace period)
+  async requestAccountDeletion(req, res) {
+    try {
+      const userId = req.user.id;
+
+      // Check if user already has a pending deletion request
+      const serviceClient = getSupabaseClient();
+      const { data: existingUser, error: fetchError } = await serviceClient
+        .from('users')
+        .select('deletion_status, deletion_scheduled_for, email, first_name')
+        .eq('id', userId)
+        .single();
+
+      if (fetchError) {
+        throw fetchError;
+      }
+
+      if (existingUser.deletion_status === 'pending') {
+        return res.status(400).json({
+          success: false,
+          error: 'Account deletion is already pending',
+          scheduled_for: existingUser.deletion_scheduled_for
+        });
+      }
+
+      // Set deletion date to 30 days from now
+      const deletionDate = new Date();
+      deletionDate.setDate(deletionDate.getDate() + 30);
+
+      // Update user with deletion request
+      const { data: updatedUser, error: updateError } = await serviceClient
+        .from('users')
+        .update({
+          deletion_requested_at: new Date().toISOString(),
+          deletion_scheduled_for: deletionDate.toISOString(),
+          deletion_status: 'pending'
+        })
+        .eq('id', userId)
+        .select()
+        .single();
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      console.log(`[Account Deletion] User ${userId} (${existingUser.email}) requested deletion, scheduled for ${deletionDate.toISOString()}`);
+
+      res.json({
+        success: true,
+        message: 'Account deletion scheduled',
+        deletion_scheduled_for: deletionDate.toISOString(),
+        grace_period_days: 30
+      });
+
+    } catch (error) {
+      console.error('Request account deletion error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to request account deletion'
+      });
+    }
+  },
+
+  // Cancel pending account deletion
+  async cancelAccountDeletion(req, res) {
+    try {
+      const userId = req.user.id;
+
+      // Check if user has a pending deletion
+      const serviceClient = getSupabaseClient();
+      const { data: existingUser, error: fetchError } = await serviceClient
+        .from('users')
+        .select('deletion_status, email')
+        .eq('id', userId)
+        .single();
+
+      if (fetchError) {
+        throw fetchError;
+      }
+
+      if (existingUser.deletion_status !== 'pending') {
+        return res.status(400).json({
+          success: false,
+          error: 'No pending account deletion to cancel'
+        });
+      }
+
+      // Cancel deletion request
+      const { data: updatedUser, error: updateError } = await serviceClient
+        .from('users')
+        .update({
+          deletion_requested_at: null,
+          deletion_scheduled_for: null,
+          deletion_status: 'cancelled'
+        })
+        .eq('id', userId)
+        .select()
+        .single();
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      console.log(`[Account Deletion] User ${userId} (${existingUser.email}) cancelled deletion request`);
+
+      res.json({
+        success: true,
+        message: 'Account deletion cancelled successfully'
+      });
+
+    } catch (error) {
+      console.error('Cancel account deletion error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to cancel account deletion'
+      });
+    }
+  },
+
+  // Get account deletion status
+  async getAccountDeletionStatus(req, res) {
+    try {
+      const userId = req.user.id;
+
+      const serviceClient = getSupabaseClient();
+      const { data: user, error } = await serviceClient
+        .from('users')
+        .select('deletion_status, deletion_requested_at, deletion_scheduled_for')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      res.json({
+        success: true,
+        deletion_status: user.deletion_status || 'none',
+        deletion_requested_at: user.deletion_requested_at,
+        deletion_scheduled_for: user.deletion_scheduled_for
+      });
+
+    } catch (error) {
+      console.error('Get account deletion status error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get account deletion status'
+      });
+    }
   }
 };
 

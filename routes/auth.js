@@ -30,4 +30,9 @@ router.patch('/tour/start', authenticateToken, authController.markTourStart);
 router.patch('/tour/complete', authenticateToken, authController.markTourComplete);
 router.patch('/tour/skip', authenticateToken, authController.markTourSkipped);
 
+// Account deletion endpoints
+router.post('/delete-account', authenticateToken, authController.requestAccountDeletion);
+router.post('/cancel-deletion', authenticateToken, authController.cancelAccountDeletion);
+router.get('/deletion-status', authenticateToken, authController.getAccountDeletionStatus);
+
 module.exports = router; 

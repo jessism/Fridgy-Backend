@@ -282,6 +282,56 @@ router.post('/test-daily-reminder', authenticateToken, async (req, res) => {
   }
 });
 
+// Test a specific daily reminder (URL param version for mobile app)
+router.post('/test/:type', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { type } = req.params;
+
+    // Validate reminder type
+    const validTypes = [
+      'inventory_check',
+      'meal_planning',
+      'dinner_prep',
+      'breakfast_reminder',
+      'lunch_reminder',
+      'shopping_reminder'
+    ];
+
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid reminder type: ${type}`
+      });
+    }
+
+    // Get current daily reminders config
+    const dailyReminders = await pushNotificationService.getUserDailyReminders(userId);
+    const config = dailyReminders[type];
+
+    if (!config) {
+      return res.status(400).json({
+        success: false,
+        error: 'Reminder type not configured'
+      });
+    }
+
+    // Send the test reminder
+    await pushNotificationService.sendDailyReminder(userId, type, config);
+
+    res.json({
+      success: true,
+      message: `Test ${type} reminder sent`
+    });
+  } catch (error) {
+    console.error('Test reminder error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send test notification'
+    });
+  }
+});
+
 // Start 5-minute test notifications
 router.post('/test/start', authenticateToken, async (req, res) => {
   try {

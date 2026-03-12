@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const authService = require('../services/authService');
-const { createDefaultRecipe } = require('../services/defaultRecipe');
+// const { createDefaultRecipe } = require('../services/defaultRecipe'); // DISABLED: Not adding default recipe to new users
 const emailService = require('../services/emailService');
 
 // Helper function to get Supabase client with service role for backend operations
@@ -269,9 +269,10 @@ const authController = {
       }
 
       // Create default welcome recipe for new user (non-blocking)
-      createDefaultRecipe(newUser.id).catch(err => {
-        console.error('[Signup] Failed to create default recipe for new user:', newUser.id, err);
-      });
+      // DISABLED: New users should start with empty recipe list
+      // createDefaultRecipe(newUser.id).catch(err => {
+      //   console.error('[Signup] Failed to create default recipe for new user:', newUser.id, err);
+      // });
 
       // Return success response with tokens
       res.status(201).json({

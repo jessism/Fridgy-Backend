@@ -269,6 +269,17 @@ class ApifyYouTubeService {
         return results;
       }
 
+      // Log raw Apify response for debugging
+      console.log('[ApifyYouTube] Raw Apify response structure:', {
+        hasData: !!results.data,
+        dataKeys: results.data ? Object.keys(results.data) : [],
+        description: results.data?.description?.substring(0, 100) || 'NO DESCRIPTION',
+        title: results.data?.title || 'NO TITLE',
+        thumbnailsCount: results.data?.thumbnails?.length || 0,
+        duration: results.data?.duration || 'NO DURATION'
+      });
+      console.log('[ApifyYouTube] Full raw data (first 1000 chars):', JSON.stringify(results.data, null, 2).substring(0, 1000));
+
       // Parse and enhance results
       const parsedData = await this.parseApifyResponse(results.data, normalizedUrl);
 
@@ -310,10 +321,17 @@ class ApifyYouTubeService {
     try {
       const inputData = {
         startUrls: [{ url: youtubeUrl }],
-        maxResults: 1
+        maxResults: 1,
+        // Explicitly request description and metadata
+        shouldDownloadDescription: true,
+        shouldDownloadSubtitles: true,  // For transcript extraction
+        shouldDownloadChannelInfo: true,
+        shouldDownloadComments: false,  // Don't need comments
+        maxComments: 0,
+        verboseLog: true  // For debugging
       };
 
-      console.log('[ApifyYouTube] Sending input to actor:', inputData);
+      console.log('[ApifyYouTube] Sending input to actor:', JSON.stringify(inputData, null, 2));
 
       const response = await axios.post(
         `https://api.apify.com/v2/acts/${this.actorId}/runs`,

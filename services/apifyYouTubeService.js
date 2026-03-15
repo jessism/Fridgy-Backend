@@ -109,6 +109,29 @@ class ApifyYouTubeService {
   }
 
   /**
+   * Parse HH:MM:SS duration format to seconds (used by Apify YouTube scraper)
+   * @param {string} hhmmss - Duration in HH:MM:SS format (e.g., "00:00:25")
+   * @returns {number} - Duration in seconds
+   */
+  parseDurationHHMMSS(hhmmss) {
+    if (!hhmmss || typeof hhmmss !== 'string') return 0;
+
+    try {
+      const parts = hhmmss.split(':');
+      if (parts.length !== 3) return 0;
+
+      const hours = parseInt(parts[0] || 0);
+      const minutes = parseInt(parts[1] || 0);
+      const seconds = parseInt(parts[2] || 0);
+
+      return hours * 3600 + minutes * 60 + seconds;
+    } catch (error) {
+      console.error('[ApifyYouTube] HH:MM:SS duration parsing error:', error.message);
+      return 0;
+    }
+  }
+
+  /**
    * Detect if video is a YouTube Short
    * @param {string} url - YouTube URL
    * @param {number} duration - Video duration in seconds
@@ -273,9 +296,9 @@ class ApifyYouTubeService {
       console.log('[ApifyYouTube] Raw Apify response structure:', {
         hasData: !!results.data,
         dataKeys: results.data ? Object.keys(results.data) : [],
-        description: results.data?.description?.substring(0, 100) || 'NO DESCRIPTION',
+        text: results.data?.text?.substring(0, 100) || 'NO TEXT',
         title: results.data?.title || 'NO TITLE',
-        thumbnailsCount: results.data?.thumbnails?.length || 0,
+        thumbnailUrl: results.data?.thumbnailUrl ? 'Present' : 'Missing',
         duration: results.data?.duration || 'NO DURATION'
       });
       console.log('[ApifyYouTube] Full raw data (first 1000 chars):', JSON.stringify(results.data, null, 2).substring(0, 1000));
@@ -459,10 +482,11 @@ class ApifyYouTubeService {
 
     try {
       // Extract video duration and check limit
-      const isoDuration = data.duration || data.videoDuration || 'PT0S';
-      const videoDuration = this.parseDuration(isoDuration);
+      // Apify returns duration in HH:MM:SS format (e.g., "00:00:25"), not ISO 8601
+      const durationString = data.duration || '00:00:00';
+      const videoDuration = this.parseDurationHHMMSS(durationString);
 
-      console.log('[ApifyYouTube] Video duration:', videoDuration, 'seconds');
+      console.log('[ApifyYouTube] Video duration:', videoDuration, 'seconds (from', durationString + ')');
 
       // Check duration limit (30 minutes)
       if (videoDuration > this.maxDurationSeconds) {
@@ -479,7 +503,8 @@ class ApifyYouTubeService {
       console.log('[ApifyYouTube] Is YouTube Short:', isShort);
 
       // Extract description
-      let description = data.description || '';
+      // Apify returns 'text' field, not 'description'
+      let description = data.text || '';
       console.log('[ApifyYouTube] Description length:', description.length, 'chars');
 
       // Determine if we need transcript extraction
@@ -516,9 +541,9 @@ class ApifyYouTubeService {
         }
       }
 
-      // Extract thumbnails
-      const thumbnails = data.thumbnails || [];
-      const bestThumbnailUrl = this.selectBestThumbnail(thumbnails);
+      // Extract thumbnail
+      // Apify returns 'thumbnailUrl' as a single string, not 'thumbnails' array
+      const bestThumbnailUrl = data.thumbnailUrl || null;
 
       const images = bestThumbnailUrl ? [{
         url: bestThumbnailUrl,

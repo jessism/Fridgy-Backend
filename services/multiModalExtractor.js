@@ -960,10 +960,10 @@ Return this JSON:
         content: [
           { type: 'text', text: prompt },
           {
-            type: 'image_url',
-            image_url: {
+            type: 'video_url',  // Changed from image_url - videos need proper type
+            video_url: {
               url: videoBase64,
-              detail: 'high'
+              format: 'mp4'
             }
           }
         ]
@@ -991,9 +991,18 @@ Return this JSON:
       const data = await response.json();
 
       if (!response.ok) {
-        console.error('[MultiModal] OpenRouter paid API error:', {
+        console.error('[MultiModal] OpenRouter paid API error - DETAILED DIAGNOSTIC:', {
           status: response.status,
-          error: data.error
+          statusText: response.statusText,
+          videoSize: fileSizeMB + ' MB',
+          contentType: 'video_url',
+          modelUsed: 'google/gemini-2.0-flash-lite-001',
+          error: data.error,
+          errorMessage: data.error?.message,
+          errorCode: data.error?.code,
+          errorMetadata: data.error?.metadata,
+          providerError: data.error?.metadata?.raw,
+          fullResponseBody: JSON.stringify(data, null, 2).substring(0, 500)
         });
         throw new Error(data.error?.message || `OpenRouter API error: ${response.status}`);
       }

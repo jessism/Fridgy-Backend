@@ -1,7 +1,7 @@
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch'); // For downloading images
-const { YoutubeTranscript } = require('youtube-transcript'); // FREE transcript extraction
+// youtube-transcript loaded dynamically in extractTranscript() to support ESM in CommonJS
 const cheerio = require('cheerio'); // For website scraping
 
 class ApifyYouTubeService {
@@ -192,7 +192,9 @@ class ApifyYouTubeService {
     try {
       console.log(`[ApifyYouTube] Extracting transcript (FREE npm) for: ${videoId}`);
 
-      // Use FREE npm package instead of broken Apify actor
+      // DYNAMIC IMPORT: Load ESM module in CommonJS context
+      const { YoutubeTranscript } = await import('youtube-transcript');
+
       const transcriptArray = await YoutubeTranscript.fetchTranscript(videoId);
 
       if (!transcriptArray || transcriptArray.length === 0) {

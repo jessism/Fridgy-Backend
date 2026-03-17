@@ -1,6 +1,8 @@
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch'); // For downloading images
+const { YoutubeTranscript } = require('youtube-transcript'); // FREE transcript extraction
+const cheerio = require('cheerio'); // For website scraping
 
 class ApifyYouTubeService {
   constructor() {
@@ -177,7 +179,7 @@ class ApifyYouTubeService {
   }
 
   /**
-   * Extract video transcript using Apify actor
+   * Extract video transcript using FREE npm package (youtube-transcript)
    * @param {string} videoId - YouTube video ID
    * @returns {Promise<string|null>} - Transcript text or null
    */
@@ -188,47 +190,151 @@ class ApifyYouTubeService {
     }
 
     try {
-      console.log(`[ApifyYouTube] Starting transcript extraction for video: ${videoId}`);
+      console.log(`[ApifyYouTube] Extracting transcript (FREE npm) for: ${videoId}`);
 
-      // Start transcript actor
-      const response = await axios.post(
-        `https://api.apify.com/v2/acts/${this.transcriptActorId}/runs`,
-        {
-          videoId: videoId
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${this.apiToken}`,
-            'Content-Type': 'application/json'
-          },
-          params: {
-            timeout: this.timeoutSeconds,
-            memory: 256
+      // Use FREE npm package instead of broken Apify actor
+      const transcriptArray = await YoutubeTranscript.fetchTranscript(videoId);
+
+      if (!transcriptArray || transcriptArray.length === 0) {
+        console.log('[ApifyYouTube] No transcript available for this video');
+        return null;
+      }
+
+      // Combine all transcript segments into full text
+      const fullText = transcriptArray.map(segment => segment.text).join(' ');
+      console.log(`[ApifyYouTube] ✅ Transcript extracted (FREE): ${fullText.length} chars`);
+
+      return fullText;
+
+    } catch (error) {
+      console.error('[ApifyYouTube] Transcript extraction failed:', error.message);
+      // Graceful degradation - don't fail entire extraction if transcript unavailable
+      return null;
+    }
+  }
+
+  /**
+   * Scrape recipe from website URL found in video description
+   * @param {string} url - Website URL to scrape
+   * @returns {Promise<object|null>} - Recipe data or null
+   */
+  async scrapeRecipeFromWebsite(url) {
+    try {
+      console.log(`[ApifyYouTube] Attempting website scrape: ${url}`);
+
+      const response = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Trackabite/1.0)' },
+        timeout: 10000
+      });
+
+      if (!response.ok) {
+        console.log(`[ApifyYouTube] Website returned status ${response.status}`);
+        return null;
+      }
+
+      const html = await response.text();
+      const $ = cheerio.load(html);
+
+      // Try structured data first (JSON-LD recipe schema)
+      const schemaScripts = $('script[type="application/ld+json"]');
+      for (let i = 0; i < schemaScripts.length; i++) {
+        try {
+          const scriptContent = $(schemaScripts[i]).html();
+          const data = JSON.parse(scriptContent);
+
+          // Handle both single recipe and array of items
+          const recipe = Array.isArray(data) ? data.find(item => item['@type'] === 'Recipe') : data;
+
+          if (recipe && (recipe['@type'] === 'Recipe' || recipe.recipeIngredient)) {
+            console.log('[ApifyYouTube] ✅ Found recipe schema on website');
+            return {
+              success: true,
+              fromWebsite: true,
+              recipe: this.parseRecipeSchema(recipe),
+              source: url
+            };
           }
-        }
-      );
-
-      const runId = response.data.data.id;
-      console.log(`[ApifyYouTube] Transcript actor started, run ID: ${runId}`);
-
-      // Poll for transcript results
-      const transcriptData = await this.pollForResults(runId, 20); // Shorter polling for transcripts
-
-      if (transcriptData.success && transcriptData.data) {
-        const transcript = transcriptData.data.transcript || transcriptData.data.text || null;
-
-        if (transcript) {
-          console.log(`[ApifyYouTube] Transcript extracted successfully (${transcript.length} chars)`);
-          return transcript;
+        } catch (e) {
+          // Skip invalid JSON
         }
       }
 
-      console.warn('[ApifyYouTube] No transcript found for video');
+      // Fallback: Extract article text for AI processing
+      const articleText = $('article, .recipe, .content, main').first().text().trim();
+      if (articleText.length > 500) {
+        console.log('[ApifyYouTube] Found website text for AI processing');
+        return {
+          success: true,
+          fromWebsite: true,
+          websiteText: articleText.substring(0, 5000), // Limit to 5k chars
+          source: url
+        };
+      }
+
+      console.log('[ApifyYouTube] No recipe data found on website');
       return null;
 
     } catch (error) {
-      console.error('[ApifyYouTube] Transcript extraction error:', error.message);
-      // Don't fail the whole extraction if transcript fails
+      console.error('[ApifyYouTube] Website scraping failed:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Parse JSON-LD recipe schema to our recipe format
+   * @param {object} schema - Recipe schema object
+   * @returns {object} - Formatted recipe object
+   */
+  parseRecipeSchema(schema) {
+    // Parse instructions - handle both string and object formats
+    let steps = [];
+    if (schema.recipeInstructions) {
+      if (Array.isArray(schema.recipeInstructions)) {
+        steps = schema.recipeInstructions.map((inst, i) => ({
+          number: i + 1,
+          step: typeof inst === 'string' ? inst : (inst.text || inst.name || '')
+        }));
+      } else if (typeof schema.recipeInstructions === 'string') {
+        steps = [{ number: 1, step: schema.recipeInstructions }];
+      }
+    }
+
+    return {
+      title: schema.name || 'Recipe from Website',
+      summary: schema.description || '',
+      extendedIngredients: (schema.recipeIngredient || []).map((ing, i) => ({
+        id: i + 1,
+        original: typeof ing === 'string' ? ing : ing.name || '',
+        name: typeof ing === 'string' ? ing : ing.name || ''
+      })),
+      analyzedInstructions: [{
+        steps: steps
+      }],
+      servings: schema.recipeYield ? parseInt(schema.recipeYield) : null,
+      readyInMinutes: schema.totalTime ? this.parseISO8601Duration(schema.totalTime) : null,
+      sourceUrl: schema.url || null
+    };
+  }
+
+  /**
+   * Parse ISO 8601 duration string to minutes
+   * @param {string} duration - ISO 8601 duration (e.g., "PT30M", "PT1H30M")
+   * @returns {number} - Duration in minutes
+   */
+  parseISO8601Duration(duration) {
+    if (!duration || typeof duration !== 'string') return null;
+
+    try {
+      const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+      if (!match) return null;
+
+      const hours = parseInt(match[1] || 0);
+      const minutes = parseInt(match[2] || 0);
+      const seconds = parseInt(match[3] || 0);
+
+      return hours * 60 + minutes + Math.round(seconds / 60);
+    } catch (error) {
+      console.error('[ApifyYouTube] Duration parsing error:', error.message);
       return null;
     }
   }
@@ -507,6 +613,32 @@ class ApifyYouTubeService {
       let description = data.text || '';
       console.log('[ApifyYouTube] Description length:', description.length, 'chars');
 
+      // PRIORITY 1: Check for website URL in description
+      const urlMatch = description.match(/(https?:\/\/[^\s]+\.[^\s]+)/);
+      if (urlMatch) {
+        const websiteUrl = urlMatch[0];
+        console.log(`[ApifyYouTube] Found URL in description: ${websiteUrl}`);
+
+        const websiteData = await this.scrapeRecipeFromWebsite(websiteUrl);
+        if (websiteData?.success) {
+          // Use website data - highest quality!
+          if (websiteData.recipe) {
+            console.log('[ApifyYouTube] ✅ Using recipe from website (best quality)');
+            // Return complete recipe from website, skip all other extraction
+            return {
+              ...websiteData,
+              platform: 'youtube',
+              sourceUrl: originalUrl,
+              websiteSource: websiteUrl
+            };
+          } else if (websiteData.websiteText) {
+            // Add website text to description for AI processing
+            console.log('[ApifyYouTube] Adding website text to description for AI');
+            description = `${description}\n\n===== RECIPE FROM ${websiteUrl} =====\n${websiteData.websiteText}`;
+          }
+        }
+      }
+
       // Determine if we need transcript extraction
       // Shorts: ALWAYS extract transcript
       // Regular videos: Extract when description is insufficient
@@ -578,6 +710,25 @@ class ApifyYouTubeService {
         views: viewCount,
         isShort
       });
+
+      // QUALITY GATE: Check if we have enough text content for extraction
+      const totalTextLength = (description?.length || 0);
+      const hasWebsiteUrl = description.includes('===== RECIPE FROM');
+
+      if (totalTextLength < 100 && !hasWebsiteUrl) {
+        console.warn('[ApifyYouTube] Insufficient text content for recipe extraction');
+        return {
+          success: false,
+          error: 'This video doesn\'t have enough text content for recipe extraction',
+          suggestion: 'Please try a video that includes recipe details in:\n• Video description (ingredients and steps)\n• Auto-generated captions\n• Or a link to a recipe website',
+          dataAvailable: {
+            description: description?.length || 0,
+            transcript: transcript?.length || 0,
+            images: images?.length || 0,
+            hasWebsiteUrl: hasWebsiteUrl
+          }
+        };
+      }
 
       return {
         success: true,

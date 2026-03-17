@@ -111,6 +111,23 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImpor
       processingTime: result.processingTime
     });
 
+    // QUALITY GATE: Validate recipe quality to prevent hallucinations
+    console.log('[YouTubeMultiModal] Validating recipe quality...');
+    const qualityCheck = multiModalExtractor.validateRecipeQuality(result.recipe, apifyData);
+
+    if (!qualityCheck.passed) {
+      console.log('[YouTubeMultiModal] Quality check FAILED:', qualityCheck.issues);
+      return res.status(400).json({
+        success: false,
+        error: 'Could not extract a complete recipe from this video',
+        details: qualityCheck.issues.join(', '),
+        suggestion: 'Please try a video that includes:\n• Full ingredient list in description or captions\n• Step-by-step instructions\n• Or a link to the recipe website',
+        qualityIssues: qualityCheck.issues
+      });
+    }
+
+    console.log('[YouTubeMultiModal] Quality check PASSED - recipe is valid');
+
     // Download and store thumbnails permanently before returning
     console.log('[YouTubeMultiModal] Downloading and storing thumbnails permanently...');
 

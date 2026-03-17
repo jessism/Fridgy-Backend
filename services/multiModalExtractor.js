@@ -879,29 +879,31 @@ Return this JSON:
                             error.message?.includes('Too Many Requests');
 
       if (isRateLimited && videoPath) {
-        console.log('[MultiModal] Free Gemini rate limited, trying paid model via OpenRouter...');
+        console.log('[MultiModal] Gemini quota exhausted, falling back to transcript + description');
 
+        // Clean up temp video file (no longer needed)
         try {
-          const paidResult = await this.analyzeVideoWithOpenRouterPaid(videoPath, apifyData);
+          await fs.unlink(videoPath);
+          console.log('[MultiModal] Temp video file cleaned up');
+        } catch (e) {}
 
-          // Clean up temp file after paid attempt
-          try {
-            await fs.unlink(videoPath);
-            console.log('[MultiModal] Temp video file cleaned up after paid fallback');
-          } catch (cleanupError) {
-            console.warn('[MultiModal] Failed to clean up temp file:', cleanupError.message);
-          }
-
-          if (paidResult.success) {
-            console.log('[MultiModal] ✅ Paid OpenRouter video analysis successful');
-            return paidResult;
-          }
-        } catch (paidError) {
-          console.error('[MultiModal] Paid OpenRouter also failed:', paidError.message);
-
-          // Clean up temp file
-          try { await fs.unlink(videoPath); } catch (e) {}
+        // Use transcript + description as fallback (FREE alternatives installed in Phase 1)
+        if (apifyData.transcript || apifyData.caption?.length > 100) {
+          console.log('[MultiModal] Using FREE fallback: transcript + description + images');
+          return await this.synthesizeWithOpenRouter({
+            caption: apifyData.caption || '',
+            images: apifyData.images || [],
+            metadata: { ...apifyData, transcript: apifyData.transcript }
+          });
         }
+
+        // No sufficient data available
+        console.warn('[MultiModal] No sufficient data for extraction (no transcript, no description)');
+        return {
+          success: false,
+          error: 'Video analysis temporarily unavailable. Please try a video with recipe in description or captions.',
+          needsTranscript: true
+        };
       }
 
       throw error;
@@ -1530,6 +1532,57 @@ VERIFY BEFORE RETURNING:
     }
 
     return Math.min(confidence, 0.9); // Cap at 0.9 for fallback
+  }
+
+  /**
+   * Validate recipe quality to prevent AI hallucinations
+   * @param {Object} recipe - Extracted recipe object
+   * @param {Object} apifyData - Source data used for extraction
+   * @returns {Object} - Validation result with passed flag, issues array, and confidence
+   */
+  validateRecipeQuality(recipe, apifyData) {
+    const issues = [];
+
+    // Gate 1: Ingredients must exist
+    if (!recipe.extendedIngredients || recipe.extendedIngredients.length === 0) {
+      issues.push('No ingredients found');
+    }
+
+    // Gate 2: Instructions must exist
+    const hasInstructions = recipe.analyzedInstructions?.[0]?.steps?.length > 0;
+    if (!hasInstructions) {
+      issues.push('No instructions found');
+    }
+
+    // Gate 3: Check for hallucination markers (generic steps when AI has no real data)
+    const instructionText = recipe.analyzedInstructions?.[0]?.steps?.map(s => s.step).join(' ') || '';
+    const hallucinations = [
+      /preheat oven to 400/i,  // Generic instruction when no data
+      /season with salt and pepper/i,  // Filler step
+      /serve immediately/i  // Generic ending
+    ];
+
+    const hasOnlyGenericSteps = hallucinations.every(pattern => pattern.test(instructionText)) &&
+                                instructionText.length < 200;
+
+    if (hasOnlyGenericSteps) {
+      issues.push('Instructions appear generic/hallucinated');
+    }
+
+    // Gate 4: Source data validation - must have enough input data
+    const hasSourceData = apifyData.caption?.length > 100 ||
+                         apifyData.transcript?.length > 200 ||
+                         apifyData.websiteText?.length > 500;
+
+    if (!hasSourceData) {
+      issues.push('Insufficient source data for extraction');
+    }
+
+    return {
+      passed: issues.length === 0,
+      issues: issues,
+      confidence: issues.length === 0 ? 0.85 : 0.3
+    };
   }
 }
 

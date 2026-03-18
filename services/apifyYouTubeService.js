@@ -1,7 +1,7 @@
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch'); // For downloading images
-// youtube-transcript loaded dynamically in extractTranscript() to support ESM in CommonJS
+// youtubei.js loaded in extractTranscript() for FREE transcript extraction
 const cheerio = require('cheerio'); // For website scraping
 
 class ApifyYouTubeService {
@@ -192,18 +192,23 @@ class ApifyYouTubeService {
     try {
       console.log(`[ApifyYouTube] Extracting transcript (FREE npm) for: ${videoId}`);
 
-      // DYNAMIC IMPORT: Load ESM module in CommonJS context
-      const { YoutubeTranscript } = await import('youtube-transcript');
+      // Use youtubei.js for reliable transcript extraction
+      const { Innertube } = require('youtubei.js');
+      const youtube = await Innertube.create();
 
-      const transcriptArray = await YoutubeTranscript.fetchTranscript(videoId);
+      const info = await youtube.getInfo(videoId);
+      const transcriptData = await info.getTranscript();
 
-      if (!transcriptArray || transcriptArray.length === 0) {
+      if (!transcriptData || !transcriptData.transcript) {
         console.log('[ApifyYouTube] No transcript available for this video');
         return null;
       }
 
-      // Combine all transcript segments into full text
-      const fullText = transcriptArray.map(segment => segment.text).join(' ');
+      // Extract text from transcript segments
+      const fullText = transcriptData.transcript.content.body.initial_segments
+        .map(segment => segment.snippet.text)
+        .join(' ');
+
       console.log(`[ApifyYouTube] ✅ Transcript extracted (FREE): ${fullText.length} chars`);
 
       return fullText;

@@ -23,9 +23,11 @@ router.post('/', authMiddleware.authenticateToken, checkUploadedRecipeLimit, asy
     const newRecipe = {
       user_id: userId,
       source_type: recipeData.source_type || 'manual',
+      source_author: recipeData.source_author || null,
       title: recipeData.title || 'Untitled Recipe',
       summary: recipeData.summary || recipeData.description || '',
       image: recipeData.image || null,
+      nutrition: recipeData.nutrition || null,
 
       // Match RecipeDetailModal structure - camelCase columns
       extendedIngredients: recipeData.extendedIngredients || [],

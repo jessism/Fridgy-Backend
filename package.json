@@ -35,7 +35,7 @@
     "stripe": "^19.1.0",
     "uuid": "^9.0.1",
     "web-push": "^3.6.7",
-    "youtubei.js": "^10.5.0"
+    "youtubei.js": "^17.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

@@ -192,19 +192,42 @@ class ApifyYouTubeService {
     try {
       console.log(`[ApifyYouTube] Extracting transcript (FREE npm) for: ${videoId}`);
 
-      // Use youtubei.js for reliable transcript extraction
       const { Innertube } = require('youtubei.js');
-      const youtube = await Innertube.create();
 
-      const info = await youtube.getInfo(videoId);
-      const transcriptData = await info.getTranscript();
+      // Step 1: Initialize client
+      let youtube;
+      try {
+        youtube = await Innertube.create();
+      } catch (initError) {
+        console.error('[ApifyYouTube] Failed to initialize YouTube client:', initError.message);
+        return null;
+      }
+
+      // Step 2: Get video info
+      let info;
+      try {
+        info = await youtube.getInfo(videoId);
+      } catch (infoError) {
+        console.error('[ApifyYouTube] Failed to get video info (YouTube API may have changed):', infoError.message);
+        console.warn('[ApifyYouTube] Falling back to audio-visual extraction');
+        return null;
+      }
+
+      // Step 3: Get transcript
+      let transcriptData;
+      try {
+        transcriptData = await info.getTranscript();
+      } catch (transcriptError) {
+        console.error('[ApifyYouTube] Failed to get transcript:', transcriptError.message);
+        return null;
+      }
 
       if (!transcriptData || !transcriptData.transcript) {
         console.log('[ApifyYouTube] No transcript available for this video');
         return null;
       }
 
-      // Extract text from transcript segments
+      // Step 4: Extract text from segments
       const fullText = transcriptData.transcript.content.body.initial_segments
         .map(segment => segment.snippet.text)
         .join(' ');
@@ -214,7 +237,8 @@ class ApifyYouTubeService {
       return fullText;
 
     } catch (error) {
-      console.error('[ApifyYouTube] Transcript extraction failed:', error.message);
+      console.error('[ApifyYouTube] Unexpected error in transcript extraction:', error.message);
+      console.error('[ApifyYouTube] Stack trace:', error.stack);
       // Graceful degradation - don't fail entire extraction if transcript unavailable
       return null;
     }
@@ -676,6 +700,8 @@ class ApifyYouTubeService {
               ? `${description}\n\n===== VIDEO TRANSCRIPT =====\n${transcript}`
               : transcript;
             console.log('[ApifyYouTube] Combined description + transcript:', description.length, 'chars');
+          } else {
+            console.log('[ApifyYouTube] No transcript available, will use audio-visual fallback if needed');
           }
         }
       }

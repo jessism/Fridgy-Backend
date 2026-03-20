@@ -84,6 +84,17 @@ class MultiModalExtractor {
       // PREDICTIVE ROUTING: Analyze data sources upfront to route directly to optimal path
       const dataProfile = this.analyzeDataSources(apifyData);
 
+      // Log extraction path decision for monitoring
+      console.log('[MultiModal] Extraction path decision:', {
+        hasDescription: !!apifyData.description,
+        hasCaption: !!apifyData.caption,
+        hasTranscript: !!apifyData.transcript,
+        captionLength: apifyData.caption?.length || 0,
+        transcriptLength: apifyData.transcript?.length || 0,
+        willUseAudioVisual: dataProfile.requiresAudioVisual,
+        videoDuration: apifyData.videoDuration
+      });
+
       // Route directly to audio-visual extraction if needed (saves 8 seconds!)
       if (dataProfile.requiresAudioVisual && apifyData.videoUrl) {
         console.log('[MultiModal] No text available - routing directly to audio-visual extraction');

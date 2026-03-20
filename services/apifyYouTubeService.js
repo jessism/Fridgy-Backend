@@ -721,8 +721,14 @@ class ApifyYouTubeService {
       // QUALITY GATE: Check if we have enough text content for extraction
       const totalTextLength = (description?.length || 0);
       const hasWebsiteUrl = description.includes('===== RECIPE FROM');
+      const suitableForAudioVisual = (
+        videoDuration > 10 &&  // Not silent meme
+        videoDuration < 180 && // Reasonable for audio extraction
+        originalUrl            // Has video URL
+      );
 
-      if (totalTextLength < 100 && !hasWebsiteUrl) {
+      if (totalTextLength < 100 && !hasWebsiteUrl && !suitableForAudioVisual) {
+        // ONLY reject if not suitable for audio-visual extraction
         console.warn('[ApifyYouTube] Insufficient text content for recipe extraction');
         return {
           success: false,
@@ -735,6 +741,11 @@ class ApifyYouTubeService {
             hasWebsiteUrl: hasWebsiteUrl
           }
         };
+      }
+
+      // If no text but suitable for audio-visual, log and pass through
+      if (totalTextLength < 100 && suitableForAudioVisual) {
+        console.log('[ApifyYouTube] No text content, but video is suitable for audio-visual extraction');
       }
 
       return {
@@ -899,7 +910,7 @@ class ApifyYouTubeService {
     try {
       const { data } = await this.supabase
         .from('youtube_cache')
-        .select('data')
+        .select('data, audio_transcript, transcript_cached_at')
         .eq('url', url)
         .eq('extracted_with_apify', true)
         .gt('expires_at', new Date().toISOString())
@@ -907,7 +918,17 @@ class ApifyYouTubeService {
 
       if (data) {
         console.log('[ApifyYouTube] Cache hit for URL:', url);
-        return JSON.parse(data.data);
+        const cachedData = JSON.parse(data.data);
+
+        // Include cached audio transcript if available
+        if (data.audio_transcript) {
+          console.log('[ApifyYouTube] Cached audio transcript found');
+          cachedData.audioTranscript = data.audio_transcript;
+          cachedData.transcriptFromCache = true;
+          cachedData.transcriptCachedAt = data.transcript_cached_at;
+        }
+
+        return cachedData;
       }
     } catch (error) {
       // Cache miss is expected, not an error
@@ -940,6 +961,27 @@ class ApifyYouTubeService {
       console.log('[ApifyYouTube] Result cached for URL:', url);
     } catch (error) {
       console.error('[ApifyYouTube] Cache error:', error);
+    }
+  }
+
+  /**
+   * Update cache with audio transcript (called after audio extraction)
+   * @param {string} url - Normalized YouTube URL
+   * @param {string} audioTranscript - Transcribed audio text
+   */
+  async cacheAudioTranscript(url, audioTranscript) {
+    try {
+      await this.supabase
+        .from('youtube_cache')
+        .update({
+          audio_transcript: audioTranscript,
+          transcript_cached_at: new Date().toISOString()
+        })
+        .eq('url', url);
+
+      console.log('[ApifyYouTube] Audio transcript cached for URL:', url);
+    } catch (error) {
+      console.error('[ApifyYouTube] Transcript cache error:', error);
     }
   }
 

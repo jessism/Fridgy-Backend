@@ -1,5 +1,6 @@
 const fetch = require('node-fetch');
 const VideoProcessor = require('./videoProcessor');
+const AudioProcessor = require('./audioProcessor');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs').promises;
 const path = require('path');
@@ -9,6 +10,7 @@ class MultiModalExtractor {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
     this.videoProcessor = new VideoProcessor();
+    this.audioProcessor = new AudioProcessor();
 
     // Google Gemini setup for direct video analysis
     this.geminiKey = process.env.GOOGLE_GEMINI_API_KEY;
@@ -77,6 +79,18 @@ class MultiModalExtractor {
       if (apifyData.videoUrlExpiry && Date.now() > apifyData.videoUrlExpiry) {
         console.warn('[MultiModal] Video URL expired, proceeding without video analysis');
         apifyData.videoUrl = null;
+      }
+
+      // PREDICTIVE ROUTING: Analyze data sources upfront to route directly to optimal path
+      const dataProfile = this.analyzeDataSources(apifyData);
+
+      // Route directly to audio-visual extraction if needed (saves 8 seconds!)
+      if (dataProfile.requiresAudioVisual && apifyData.videoUrl) {
+        console.log('[MultiModal] No text available - routing directly to audio-visual extraction');
+        const videoPath = await this.downloadVideoToTemp(apifyData.videoUrl);
+        const result = await this.extractRecipeFromAudioVisual(videoPath, apifyData);
+        result.processingTime = Date.now() - startTime;
+        return result;
       }
 
       // PRIMARY PATH: Use Google Gemini for direct video analysis if available
@@ -879,17 +893,12 @@ Return this JSON:
                             error.message?.includes('Too Many Requests');
 
       if (isRateLimited && videoPath) {
-        console.log('[MultiModal] Gemini quota exhausted, falling back to transcript + description');
+        console.log('[MultiModal] Gemini quota exhausted, checking fallback options...');
 
-        // Clean up temp video file (no longer needed)
-        try {
-          await fs.unlink(videoPath);
-          console.log('[MultiModal] Temp video file cleaned up');
-        } catch (e) {}
-
-        // Use transcript + description as fallback (FREE alternatives installed in Phase 1)
+        // OPTION 1: Text-based fallback (preferred - free)
         if (apifyData.transcript || apifyData.caption?.length > 100) {
-          console.log('[MultiModal] Using FREE fallback: transcript + description + images');
+          console.log('[MultiModal] Using FREE text-based fallback');
+          await fs.unlink(videoPath).catch(e => {});
           return await this.synthesizeWithOpenRouter({
             caption: apifyData.caption || '',
             images: apifyData.images || [],
@@ -897,12 +906,22 @@ Return this JSON:
           });
         }
 
-        // No sufficient data available
-        console.warn('[MultiModal] No sufficient data for extraction (no transcript, no description)');
+        // OPTION 2: Audio-visual fallback (NEW - when NO text available)
+        console.log('[MultiModal] ⚠️ No text available - trying audio-visual extraction');
+        try {
+          const result = await this.extractRecipeFromAudioVisual(videoPath, apifyData);
+          await fs.unlink(videoPath).catch(e => {});
+          if (result.success) return result;
+        } catch (error) {
+          console.error('[MultiModal] Audio-visual extraction failed:', error.message);
+        }
+
+        // OPTION 3: All fallbacks exhausted
+        await fs.unlink(videoPath).catch(e => {});
         return {
           success: false,
-          error: 'Video analysis temporarily unavailable. Please try a video with recipe in description or captions.',
-          needsTranscript: true
+          error: 'Recipe extraction temporarily unavailable. This video has no description or captions, and our video analysis service is at capacity. Please try again in a few minutes.',
+          needsRetry: true
         };
       }
 
@@ -1058,10 +1077,52 @@ Return this JSON:
    */
   async downloadVideoToTemp(videoUrl) {
     const tempDir = os.tmpdir();
-    const videoPath = path.join(tempDir, `instagram_video_${Date.now()}.mp4`);
+    const isYouTube = videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be');
+    const videoPath = path.join(tempDir, `${isYouTube ? 'youtube' : 'instagram'}_video_${Date.now()}.mp4`);
 
     console.log('[MultiModal] Downloading video to temp:', videoPath);
 
+    // Handle YouTube videos with yt-dlp
+    if (isYouTube) {
+      console.log('[MultiModal] Detected YouTube video, using yt-dlp for download');
+
+      try {
+        const { exec } = require('child_process');
+        const util = require('util');
+        const execPromise = util.promisify(exec);
+
+        console.log('[MultiModal] Downloading YouTube video with yt-dlp...');
+
+        // Use yt-dlp to download the video
+        // -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" - Get best mp4 quality
+        // --merge-output-format mp4 - Merge to mp4 format
+        // -o videoPath - Output to temp file
+        const command = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --merge-output-format mp4 -o "${videoPath}" "${videoUrl}"`;
+
+        console.log('[MultiModal] Running:', command.substring(0, 100) + '...');
+
+        const { stdout, stderr } = await execPromise(command, {
+          timeout: 60000, // 60 second timeout
+          maxBuffer: 50 * 1024 * 1024 // 50MB buffer
+        });
+
+        if (stdout) console.log('[MultiModal] yt-dlp stdout:', stdout.substring(0, 200));
+        if (stderr) console.log('[MultiModal] yt-dlp stderr:', stderr.substring(0, 200));
+
+        // Verify file was downloaded
+        const stats = await fs.stat(videoPath);
+        console.log('[MultiModal] YouTube video downloaded successfully:', stats.size, 'bytes');
+
+        return videoPath;
+
+      } catch (error) {
+        console.error('[MultiModal] YouTube download failed:', error.message);
+        if (error.stderr) console.error('[MultiModal] yt-dlp error:', error.stderr);
+        throw new Error(`Failed to download YouTube video: ${error.message}`);
+      }
+    }
+
+    // Handle direct video URLs (Instagram, Facebook, etc.)
     const response = await fetch(videoUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
@@ -1078,6 +1139,28 @@ Return this JSON:
     await fs.writeFile(videoPath, buffer);
 
     return videoPath;
+  }
+
+  /**
+   * Extract YouTube video ID from URL
+   * @param {string} url - YouTube URL
+   * @returns {string|null} - Video ID or null
+   */
+  extractYouTubeId(url) {
+    const patterns = [
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/v\/([a-zA-Z0-9_-]{11})/
+    ];
+
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match && match[1]) {
+        return match[1];
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -1583,6 +1666,356 @@ VERIFY BEFORE RETURNING:
       issues: issues,
       confidence: issues.length === 0 ? 0.85 : 0.3
     };
+  }
+
+  /**
+   * Analyze data sources to determine optimal extraction path (predictive routing)
+   * @param {object} apifyData - Data from Apify extraction
+   * @returns {object} Data profile for routing decisions
+   */
+  analyzeDataSources(apifyData) {
+    // Use 'caption' field (which is description + transcript combined) from apifyYouTubeService
+    const hasRichText = (apifyData.caption?.length > 200 || apifyData.transcript?.length > 200);
+    const hasMinimalText = (apifyData.caption?.length > 50 || apifyData.transcript?.length > 50);
+    const requiresAudioVisual = (
+      !apifyData.caption &&
+      !apifyData.transcript &&
+      apifyData.videoDuration > 10 && // Not silent meme
+      apifyData.videoDuration < 180   // Reasonable for audio extraction
+    );
+
+    return { hasRichText, hasMinimalText, requiresAudioVisual };
+  }
+
+  /**
+   * Extract recipe from audio transcript + visual keyframes
+   * @param {string} videoPath - Path to downloaded video file
+   * @param {object} apifyData - Data from Apify extraction
+   * @returns {Promise<object>} Extraction result with recipe
+   */
+  async extractRecipeFromAudioVisual(videoPath, apifyData) {
+    console.log('[MultiModal] 🎬 Starting audio-visual extraction...');
+
+    try {
+      // Check for cached audio transcript first (optimization!)
+      let transcript;
+      let framesData;
+
+      if (apifyData.audioTranscript && apifyData.transcriptFromCache) {
+        // Use cached transcript (saves 4-5 seconds!)
+        console.log('[MultiModal] Using cached audio transcript');
+        transcript = {
+          text: apifyData.audioTranscript,
+          language: 'en',
+          model: 'cached',
+          cost: 0,
+          cached: true
+        };
+
+        // Only extract frames (not parallel since we skip audio)
+        framesData = await this.videoProcessor.extractFramesFromLocalVideo(
+          videoPath,
+          apifyData.videoDuration || 30,
+          { maxFrames: 8, smartSampling: true }
+        );
+      } else {
+        // Step 1 & 2: Extract audio + frames IN PARALLEL (saves 2-3 seconds!)
+        [transcript, framesData] = await Promise.all([
+          this.audioProcessor.extractAndTranscribe(videoPath),
+          this.videoProcessor.extractFramesFromLocalVideo(
+            videoPath,
+            apifyData.videoDuration || 30,
+            { maxFrames: 8, smartSampling: true }
+          )
+        ]);
+      }
+
+      // Step 3: Validate transcript quality (quality gate)
+      this.validateTranscriptQuality(transcript);
+
+      // Step 4: Build hybrid prompt
+      const prompt = this.buildAudioVisualPrompt(transcript.text, apifyData, framesData.frames.length);
+
+      // Step 5: Prepare content for OpenRouter
+      const imageContent = framesData.frames.map(frame => ({
+        type: 'image_url',
+        image_url: { url: frame.base64, detail: 'auto' }
+      }));
+
+      // Step 6: Call OpenRouter with transcript + frames
+      const response = await this.callAI(prompt, imageContent);
+      const result = this.parseAIResponse(response);
+
+      if (!result.success) {
+        throw new Error('Failed to extract recipe from audio-visual content');
+      }
+
+      // Step 7: Enhance recipe
+      result.recipe.image = this.selectBestRecipeImage(result.recipe, apifyData);
+      if (result.recipe.extendedIngredients) {
+        result.recipe.extendedIngredients = this.aggregateIngredients(
+          result.recipe.extendedIngredients
+        );
+      }
+
+      // Step 8: Calculate confidence
+      const confidence = this.calculateAudioVisualConfidence(result, transcript, framesData.frames.length);
+
+      return {
+        success: true,
+        recipe: result.recipe,
+        confidence,
+        sourcesUsed: {
+          audio: true,
+          audioTranscript: transcript.text,
+          videoKeyframes: framesData.frames.length,
+          caption: false,
+          images: apifyData.images?.length || 0
+        },
+        extractionMethod: 'audio-visual-fallback',
+        cost: transcript.cost || 0
+      };
+
+    } catch (error) {
+      console.error('[MultiModal] Audio-visual extraction failed:', error.message);
+
+      // Fallback to keyframes-only if audio fails (silent video)
+      if (error.message.includes('silent') || error.message.includes('Audio file too small')) {
+        console.warn('[MultiModal] Video appears silent - falling back to keyframes-only');
+        // Try keyframes-only extraction
+        const framesData = await this.videoProcessor.extractFramesFromLocalVideo(
+          videoPath,
+          apifyData.videoDuration || 30,
+          { maxFrames: 10, smartSampling: true }
+        );
+        return await this.extractRecipeFromKeyframesOnly(videoPath, apifyData, framesData);
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Validate transcript quality before sending to AI (quality gate)
+   * @param {object} transcript - Transcript data from AudioProcessor
+   * @throws {Error} If transcript doesn't contain recipe content
+   */
+  validateTranscriptQuality(transcript) {
+    const text = transcript.text.toLowerCase();
+    const cookingKeywords = [
+      'cook', 'heat', 'add', 'mix', 'stir', 'cup', 'tablespoon',
+      'teaspoon', 'ounce', 'gram', 'minutes', 'degrees', 'bake',
+      'boil', 'fry', 'sauté', 'ingredient', 'recipe'
+    ];
+
+    const keywordCount = cookingKeywords.filter(kw => text.includes(kw)).length;
+
+    if (keywordCount < 3) {
+      throw new Error('Transcript does not appear to contain recipe content');
+    }
+
+    if (transcript.text.length < 50) {
+      throw new Error('Transcript too short to extract recipe');
+    }
+
+    return true;
+  }
+
+  /**
+   * Build AI prompt for audio-visual extraction
+   * @param {string} transcript - Audio transcript text
+   * @param {object} apifyData - Video metadata
+   * @param {number} frameCount - Number of keyframes
+   * @returns {string} AI prompt
+   */
+  buildAudioVisualPrompt(transcript, apifyData, frameCount) {
+    const duration = apifyData.videoDuration || 30;
+    const title = apifyData.title || 'Unknown';
+    const isShort = apifyData.isShort || duration < 60;
+
+    return `You are extracting a recipe from a ${duration}-second cooking video using AUDIO NARRATION + ${frameCount} KEYFRAMES.
+
+═══════════════════════════════════════════════════════════════
+🎥 VIDEO CONTEXT
+═══════════════════════════════════════════════════════════════
+Platform: YouTube ${isShort ? '(Short)' : ''}
+Duration: ${duration} seconds
+Title: ${title}
+Audio Transcript: Available
+Visual Frames: ${frameCount} keyframes
+
+═══════════════════════════════════════════════════════════════
+📺 EXTRACTION STRATEGY
+═══════════════════════════════════════════════════════════════
+
+**PRIMARY SOURCE: Audio Transcript**
+The audio narration below contains the recipe instructions as spoken by the creator:
+
+\`\`\`
+${transcript}
+\`\`\`
+
+Extract from the audio transcript:
+1. **Ingredients** - exact measurements as spoken (e.g., "2 tablespoons olive oil")
+2. **Cooking steps** - step-by-step instructions from narration
+3. **Timing** - cooking times mentioned ("cook for 5 minutes")
+4. **Temperatures** - heat settings mentioned ("heat to 350°F")
+5. **Techniques** - cooking methods described ("fold gently", "sauté until golden")
+
+**SECONDARY SOURCE: Visual Keyframes (${frameCount} frames)**
+Use the ${frameCount} keyframes for:
+- Visual verification of ingredients shown
+- Identifying cooking techniques from hand movements
+- Final presentation/plating details
+- Visual context for steps mentioned in audio
+
+**CONFLICT RESOLUTION**:
+- If audio says "2 cups" but visual shows different amount → TRUST AUDIO
+- If ingredient name unclear in audio → use visual to clarify
+- If cooking technique mentioned but not clear → use visual to confirm
+
+═══════════════════════════════════════════════════════════════
+📊 REQUIRED JSON RESPONSE
+═══════════════════════════════════════════════════════════════
+
+{
+  "success": true,
+  "confidence": 0.0-1.0,
+  "recipe": {
+    "title": "Recipe name from audio OR video title",
+    "summary": "2-3 sentence description of the dish",
+    "extendedIngredients": [
+      {
+        "original": "Exact text from audio transcript (e.g., '2 tablespoons olive oil')",
+        "name": "olive oil",
+        "amount": 2.0,
+        "unit": "tablespoon"
+      }
+    ],
+    "analyzedInstructions": [
+      {
+        "name": "",
+        "steps": [
+          {"number": 1, "step": "First step from audio narration"},
+          {"number": 2, "step": "Second step from audio..."}
+        ]
+      }
+    ],
+    "readyInMinutes": ${duration < 30 ? 15 : duration < 60 ? 30 : 45},
+    "servings": 4,
+    "vegetarian": false,
+    "vegan": false,
+    "glutenFree": false,
+    "dairyFree": false
+  },
+  "audioVisualAnalysis": {
+    "transcriptQuality": "clear/moderate/poor",
+    "ingredientsMentioned": true/false,
+    "stepsMentioned": true/false,
+    "visualVerification": "matches/partial/unclear",
+    "estimatedCompleteness": 0.0-1.0,
+    "notes": "Brief notes on extraction quality"
+  }
+}`;
+  }
+
+  /**
+   * Calculate confidence score for audio-visual extraction
+   * @param {object} result - AI extraction result
+   * @param {object} transcript - Transcript data
+   * @param {number} frameCount - Number of keyframes
+   * @returns {number} Confidence score (0.60-0.90)
+   */
+  calculateAudioVisualConfidence(result, transcript, frameCount) {
+    let confidence = 0.75; // Base for audio-visual
+
+    // Boost for transcript quality
+    if (transcript.text.length > 200) confidence += 0.08;
+    if (transcript.text.length > 500) confidence += 0.05;
+
+    // Boost for content
+    const ingredientCount = result.recipe?.extendedIngredients?.length || 0;
+    const stepCount = result.recipe?.analyzedInstructions?.[0]?.steps?.length || 0;
+
+    if (ingredientCount > 5) confidence += 0.03;
+    if (stepCount > 3) confidence += 0.03;
+
+    // Boost for visual verification
+    if (frameCount >= 8) confidence += 0.02;
+
+    // Cap confidence
+    return Math.min(0.90, Math.max(0.60, confidence));
+  }
+
+  /**
+   * Extract recipe from keyframes only (silent video fallback)
+   * @param {string} videoPath - Path to video file
+   * @param {object} apifyData - Video metadata
+   * @param {object} framesData - Pre-extracted frames data (optional)
+   * @returns {Promise<object>} Extraction result
+   */
+  async extractRecipeFromKeyframesOnly(videoPath, apifyData, framesData) {
+    console.log('[MultiModal] Extracting from keyframes only (silent video)');
+
+    // If framesData not provided, extract frames
+    if (!framesData) {
+      framesData = await this.videoProcessor.extractFramesFromLocalVideo(
+        videoPath,
+        apifyData.videoDuration || 30,
+        { maxFrames: 10, smartSampling: true }
+      );
+    }
+
+    const prompt = this.buildKeyframesOnlyPrompt(apifyData, framesData.frames.length);
+    const imageContent = framesData.frames.map(frame => ({
+      type: 'image_url',
+      image_url: { url: frame.base64, detail: 'high' }
+    }));
+
+    const response = await this.callAI(prompt, imageContent);
+    const result = this.parseAIResponse(response);
+
+    if (!result.success) {
+      throw new Error('Failed to extract recipe from keyframes');
+    }
+
+    return {
+      success: true,
+      recipe: result.recipe,
+      confidence: Math.min(result.confidence || 0.70, 0.85), // Lower confidence for visual-only
+      sourcesUsed: {
+        audio: false,
+        videoKeyframes: framesData.frames.length,
+        caption: false,
+        images: apifyData.images?.length || 0
+      },
+      extractionMethod: 'keyframes-only-fallback'
+    };
+  }
+
+  /**
+   * Build AI prompt for keyframes-only extraction
+   * @param {object} apifyData - Video metadata
+   * @param {number} frameCount - Number of keyframes
+   * @returns {string} AI prompt
+   */
+  buildKeyframesOnlyPrompt(apifyData, frameCount) {
+    const duration = apifyData.videoDuration || 30;
+    const title = apifyData.title || 'Unknown';
+
+    return `Extract a recipe from ${frameCount} keyframes from a ${duration}-second cooking video.
+
+**VIDEO**: ${title}
+**FRAMES**: ${frameCount} visual snapshots
+
+Analyze the ${frameCount} keyframes to extract:
+- Ingredients visible in frames
+- Cooking steps shown visually
+- Techniques demonstrated
+- Final dish presentation
+
+Return recipe in standard JSON format with extendedIngredients and analyzedInstructions.
+Set confidence lower (0.60-0.80) since audio narration not available.`;
   }
 }
 

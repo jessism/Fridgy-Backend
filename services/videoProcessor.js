@@ -324,6 +324,112 @@ class VideoProcessor {
       }
     };
   }
+
+  /**
+   * Extract frames from LOCAL video file (already downloaded)
+   * Used for audio-visual fallback when video is already in temp directory
+   *
+   * @param {string} localVideoPath - Path to local video file
+   * @param {number} duration - Video duration in seconds
+   * @param {object} options - Options for frame extraction
+   * @param {number} options.maxFrames - Maximum number of frames to extract (default: 8)
+   * @param {boolean} options.smartSampling - Use smart sampling (default: true)
+   * @returns {Promise<object>} Frames data with metadata
+   */
+  async extractFramesFromLocalVideo(localVideoPath, duration, options = {}) {
+    const {
+      maxFrames = 8,
+      smartSampling = true
+    } = options;
+
+    console.log('[VideoProcessor] Extracting frames from local file:', localVideoPath);
+    console.log('[VideoProcessor] Duration:', duration, 'seconds, Max frames:', maxFrames);
+
+    if (!ffmpeg) {
+      throw new Error('FFmpeg not available - cannot extract frames');
+    }
+
+    try {
+      // Verify file exists
+      const fileExists = await fs.access(localVideoPath).then(() => true).catch(() => false);
+      if (!fileExists) {
+        throw new Error(`Video file not found: ${localVideoPath}`);
+      }
+
+      // Calculate frame extraction points
+      const framePoints = [];
+      const interval = duration / (maxFrames + 1);
+      for (let i = 1; i <= maxFrames; i++) {
+        framePoints.push(Math.floor(interval * i));
+      }
+
+      console.log('[VideoProcessor] Frame extraction points:', framePoints);
+
+      // Create temp directory for frames
+      const tempFrameDir = path.join(os.tmpdir(), `frames_${Date.now()}`);
+      await fs.mkdir(tempFrameDir, { recursive: true });
+
+      // Extract frames
+      const frames = [];
+      for (const timestamp of framePoints) {
+        const framePath = path.join(tempFrameDir, `frame_${timestamp}.jpg`);
+
+        try {
+          // Extract single frame at timestamp
+          await new Promise((resolve, reject) => {
+            ffmpeg(localVideoPath)
+              .seekInput(timestamp)
+              .frames(1)
+              .output(framePath)
+              .on('end', resolve)
+              .on('error', reject)
+              .run();
+          });
+
+          // Read frame as base64
+          const frameBuffer = await fs.readFile(framePath);
+          const frameBase64 = frameBuffer.toString('base64');
+          const frameSizeKB = (frameBuffer.length / 1024).toFixed(1);
+
+          frames.push({
+            timestamp,
+            base64: `data:image/jpeg;base64,${frameBase64}`,
+            context: `Frame at ${timestamp}s`,
+            sizeKB: frameSizeKB
+          });
+
+          console.log(`[VideoProcessor] ✓ Frame at ${timestamp}s extracted (${frameSizeKB} KB)`);
+        } catch (error) {
+          console.error(`[VideoProcessor] ✗ Failed to extract frame at ${timestamp}s:`, error.message);
+          // Continue with other frames
+        }
+      }
+
+      // Cleanup temp directory
+      try {
+        await fs.rm(tempFrameDir, { recursive: true, force: true });
+        console.log('[VideoProcessor] ✓ Cleaned up temp frame directory');
+      } catch (e) {
+        console.warn('[VideoProcessor] Failed to cleanup temp directory:', e.message);
+      }
+
+      console.log(`[VideoProcessor] ✓ Successfully extracted ${frames.length}/${framePoints.length} frames`);
+
+      return {
+        frames,
+        metadata: {
+          duration,
+          frameCount: frames.length,
+          framePoints,
+          totalSizeKB: frames.reduce((sum, f) => sum + parseFloat(f.sizeKB), 0).toFixed(1)
+        }
+      };
+
+    } catch (error) {
+      console.error('[VideoProcessor] Frame extraction failed:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = VideoProcessor;

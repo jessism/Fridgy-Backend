@@ -16,7 +16,7 @@ class MultiModalExtractor {
     this.geminiKey = process.env.GOOGLE_GEMINI_API_KEY;
     if (this.geminiKey && this.geminiKey !== 'your_google_gemini_api_key_here') {
       this.genAI = new GoogleGenerativeAI(this.geminiKey);
-      this.geminiModel = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      this.geminiModel = this.genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });  // Updated from deprecated 2.0-flash
       console.log('[MultiModal] Google Gemini API initialized for video analysis');
     } else {
       console.log('[MultiModal] Google Gemini API not configured - using fallback methods');
@@ -36,6 +36,11 @@ class MultiModalExtractor {
 
     // Ingredient aggregation service for deduplicating ingredients
     this.ingredientAggregationService = require('./ingredientAggregationService');
+
+    // Cost tracking for Apify video downloads (monitoring only, resets on server restart)
+    this.monthlyCosts = {
+      apify_video_download: 0
+    };
   }
 
   /**
@@ -55,6 +60,26 @@ class MultiModalExtractor {
     } catch (error) {
       console.warn('[MultiModal] Ingredient aggregation failed, using original:', error.message);
       return ingredients;
+    }
+  }
+
+  /**
+   * Track costs for Apify video downloads (monitoring only)
+   * Costs accumulate in memory, reset on server restart
+   * @param {string} service - Service name (e.g., 'apify_video_download')
+   * @param {number} cost - Cost in USD
+   */
+  async trackCost(service, cost) {
+    this.monthlyCosts[service] = (this.monthlyCosts[service] || 0) + cost;
+
+    console.log('[MultiModal] Monthly costs so far:', {
+      apify_video_download: `$${this.monthlyCosts.apify_video_download.toFixed(2)}`
+    });
+
+    // Alert if costs exceed $20/month (safety threshold)
+    if (this.monthlyCosts.apify_video_download > 20) {
+      console.warn('⚠️ [MultiModal] Apify video costs exceeded $20 this month!');
+      console.warn('⚠️ [MultiModal] Consider investigating usage patterns or increasing budget');
     }
   }
 
@@ -1093,9 +1118,9 @@ Return this JSON:
 
     console.log('[MultiModal] Downloading video to temp:', videoPath);
 
-    // Handle YouTube videos with yt-dlp
+    // Handle YouTube videos with yt-dlp (with User-Agent to bypass bot detection)
     if (isYouTube) {
-      console.log('[MultiModal] Detected YouTube video, using yt-dlp for download');
+      console.log('[MultiModal] Detected YouTube video, using yt-dlp with browser User-Agent');
 
       try {
         const { exec } = require('child_process');
@@ -1104,16 +1129,18 @@ Return this JSON:
 
         console.log('[MultiModal] Downloading YouTube video with yt-dlp...');
 
-        // Use yt-dlp to download the video
-        // -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" - Get best mp4 quality
-        // --merge-output-format mp4 - Merge to mp4 format
-        // -o videoPath - Output to temp file
-        const command = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --merge-output-format mp4 -o "${videoPath}" "${videoUrl}"`;
+        // Use yt-dlp with User-Agent header to bypass YouTube bot detection
+        // --user-agent: Makes yt-dlp look like a real browser (fixes "Sign in to confirm you're not a bot" error)
+        // -f "best[ext=mp4]": Get best quality MP4 format (simpler than merge, still good quality)
+        // --merge-output-format mp4: Ensure output is MP4
+        // -o videoPath: Output to temp file
+        const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+        const command = `yt-dlp --user-agent "${userAgent}" -f "best[ext=mp4]" --merge-output-format mp4 -o "${videoPath}" "${videoUrl}"`;
 
-        console.log('[MultiModal] Running:', command.substring(0, 100) + '...');
+        console.log('[MultiModal] Running with browser User-Agent');
 
         const { stdout, stderr } = await execPromise(command, {
-          timeout: 60000, // 60 second timeout
+          timeout: 90000, // 90 second timeout (increased from 60s)
           maxBuffer: 50 * 1024 * 1024 // 50MB buffer
         });
 
@@ -1122,13 +1149,13 @@ Return this JSON:
 
         // Verify file was downloaded
         const stats = await fs.stat(videoPath);
-        console.log('[MultiModal] YouTube video downloaded successfully:', stats.size, 'bytes');
+        console.log('[MultiModal] ✓ YouTube video downloaded successfully:', (stats.size / 1024 / 1024).toFixed(2), 'MB');
 
         return videoPath;
 
       } catch (error) {
         console.error('[MultiModal] YouTube download failed:', error.message);
-        if (error.stderr) console.error('[MultiModal] yt-dlp error:', error.stderr);
+        if (error.stderr) console.error('[MultiModal] yt-dlp error:', error.stderr.substring(0, 500));
         throw new Error(`Failed to download YouTube video: ${error.message}`);
       }
     }

@@ -192,7 +192,8 @@ class ApifyYouTubeService {
     try {
       console.log(`[ApifyYouTube] Extracting transcript (FREE npm) for: ${videoId}`);
 
-      const { Innertube } = require('youtubei.js');
+      const youtubeIModule = await import('youtubei.js');
+      const { Innertube } = youtubeIModule;
 
       // Step 1: Initialize client
       let youtube;

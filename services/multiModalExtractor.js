@@ -1118,29 +1118,39 @@ Return this JSON:
 
     console.log('[MultiModal] Downloading video to temp:', videoPath);
 
-    // Handle YouTube videos with yt-dlp (with User-Agent to bypass bot detection)
+    // Handle YouTube videos with yt-dlp (with residential proxy to bypass bot detection)
     if (isYouTube) {
-      console.log('[MultiModal] Detected YouTube video, using yt-dlp with browser User-Agent');
+      console.log('[MultiModal] Detected YouTube video, using yt-dlp with residential proxy');
 
       try {
         const { exec } = require('child_process');
         const util = require('util');
         const execPromise = util.promisify(exec);
 
-        console.log('[MultiModal] Downloading YouTube video with yt-dlp...');
+        // ScraperAPI residential proxy configuration
+        // This bypasses YouTube's data center IP blocking using residential IPs
+        const scraperApiKey = process.env.SCRAPER_API_KEY;
+        const proxyUrl = scraperApiKey
+          ? `http://scraperapi:${scraperApiKey}@proxy-server.scraperapi.com:8001`
+          : null;
 
-        // Use yt-dlp with User-Agent header to bypass YouTube bot detection
-        // --user-agent: Makes yt-dlp look like a real browser (fixes "Sign in to confirm you're not a bot" error)
-        // -f "best[ext=mp4]": Get best quality MP4 format (simpler than merge, still good quality)
-        // --merge-output-format mp4: Ensure output is MP4
-        // -o videoPath: Output to temp file
+        if (!scraperApiKey) {
+          console.warn('[MultiModal] ⚠️ SCRAPER_API_KEY not configured');
+          console.warn('[MultiModal] YouTube download will likely fail on production (data center IP blocked)');
+          console.warn('[MultiModal] Add SCRAPER_API_KEY to Railway environment variables');
+        }
+
+        // Browser User-Agent (required for YouTube)
         const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-        const command = `yt-dlp --user-agent "${userAgent}" -f "best[ext=mp4]" --merge-output-format mp4 -o "${videoPath}" "${videoUrl}"`;
 
-        console.log('[MultiModal] Running with browser User-Agent');
+        // Build command with optional proxy
+        const proxyArg = proxyUrl ? `--proxy "${proxyUrl}"` : '';
+        const command = `yt-dlp ${proxyArg} --user-agent "${userAgent}" -f "best[ext=mp4]" --merge-output-format mp4 -o "${videoPath}" "${videoUrl}"`;
+
+        console.log('[MultiModal] Downloading with', scraperApiKey ? 'ScraperAPI residential proxy (bypasses bot detection)' : 'direct connection (may fail on production)');
 
         const { stdout, stderr } = await execPromise(command, {
-          timeout: 90000, // 90 second timeout (increased from 60s)
+          timeout: 120000, // 2 minutes (proxies add latency)
           maxBuffer: 50 * 1024 * 1024 // 50MB buffer
         });
 

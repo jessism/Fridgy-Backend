@@ -1145,7 +1145,8 @@ Return this JSON:
 
         // Build command with optional proxy
         const proxyArg = proxyUrl ? `--proxy "${proxyUrl}"` : '';
-        const command = `yt-dlp ${proxyArg} --user-agent "${userAgent}" -f "best[ext=mp4]" --merge-output-format mp4 -o "${videoPath}" "${videoUrl}"`;
+        const noCertCheck = proxyUrl ? '--no-check-certificate' : ''; // Required for SSL through proxy
+        const command = `yt-dlp ${proxyArg} ${noCertCheck} --user-agent "${userAgent}" -f "best[ext=mp4]" --merge-output-format mp4 -o "${videoPath}" "${videoUrl}"`;
 
         console.log('[MultiModal] Downloading with', scraperApiKey ? 'ScraperAPI residential proxy (bypasses bot detection)' : 'direct connection (may fail on production)');
 

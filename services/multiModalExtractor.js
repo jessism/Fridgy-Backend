@@ -1129,6 +1129,48 @@ Return this JSON:
   }
 
   /**
+   * Download YouTube video using yt-dlp directly (no proxy)
+   * Tests if Railway IPs are blocked by YouTube
+   * @param {string} videoUrl - YouTube URL
+   * @param {string} outputPath - Where to save the video
+   * @returns {string} - Path to downloaded video
+   */
+  async downloadWithYtDlpDirect(videoUrl, outputPath) {
+    console.log('[MultiModal] Trying yt-dlp direct (NO proxy)...');
+    console.log('[MultiModal] Testing if Railway IPs are actually blocked by YouTube...');
+
+    const { exec } = require('child_process');
+    const util = require('util');
+    const execPromise = util.promisify(exec);
+
+    try {
+      // Use lower quality for faster download (shorts are low-res anyway)
+      // This also reduces bandwidth and timeout risk
+      const command = `yt-dlp -f "worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/best[ext=mp4]" --merge-output-format mp4 -o "${outputPath}" "${videoUrl}"`;
+
+      console.log('[MultiModal] Downloading directly from Railway (no proxy, low quality for speed)...');
+
+      const { stdout, stderr } = await execPromise(command, {
+        timeout: 60000, // 1 minute (should be fast without proxy)
+        maxBuffer: 50 * 1024 * 1024
+      });
+
+      if (stdout) console.log('[MultiModal] yt-dlp stdout:', stdout.substring(0, 200));
+
+      // Verify file was downloaded
+      const stats = await fs.stat(outputPath);
+      console.log('[MultiModal] ✓ SUCCESS! Railway IPs are NOT blocked by YouTube!');
+      console.log('[MultiModal] Downloaded:', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+
+      return outputPath;
+    } catch (error) {
+      console.error('[MultiModal] Direct yt-dlp failed:', error.message);
+      if (error.stderr) console.error('[MultiModal] yt-dlp error:', error.stderr.substring(0, 300));
+      throw error;
+    }
+  }
+
+  /**
    * Download YouTube video using Apify Video Downloader Actor
    * @param {string} videoUrl - YouTube URL
    * @param {string} outputPath - Where to save the video
@@ -1336,6 +1378,11 @@ Return this JSON:
 
       // Define providers in priority order
       const providers = [
+        {
+          name: 'yt-dlp Direct (No Proxy)',
+          fn: () => this.downloadWithYtDlpDirect(videoUrl, videoPath),
+          estimatedCost: 0.00,
+        },
         {
           name: 'Apify Video Downloader',
           fn: () => this.downloadWithApify(videoUrl, videoPath),

@@ -41,6 +41,9 @@ class MultiModalExtractor {
     this.monthlyCosts = {
       apify_video_download: 0
     };
+
+    // Provider success tracking (monitoring which provider works best)
+    this.providerStats = {};
   }
 
   /**
@@ -81,6 +84,21 @@ class MultiModalExtractor {
       console.warn('⚠️ [MultiModal] Apify video costs exceeded $20 this month!');
       console.warn('⚠️ [MultiModal] Consider investigating usage patterns or increasing budget');
     }
+  }
+
+  /**
+   * Track which video download provider succeeded (for analytics)
+   * @param {string} providerName - Name of the provider that worked
+   */
+  trackProviderSuccess(providerName) {
+    if (!this.providerStats) {
+      this.providerStats = {};
+    }
+
+    this.providerStats[providerName] = (this.providerStats[providerName] || 0) + 1;
+
+    console.log('[MultiModal] 📊 Provider success stats:', this.providerStats);
+    console.log('[MultiModal] ✅ This extraction used:', providerName);
   }
 
   /**
@@ -1107,6 +1125,181 @@ Return this JSON:
   }
 
   /**
+   * Download YouTube video using Apify Video Downloader Actor
+   * @param {string} videoUrl - YouTube URL
+   * @param {string} outputPath - Where to save the video
+   * @returns {string} - Path to downloaded video
+   */
+  async downloadWithApify(videoUrl, outputPath) {
+    console.log('[MultiModal] Trying Apify video downloader...');
+
+    const ApifyClient = require('apify-client');
+    const client = new ApifyClient({
+      token: process.env.APIFY_API_TOKEN
+    });
+
+    try {
+      // Call Apify's YouTube video downloader actor
+      const run = await client.actor('bernardo/youtube-scraper').call({
+        startUrls: [{ url: videoUrl }],
+        maxResults: 1,
+        downloadVideo: true,
+        videoQuality: 'medium', // Faster for shorts
+      }, {
+        timeout: 180000, // 3 minutes
+      });
+
+      // Get the video download URL from results
+      const { items } = await client.dataset(run.defaultDatasetId).listItems();
+
+      if (!items?.[0]?.videoFiles?.[0]?.url) {
+        throw new Error('No video file URL returned by Apify');
+      }
+
+      const videoFileUrl = items[0].videoFiles[0].url;
+      console.log('[MultiModal] ✓ Apify returned video URL:', videoFileUrl.substring(0, 50) + '...');
+
+      // Download the video from Apify's storage
+      const response = await fetch(videoFileUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download from Apify URL: ${response.status}`);
+      }
+
+      const buffer = await response.buffer();
+      await fs.writeFile(outputPath, buffer);
+
+      const stats = await fs.stat(outputPath);
+      console.log('[MultiModal] ✓ Downloaded via Apify:', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+
+      // Track cost (Apify charges ~$0.001-0.003 per video)
+      const cost = run.usage?.datasetWrites * 0.000025 || 0.002; // Estimate
+      await this.trackCost('apify_video_download', cost);
+
+      return outputPath;
+    } catch (error) {
+      console.error('[MultiModal] Apify download failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Download YouTube video using BrightData Scraping Browser
+   * @param {string} videoUrl - YouTube URL
+   * @param {string} outputPath - Where to save the video
+   * @returns {string} - Path to downloaded video
+   */
+  async downloadWithBrightData(videoUrl, outputPath) {
+    console.log('[MultiModal] Trying BrightData Scraping Browser...');
+
+    const puppeteer = require('puppeteer-core');
+
+    // BrightData Scraping Browser credentials
+    const auth = process.env.BRIGHTDATA_AUTH; // Format: customer-{ID}-zone-{ZONE}:{PASSWORD}
+
+    if (!auth) {
+      throw new Error('BRIGHTDATA_AUTH not configured');
+    }
+
+    let browser;
+    try {
+      // Connect to BrightData's Scraping Browser (real Chrome instances)
+      browser = await puppeteer.connect({
+        browserWSEndpoint: `wss://${auth}@brd.superproxy.io:9222`,
+        timeout: 60000,
+      });
+
+      const page = await browser.newPage();
+
+      // Human-like navigation
+      await page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      await page.waitForTimeout(2000); // Mimic human viewing
+
+      // Extract video source URL using browser context
+      const videoSrc = await page.evaluate(() => {
+        const video = document.querySelector('video');
+        return video?.src || video?.querySelector('source')?.src;
+      });
+
+      if (!videoSrc) {
+        throw new Error('Could not find video element on page');
+      }
+
+      console.log('[MultiModal] ✓ Found video source:', videoSrc.substring(0, 50) + '...');
+
+      // Download video stream
+      const videoResponse = await fetch(videoSrc);
+      const buffer = await videoResponse.buffer();
+      await fs.writeFile(outputPath, buffer);
+
+      const stats = await fs.stat(outputPath);
+      console.log('[MultiModal] ✓ Downloaded via BrightData:', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+
+      return outputPath;
+    } catch (error) {
+      console.error('[MultiModal] BrightData download failed:', error.message);
+      throw error;
+    } finally {
+      if (browser) {
+        try {
+          await browser.close();
+        } catch (e) {
+          console.error('[MultiModal] Failed to close BrightData browser:', e.message);
+        }
+      }
+    }
+  }
+
+  /**
+   * Download YouTube video using improved ScraperAPI + yt-dlp
+   * @param {string} videoUrl - YouTube URL
+   * @param {string} outputPath - Where to save the video
+   * @returns {string} - Path to downloaded video
+   */
+  async downloadWithScraperAPIv2(videoUrl, outputPath) {
+    console.log('[MultiModal] Trying improved ScraperAPI + yt-dlp...');
+
+    const { exec } = require('child_process');
+    const util = require('util');
+    const execPromise = util.promisify(exec);
+
+    const scraperApiKey = process.env.SCRAPER_API_KEY;
+    if (!scraperApiKey) {
+      throw new Error('SCRAPER_API_KEY not configured');
+    }
+
+    try {
+      // Improved ScraperAPI configuration with premium residential proxies
+      const proxyUrl = `http://scraperapi:${scraperApiKey}@proxy-server.scraperapi.com:8001`;
+
+      // Browser User-Agent
+      const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+      // Build command with improved parameters
+      const command = `yt-dlp --proxy "${proxyUrl}" --no-check-certificate --socket-timeout 60 --user-agent "${userAgent}" -f "best[ext=mp4]" --merge-output-format mp4 -o "${outputPath}" "${videoUrl}"`;
+
+      console.log('[MultiModal] Downloading with improved ScraperAPI configuration...');
+
+      const { stdout, stderr } = await execPromise(command, {
+        timeout: 120000, // 2 minutes
+        maxBuffer: 50 * 1024 * 1024 // 50MB
+      });
+
+      if (stdout) console.log('[MultiModal] yt-dlp stdout:', stdout.substring(0, 200));
+      if (stderr) console.log('[MultiModal] yt-dlp stderr:', stderr.substring(0, 200));
+
+      // Verify file was downloaded
+      const stats = await fs.stat(outputPath);
+      console.log('[MultiModal] ✓ Downloaded via ScraperAPI:', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+
+      return outputPath;
+    } catch (error) {
+      console.error('[MultiModal] ScraperAPI download failed:', error.message);
+      if (error.stderr) console.error('[MultiModal] yt-dlp error:', error.stderr.substring(0, 500));
+      throw error;
+    }
+  }
+
+  /**
    * Download video to temporary file
    * @param {string} videoUrl - URL of the video
    * @returns {string} - Path to downloaded video file
@@ -1118,57 +1311,62 @@ Return this JSON:
 
     console.log('[MultiModal] Downloading video to temp:', videoPath);
 
-    // Handle YouTube videos with yt-dlp (with residential proxy to bypass bot detection)
+    // Handle YouTube videos with multi-provider fallback
     if (isYouTube) {
-      console.log('[MultiModal] Detected YouTube video, using yt-dlp with residential proxy');
+      console.log('[MultiModal] Detected YouTube video, using multi-provider waterfall');
 
-      try {
-        const { exec } = require('child_process');
-        const util = require('util');
-        const execPromise = util.promisify(exec);
+      // Define providers in priority order
+      const providers = [
+        {
+          name: 'Apify Video Downloader',
+          fn: () => this.downloadWithApify(videoUrl, videoPath),
+          estimatedCost: 0.002,
+        },
+        {
+          name: 'BrightData Scraping Browser',
+          fn: () => this.downloadWithBrightData(videoUrl, videoPath),
+          estimatedCost: 0.003,
+          requiresEnv: 'BRIGHTDATA_AUTH',
+        },
+        {
+          name: 'ScraperAPI + yt-dlp (improved)',
+          fn: () => this.downloadWithScraperAPIv2(videoUrl, videoPath),
+          estimatedCost: 0.001,
+          requiresEnv: 'SCRAPER_API_KEY',
+        },
+      ];
 
-        // ScraperAPI residential proxy configuration
-        // This bypasses YouTube's data center IP blocking using residential IPs
-        const scraperApiKey = process.env.SCRAPER_API_KEY;
-        const proxyUrl = scraperApiKey
-          ? `http://scraperapi:${scraperApiKey}@proxy-server.scraperapi.com:8001`
-          : null;
-
-        if (!scraperApiKey) {
-          console.warn('[MultiModal] ⚠️ SCRAPER_API_KEY not configured');
-          console.warn('[MultiModal] YouTube download will likely fail on production (data center IP blocked)');
-          console.warn('[MultiModal] Add SCRAPER_API_KEY to Railway environment variables');
+      // Try each provider in sequence
+      for (const provider of providers) {
+        // Skip if required env variable is missing
+        if (provider.requiresEnv && !process.env[provider.requiresEnv]) {
+          console.log(`[MultiModal] ⏭️ Skipping ${provider.name} (${provider.requiresEnv} not configured)`);
+          continue;
         }
 
-        // Browser User-Agent (required for YouTube)
-        const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+        try {
+          console.log(`[MultiModal] 🔄 Trying provider: ${provider.name} (est. cost: $${provider.estimatedCost})`);
 
-        // Build command with optional proxy
-        const proxyArg = proxyUrl ? `--proxy "${proxyUrl}"` : '';
-        const noCertCheck = proxyUrl ? '--no-check-certificate' : ''; // Required for SSL through proxy
-        const socketTimeout = '--socket-timeout 60'; // Give proxy connections more time (60s per network read)
-        const command = `yt-dlp ${proxyArg} ${noCertCheck} ${socketTimeout} --user-agent "${userAgent}" -f "best[ext=mp4]" --merge-output-format mp4 -o "${videoPath}" "${videoUrl}"`;
+          const result = await provider.fn();
 
-        console.log('[MultiModal] Downloading with', scraperApiKey ? 'ScraperAPI residential proxy (bypasses bot detection)' : 'direct connection (may fail on production)');
+          console.log(`[MultiModal] ✅ SUCCESS with ${provider.name}`);
 
-        const { stdout, stderr } = await execPromise(command, {
-          timeout: 120000, // 2 minutes (proxies add latency)
-          maxBuffer: 50 * 1024 * 1024 // 50MB buffer
-        });
+          // Track which provider worked for analytics
+          this.trackProviderSuccess(provider.name);
 
-        if (stdout) console.log('[MultiModal] yt-dlp stdout:', stdout.substring(0, 200));
-        if (stderr) console.log('[MultiModal] yt-dlp stderr:', stderr.substring(0, 200));
+          return result;
+        } catch (error) {
+          console.error(`[MultiModal] ❌ ${provider.name} failed:`, error.message);
 
-        // Verify file was downloaded
-        const stats = await fs.stat(videoPath);
-        console.log('[MultiModal] ✓ YouTube video downloaded successfully:', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+          // Continue to next provider
+          if (provider === providers[providers.length - 1]) {
+            // This was the last provider - all failed
+            console.error('[MultiModal] ⚠️ All video download providers failed');
+            throw new Error(`All video download providers failed. Last error: ${error.message}`);
+          }
 
-        return videoPath;
-
-      } catch (error) {
-        console.error('[MultiModal] YouTube download failed:', error.message);
-        if (error.stderr) console.error('[MultiModal] yt-dlp error:', error.stderr.substring(0, 500));
-        throw new Error(`Failed to download YouTube video: ${error.message}`);
+          console.log(`[MultiModal] 🔄 Trying next provider...`);
+        }
       }
     }
 

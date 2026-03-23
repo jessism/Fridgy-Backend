@@ -140,7 +140,11 @@ class MultiModalExtractor {
 
       // Route directly to audio-visual extraction if needed (saves 8 seconds!)
       if (dataProfile.requiresAudioVisual && apifyData.videoUrl) {
-        console.log('[MultiModal] No text available - routing directly to audio-visual extraction');
+        console.log('[MultiModal] ✅ ROUTING TO AUDIO-VISUAL (waterfall will be used)');
+        console.log('[MultiModal] Reason: Caption too short for AI extraction');
+        console.log('[MultiModal] Caption length:', apifyData.caption?.length || 0);
+        console.log('[MultiModal] Video duration:', apifyData.videoDuration);
+
         const videoPath = await this.downloadVideoToTemp(apifyData.videoUrl);
         const result = await this.extractRecipeFromAudioVisual(videoPath, apifyData);
         result.processingTime = Date.now() - startTime;
@@ -1133,18 +1137,16 @@ Return this JSON:
   async downloadWithApify(videoUrl, outputPath) {
     console.log('[MultiModal] Trying Apify video downloader...');
 
-    const ApifyClient = require('apify-client');
+    const { ApifyClient } = require('apify-client');
     const client = new ApifyClient({
       token: process.env.APIFY_API_TOKEN
     });
 
     try {
-      // Call Apify's YouTube video downloader actor
-      const run = await client.actor('bernardo/youtube-scraper').call({
-        startUrls: [{ url: videoUrl }],
+      // Call Apify's YouTube scraper actor (public actor)
+      const run = await client.actor('streamers/youtube-scraper').call({
+        startUrls: [{ url: videoUrl }], // Must be array of objects with 'url' property
         maxResults: 1,
-        downloadVideo: true,
-        videoQuality: 'medium', // Faster for shorts
       }, {
         timeout: 180000, // 3 minutes
       });
@@ -1212,22 +1214,39 @@ Return this JSON:
 
       // Human-like navigation
       await page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-      await page.waitForTimeout(2000); // Mimic human viewing
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Mimic human viewing
 
-      // Extract video source URL using browser context
-      const videoSrc = await page.evaluate(() => {
-        const video = document.querySelector('video');
-        return video?.src || video?.querySelector('source')?.src;
+      // Wait for video element to load
+      await page.waitForSelector('video', { timeout: 30000 });
+
+      // Get video download URL by intercepting network requests
+      let downloadUrl = null; // Renamed to avoid shadowing the 'videoUrl' parameter
+      const cdpClient = await page.target().createCDPSession();
+      await cdpClient.send('Network.enable');
+
+      cdpClient.on('Network.responseReceived', (event) => {
+        const response = event.response;
+        if (response.mimeType && response.mimeType.includes('video')) {
+          downloadUrl = response.url;
+        }
       });
 
-      if (!videoSrc) {
-        throw new Error('Could not find video element on page');
+      // Play video to trigger download
+      await page.evaluate(() => {
+        const video = document.querySelector('video');
+        if (video) video.play();
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 5000)); // Wait for video data
+
+      if (!downloadUrl || downloadUrl.startsWith('blob:')) {
+        throw new Error('Could not find downloadable video URL (got blob URL)');
       }
 
-      console.log('[MultiModal] ✓ Found video source:', videoSrc.substring(0, 50) + '...');
+      console.log('[MultiModal] ✓ Found video URL:', downloadUrl.substring(0, 50) + '...');
 
       // Download video stream
-      const videoResponse = await fetch(videoSrc);
+      const videoResponse = await fetch(downloadUrl);
       const buffer = await videoResponse.buffer();
       await fs.writeFile(outputPath, buffer);
 
@@ -1925,11 +1944,17 @@ VERIFY BEFORE RETURNING:
     // Use 'caption' field (which is description + transcript combined) from apifyYouTubeService
     const hasRichText = (apifyData.caption?.length > 200 || apifyData.transcript?.length > 200);
     const hasMinimalText = (apifyData.caption?.length > 50 || apifyData.transcript?.length > 50);
+
+    // Check if caption/transcript is SUFFICIENT for AI extraction (not just if it exists)
+    const captionLength = (apifyData.caption?.length || 0);
+    const transcriptLength = (apifyData.transcript?.length || 0);
+    const hasUsefulText = (captionLength > 100 || transcriptLength > 100);
+
     const requiresAudioVisual = (
-      !apifyData.caption &&
-      !apifyData.transcript &&
-      apifyData.videoDuration > 10 && // Not silent meme
-      apifyData.videoDuration < 180   // Reasonable for audio extraction
+      !hasUsefulText &&                 // Caption/transcript too short or missing
+      apifyData.videoDuration > 10 &&   // Not silent meme
+      apifyData.videoDuration < 180 &&  // Reasonable for audio extraction
+      apifyData.videoUrl                // Has video URL to download
     );
 
     return { hasRichText, hasMinimalText, requiresAudioVisual };

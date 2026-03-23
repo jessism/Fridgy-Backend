@@ -779,7 +779,8 @@ class ApifyYouTubeService {
         success: true,
         caption: description, // Combined description + transcript
         images: images,
-        videoUrl: originalUrl, // Reference only (not downloadable)
+        videoUrl: originalUrl, // YouTube webpage URL (waterfall will handle download)
+        isYouTubeUrl: true, // Flag to indicate this needs special download handling (not direct video file)
         videoDuration: videoDuration,
         videoUrlExpiry: null, // YouTube URLs don't expire
         extractionTimestamp: Date.now(),

@@ -1129,6 +1129,72 @@ Return this JSON:
   }
 
   /**
+   * Download YouTube video using RapidAPI YouTube Download service
+   * @param {string} videoUrl - YouTube URL
+   * @param {string} outputPath - Where to save the video
+   * @returns {string} - Path to downloaded video
+   */
+  async downloadWithRapidAPI(videoUrl, outputPath) {
+    console.log('[MultiModal] Trying RapidAPI YouTube downloader...');
+
+    const videoId = this.extractYouTubeId(videoUrl);
+    if (!videoId) {
+      throw new Error('Could not extract video ID from URL');
+    }
+
+    try {
+      // Call RapidAPI YouTube download service
+      console.log('[MultiModal] Fetching download URL from RapidAPI for video:', videoId);
+
+      const response = await fetch(`https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id=${videoId}`, {
+        method: 'GET',
+        headers: {
+          'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
+          'X-RapidAPI-Host': 'ytstream-download-youtube-videos.p.rapidapi.com'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`RapidAPI returned ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      console.log('[MultiModal] RapidAPI response keys:', Object.keys(data));
+
+      // Get video download URL (try multiple possible response formats)
+      const downloadUrl = data.formats?.find(f => f.qualityLabel === '360p')?.url ||
+                          data.formats?.[0]?.url ||
+                          data.link ||
+                          data.url ||
+                          data.adaptiveFormats?.find(f => f.mimeType?.includes('video/mp4'))?.url;
+
+      if (!downloadUrl) {
+        console.error('[MultiModal] RapidAPI response structure:', JSON.stringify(data).substring(0, 500));
+        throw new Error('No download URL found in RapidAPI response');
+      }
+
+      console.log('[MultiModal] ✓ Got download URL from RapidAPI:', downloadUrl.substring(0, 50) + '...');
+
+      // Download the video file
+      const videoResponse = await fetch(downloadUrl);
+      if (!videoResponse.ok) {
+        throw new Error(`Failed to download video file: ${videoResponse.status}`);
+      }
+
+      const buffer = await videoResponse.buffer();
+      await fs.writeFile(outputPath, buffer);
+
+      const stats = await fs.stat(outputPath);
+      console.log('[MultiModal] ✓ Downloaded via RapidAPI:', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+
+      return outputPath;
+    } catch (error) {
+      console.error('[MultiModal] RapidAPI download failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Download YouTube video using yt-dlp directly (no proxy)
    * Tests if Railway IPs are blocked by YouTube
    * @param {string} videoUrl - YouTube URL
@@ -1378,6 +1444,12 @@ Return this JSON:
 
       // Define providers in priority order
       const providers = [
+        {
+          name: 'RapidAPI YouTube Downloader',
+          fn: () => this.downloadWithRapidAPI(videoUrl, videoPath),
+          estimatedCost: 0.001,
+          requiresEnv: 'RAPIDAPI_KEY',
+        },
         {
           name: 'yt-dlp Direct (No Proxy)',
           fn: () => this.downloadWithYtDlpDirect(videoUrl, videoPath),

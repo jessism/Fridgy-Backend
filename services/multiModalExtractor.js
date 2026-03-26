@@ -1143,14 +1143,15 @@ Return this JSON:
     }
 
     try {
-      // Call RapidAPI YouTube download service
+      // Call RapidAPI "YouTube Search and Download" API
       console.log('[MultiModal] Fetching download URL from RapidAPI for video:', videoId);
 
-      const response = await fetch(`https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id=${videoId}`, {
+      const response = await fetch(`https://youtube-search-and-download.p.rapidapi.com/video/download?id=${videoId}`, {
         method: 'GET',
         headers: {
+          'Content-Type': 'application/json',
           'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
-          'X-RapidAPI-Host': 'ytstream-download-youtube-videos.p.rapidapi.com'
+          'X-RapidAPI-Host': 'youtube-search-and-download.p.rapidapi.com'
         }
       });
 
@@ -1159,24 +1160,30 @@ Return this JSON:
       }
 
       const data = await response.json();
-      console.log('[MultiModal] RapidAPI response keys:', Object.keys(data));
 
-      // Get video download URL (try multiple possible response formats)
-      const downloadUrl = data.formats?.find(f => f.qualityLabel === '360p')?.url ||
-                          data.formats?.[0]?.url ||
-                          data.link ||
-                          data.url ||
-                          data.adaptiveFormats?.find(f => f.mimeType?.includes('video/mp4'))?.url;
-
-      if (!downloadUrl) {
-        console.error('[MultiModal] RapidAPI response structure:', JSON.stringify(data).substring(0, 500));
-        throw new Error('No download URL found in RapidAPI response');
+      if (!data.success || !data.medias || data.medias.length === 0) {
+        throw new Error('No media formats returned by RapidAPI');
       }
 
-      console.log('[MultiModal] ✓ Got download URL from RapidAPI:', downloadUrl.substring(0, 50) + '...');
+      console.log('[MultiModal] ✓ RapidAPI returned', data.medias.length, 'formats');
 
-      // Download the video file
-      const videoResponse = await fetch(downloadUrl);
+      // Find best format: 360p MP4 with audio (formatId 18 is perfect for shorts)
+      // Fallback to any video format with audio
+      const format = data.medias.find(m => m.formatId === 18 && m.is_audio) || // 360p with audio
+                     data.medias.find(m => m.type === 'video' && m.is_audio) || // Any video with audio
+                     data.medias.find(m => m.type === 'video' && m.ext === 'mp4') || // Any MP4 video
+                     data.medias[0]; // Fallback to first format
+
+      if (!format || !format.url) {
+        throw new Error('No downloadable format found in RapidAPI response');
+      }
+
+      console.log('[MultiModal] ✓ Selected format:', format.label, '(' + (format.bitrate / 1000000).toFixed(1) + 'Mbps)');
+
+      // Download the video file from Google's servers
+      console.log('[MultiModal] Downloading from Google servers...');
+      const videoResponse = await fetch(format.url);
+
       if (!videoResponse.ok) {
         throw new Error(`Failed to download video file: ${videoResponse.status}`);
       }

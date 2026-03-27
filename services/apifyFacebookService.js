@@ -600,8 +600,9 @@ class ApifyFacebookService {
     }
 
     // Extract author info (different field names between actors)
+    // Priority: display names first, then fall back to user ID
     const author = {
-      username: data.ownerUsername || data.owner?.name || data.pageName || data.authorName || 'facebook_user',
+      username: data.owner?.name || data.pageName || data.authorName || data.ownerUsername || 'facebook_user',
       fullName: data.owner?.name || data.pageName || data.authorName || '',
       profilePic: data.owner?.profilePicUrl || data.ownerProfilePicUrl || ''
     };

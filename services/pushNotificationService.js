@@ -102,23 +102,50 @@ class PushNotificationService {
         throw new Error('Invalid Expo push token format');
       }
 
-      const { data: existing } = await supabase
+      // Check if token exists for ANY user (not just current user)
+      const { data: existing, error: selectError } = await supabase
         .from('mobile_push_tokens')
-        .select('id')
-        .eq('user_id', userId)
+        .select('id, user_id, device_name')
         .eq('expo_token', expoToken)
-        .single();
+        .maybeSingle();
+
+      if (selectError) throw selectError;
 
       if (existing) {
-        const { error } = await supabase
-          .from('mobile_push_tokens')
-          .update({ device_name: deviceName, updated_at: new Date().toISOString() })
-          .eq('id', existing.id);
-        if (error) throw error;
-        return { success: true, message: 'Mobile token updated' };
+        if (existing.user_id === userId) {
+          // Same user re-registering - just update timestamp
+          const { error: updateError } = await supabase
+            .from('mobile_push_tokens')
+            .update({
+              device_name: deviceName,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', existing.id);
+          if (updateError) throw updateError;
+          return { success: true, message: 'Mobile token updated' };
+        } else {
+          // Different user - TRANSFER ownership to new user
+          const { error: transferError } = await supabase
+            .from('mobile_push_tokens')
+            .update({
+              user_id: userId,
+              device_name: deviceName,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', existing.id);
+          if (transferError) throw transferError;
+          console.log(`[PushService] Transferred token from user ${existing.user_id} to user ${userId}`);
+          return {
+            success: true,
+            message: 'Mobile token transferred',
+            transferred: true,
+            previousUserId: existing.user_id
+          };
+        }
       }
 
-      const { error } = await supabase
+      // New token - insert
+      const { error: insertError } = await supabase
         .from('mobile_push_tokens')
         .insert({
           user_id: userId,
@@ -126,7 +153,16 @@ class PushNotificationService {
           device_name: deviceName,
           created_at: new Date().toISOString(),
         });
-      if (error) throw error;
+
+      if (insertError) {
+        // Handle race condition - another request inserted this token
+        if (insertError.code === '23505') {
+          console.warn(`[PushService] Race condition on token insert, retrying for user ${userId}`);
+          return await this.saveMobileToken(userId, expoToken, deviceName);
+        }
+        throw insertError;
+      }
+
       return { success: true, message: 'Mobile token registered' };
     } catch (error) {
       console.error('[PushService] Error saving mobile token:', error);
@@ -186,8 +222,22 @@ class PushNotificationService {
     );
 
     const result = results[0];
-    if (result && !result.success && result.error === 'DeviceNotRegistered') {
-      await this.removeInvalidMobileToken(expoToken);
+
+    // Handle Expo errors
+    if (result && !result.success) {
+      const errorType = result.error;
+
+      // Permanent errors - remove token immediately
+      const invalidTokenErrors = ['DeviceNotRegistered', 'InvalidCredentials'];
+      if (invalidTokenErrors.includes(errorType)) {
+        console.log(`[PushService] Removing invalid token (${errorType}): ${expoToken.substring(0, 30)}...`);
+        await this.removeInvalidMobileToken(expoToken);
+      }
+
+      // Temporary errors - log but keep token
+      if (errorType === 'MessageRateExceeded') {
+        console.warn(`[PushService] Rate limit exceeded for token: ${expoToken.substring(0, 30)}...`);
+      }
     }
 
     return {

@@ -4,7 +4,7 @@ const authMiddleware = require('../middleware/auth');
 
 // ElevenLabs configuration
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // Rachel voice (calm, pleasant female)
+const ELEVENLABS_VOICE_ID = 'EXAVITQu4vr4xnSDxMaL'; // Bella voice (soft, warm female - free tier)
 
 router.post('/ask', authMiddleware.authenticateToken, async (req, res) => {
   const requestId = Math.random().toString(36).substring(7);

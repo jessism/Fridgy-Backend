@@ -152,8 +152,17 @@ Respond naturally as if you're in the kitchen together.`;
           const audioBuffer = await ttsResponse.arrayBuffer();
           const base64Audio = Buffer.from(audioBuffer).toString('base64');
           audioUrl = `data:audio/mpeg;base64,${base64Audio}`;
+          console.log(`[AI-Chef:${requestId}] ✅ TTS Success with voice ${ELEVENLABS_VOICE_ID}`);
         } else {
-          console.warn(`[AI-Chef:${requestId}] TTS failed, will use fallback`);
+          const errorBody = await ttsResponse.text();
+          console.error(`[AI-Chef:${requestId}] ❌ TTS FAILED:`, {
+            status: ttsResponse.status,
+            statusText: ttsResponse.statusText,
+            voiceId: ELEVENLABS_VOICE_ID,
+            apiKeyDefined: !!ELEVENLABS_API_KEY,
+            apiKeyPrefix: ELEVENLABS_API_KEY?.substring(0, 8),
+            errorBody: errorBody
+          });
         }
       } catch (ttsError) {
         console.error(`[AI-Chef:${requestId}] TTS Error:`, ttsError);

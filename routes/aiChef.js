@@ -2,9 +2,14 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 
-// ElevenLabs configuration
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE_ID = 'EXAVITQu4vr4xnSDxMaL'; // Bella voice (soft, warm female - free tier)
+// TTS Configuration
+// Google Cloud TTS (ACTIVE - free tier, no abuse detection)
+const GOOGLE_TTS_API_KEY = process.env.GOOGLE_TTS_API_KEY;
+const GOOGLE_TTS_VOICE = 'en-US-Neural2-F'; // Female, warm, friendly
+
+// ElevenLabs configuration (BACKUP - currently blocked by abuse detection)
+// const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+// const ELEVENLABS_VOICE_ID = 'EXAVITQu4vr4xnSDxMaL'; // Bella voice (soft, warm female)
 
 router.post('/ask', authMiddleware.authenticateToken, async (req, res) => {
   const requestId = Math.random().toString(36).substring(7);
@@ -123,7 +128,52 @@ Respond naturally as if you're in the kitchen together.`;
 
       console.log(`[AI-Chef:${requestId}] Answer: "${answer.substring(0, 100)}..."`);
 
-      // Generate TTS with ElevenLabs
+      // Generate TTS with Google Cloud (ACTIVE)
+      let audioUrl = null;
+      try {
+        const ttsResponse = await fetch(
+          `https://texttospeech.googleapis.com/v1/text:synthesize?key=${GOOGLE_TTS_API_KEY}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              input: { text: answer },
+              voice: {
+                languageCode: 'en-US',
+                name: GOOGLE_TTS_VOICE,
+              },
+              audioConfig: {
+                audioEncoding: 'MP3',
+                speakingRate: 1.05, // Slightly faster for natural conversation
+                pitch: 0.0,
+              },
+            }),
+          }
+        );
+
+        if (ttsResponse.ok) {
+          const ttsData = await ttsResponse.json();
+          audioUrl = `data:audio/mpeg;base64,${ttsData.audioContent}`;
+          console.log(`[AI-Chef:${requestId}] ✅ Google TTS Success with ${GOOGLE_TTS_VOICE}`);
+        } else {
+          const errorBody = await ttsResponse.text();
+          console.error(`[AI-Chef:${requestId}] ❌ Google TTS FAILED:`, {
+            status: ttsResponse.status,
+            statusText: ttsResponse.statusText,
+            voiceName: GOOGLE_TTS_VOICE,
+            apiKeyDefined: !!GOOGLE_TTS_API_KEY,
+            errorBody: errorBody
+          });
+        }
+      } catch (ttsError) {
+        console.error(`[AI-Chef:${requestId}] Google TTS Error:`, ttsError);
+        // Continue without audio - mobile will use expo-speech fallback
+      }
+
+      /* BACKUP: ElevenLabs TTS (currently blocked by abuse detection)
+      // To switch back: Uncomment this section and comment out Google TTS above
       let audioUrl = null;
       try {
         const ttsResponse = await fetch(
@@ -152,28 +202,24 @@ Respond naturally as if you're in the kitchen together.`;
           const audioBuffer = await ttsResponse.arrayBuffer();
           const base64Audio = Buffer.from(audioBuffer).toString('base64');
           audioUrl = `data:audio/mpeg;base64,${base64Audio}`;
-          console.log(`[AI-Chef:${requestId}] ✅ TTS Success with voice ${ELEVENLABS_VOICE_ID}`);
+          console.log(`[AI-Chef:${requestId}] ✅ ElevenLabs TTS Success`);
         } else {
           const errorBody = await ttsResponse.text();
-          console.error(`[AI-Chef:${requestId}] ❌ TTS FAILED:`, {
+          console.error(`[AI-Chef:${requestId}] ❌ ElevenLabs TTS FAILED:`, {
             status: ttsResponse.status,
-            statusText: ttsResponse.statusText,
-            voiceId: ELEVENLABS_VOICE_ID,
-            apiKeyDefined: !!ELEVENLABS_API_KEY,
-            apiKeyPrefix: ELEVENLABS_API_KEY?.substring(0, 8),
             errorBody: errorBody
           });
         }
       } catch (ttsError) {
-        console.error(`[AI-Chef:${requestId}] TTS Error:`, ttsError);
-        // Continue without audio - mobile will use expo-speech fallback
+        console.error(`[AI-Chef:${requestId}] ElevenLabs TTS Error:`, ttsError);
       }
+      */
 
       // Calculate costs
       const inputTokens = data.usage?.prompt_tokens || 0;
       const outputTokens = data.usage?.completion_tokens || 0;
       const llmCost = (inputTokens * 0.075 + outputTokens * 0.30) / 1_000_000;
-      const ttsCost = audioUrl ? (answer.length * 0.30) / 1_000_000 : 0;
+      const ttsCost = audioUrl ? (answer.length * 16) / 1_000_000 : 0; // Google TTS: $16 per 1M chars (free tier: 1M chars/month)
       const totalCost = llmCost + ttsCost;
 
       console.log(`[AI-Chef:${requestId}] Cost: LLM=$${llmCost.toFixed(6)}, TTS=$${ttsCost.toFixed(6)}, Total=$${totalCost.toFixed(6)}`);

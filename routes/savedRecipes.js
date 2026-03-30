@@ -3,6 +3,7 @@ const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const { checkUploadedRecipeLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 const { createClient } = require('@supabase/supabase-js');
+const { generateRecipeTags } = require('../services/recipeTagService');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -51,6 +52,11 @@ router.post('/', authMiddleware.authenticateToken, checkUploadedRecipeLimit, asy
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
+
+    // Generate AI tags for the recipe
+    const aiTags = generateRecipeTags(newRecipe);
+    console.log(`[SavedRecipes] Generated ${aiTags.length} AI tags:`, aiTags.map(t => t.name).join(', '));
+    newRecipe.tags = aiTags;
 
     // Save to database
     const { data, error } = await supabase
@@ -266,7 +272,8 @@ router.put('/:id', authMiddleware.authenticateToken, async (req, res) => {
       'veryHealthy', 'cheap', 'veryPopular',
       'cuisines', 'dishTypes', 'diets', 'occasions',
       'nutrition', 'user_notes', 'rating', 'is_favorite',
-      'source_type', 'source_url', 'source_author'
+      'source_type', 'source_url', 'source_author',
+      'tags'  // NEW: Recipe tags (AI-generated + custom)
     ];
 
     const updates = {};

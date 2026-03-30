@@ -195,17 +195,22 @@ async function sendWelcomeEmail(user) {
   try {
     console.log(`[Email] Sending welcome email to ${user.email}`);
 
+    // Determine URL based on signup platform
+    const dashboardUrl = user.signup_platform === 'mobile'
+      ? 'trackabite://welcome'
+      : `${process.env.FRONTEND_URL}/home`;
+
     const result = await client.sendEmailWithTemplate({
       From: process.env.FROM_EMAIL,
       To: user.email,
       TemplateAlias: 'welcome',
       TemplateModel: {
         firstName: user.first_name || 'there',
-        dashboardUrl: `${process.env.FRONTEND_URL}/home`
+        dashboardUrl
       }
     });
 
-    console.log(`[Email] Welcome email sent successfully. MessageID: ${result.MessageID}`);
+    console.log(`[Email] Welcome email sent successfully with ${user.signup_platform === 'mobile' ? 'deep link' : 'web URL'}. MessageID: ${result.MessageID}`);
   } catch (error) {
     console.error('[Email] Failed to send welcome email:', error.message);
     // Don't throw - we don't want email failures to break signup

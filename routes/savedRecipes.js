@@ -304,6 +304,71 @@ router.put('/:id', authMiddleware.authenticateToken, async (req, res) => {
   }
 });
 
+// PATCH /api/saved-recipes/:id - Partial update recipe (e.g., toggle favorite)
+router.patch('/:id', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.userId || req.user?.id;
+    const body = req.body;
+
+    console.log(`[SavedRecipes] Partial update for recipe ${id} by user ${userId}`);
+    console.log(`[SavedRecipes] Update fields:`, Object.keys(body));
+
+    // Whitelist allowed fields for partial updates
+    const allowedFields = [
+      'title', 'summary', 'image', 'image_urls',
+      'extendedIngredients', 'analyzedInstructions',
+      'readyInMinutes', 'cookingMinutes', 'servings',
+      'vegetarian', 'vegan', 'glutenFree', 'dairyFree',
+      'veryHealthy', 'cheap', 'veryPopular',
+      'cuisines', 'dishTypes', 'diets', 'occasions',
+      'nutrition', 'user_notes', 'rating', 'is_favorite',
+      'source_type', 'source_url', 'source_author',
+      'tags'
+    ];
+
+    const updates = {};
+    for (const field of allowedFields) {
+      if (body[field] !== undefined) {
+        updates[field] = body[field];
+      }
+    }
+
+    // Only set updated_at (don't mark as user_edited for simple toggles like favorite)
+    updates.updated_at = new Date().toISOString();
+
+    // If no valid fields provided, return error
+    if (Object.keys(updates).length === 1) { // Only updated_at
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    console.log(`[SavedRecipes] Applying updates:`, updates);
+
+    const { data, error } = await supabase
+      .from('saved_recipes')
+      .update(updates)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[SavedRecipes] Supabase PATCH error:', error);
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({ error: 'Recipe not found' });
+      }
+      throw error;
+    }
+
+    console.log(`[SavedRecipes] Recipe ${id} updated successfully`);
+    res.json(data);
+
+  } catch (error) {
+    console.error('[SavedRecipes] Partial update error:', error);
+    res.status(500).json({ error: 'Failed to update recipe' });
+  }
+});
+
 // DELETE /api/saved-recipes/:id - Delete recipe
 router.delete('/:id', authMiddleware.authenticateToken, async (req, res) => {
   try {

@@ -74,7 +74,7 @@ const authService = {
    */
   async createUser(userData) {
     try {
-      const { email, firstName, passwordHash } = userData;
+      const { email, firstName, passwordHash, signupPlatform } = userData;
       
       const supabase = getSupabaseClient();
       const { data: newUser, error: insertError } = await supabase
@@ -82,9 +82,10 @@ const authService = {
         .insert({
           email: email.toLowerCase(),
           first_name: firstName.trim(),
-          password_hash: passwordHash
+          password_hash: passwordHash,
+          signup_platform: signupPlatform || 'web'
         })
-        .select('id, email, first_name, created_at, tier, is_grandfathered')
+        .select('id, email, first_name, created_at, tier, is_grandfathered, signup_platform')
         .single();
 
       if (insertError) {

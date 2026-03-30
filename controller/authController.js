@@ -74,7 +74,7 @@ const authController = {
   // Sign up controller
   async signup(req, res) {
     try {
-      const { firstName, email, password, onboardingSessionId } = req.body;
+      const { firstName, email, password, onboardingSessionId, platform } = req.body;
 
       // Validation
       if (!validateName(firstName)) {
@@ -98,6 +98,11 @@ const authController = {
         });
       }
 
+      // Validate platform parameter (optional, defaults to 'web')
+      const signupPlatform = platform && ['mobile', 'web'].includes(platform)
+        ? platform
+        : 'web';
+
       // Check if user already exists
       const userExists = await authService.userExistsByEmail(email);
       if (userExists) {
@@ -115,7 +120,8 @@ const authController = {
       const newUser = await authService.createUser({
         email,
         firstName,
-        passwordHash
+        passwordHash,
+        signupPlatform
       });
 
       // Generate JWT and refresh tokens
@@ -258,7 +264,8 @@ const authController = {
 
           await emailService.sendWelcomeEmail({
             email: newUser.email,
-            first_name: newUser.first_name
+            first_name: newUser.first_name,
+            signup_platform: newUser.signup_platform || 'web'
           });
 
           console.log('[Signup] Welcome email sent successfully');

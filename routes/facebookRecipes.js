@@ -58,11 +58,24 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImpor
 
     if (!apifyData.success) {
       console.log('[FacebookMultiModal] Apify extraction failed:', apifyData.error);
+
+      // Special handling for timeouts
+      if (apifyData.isTimeout) {
+        console.warn('[FacebookMultiModal] Extraction timed out - Facebook may be slow or blocking');
+        return res.status(408).json({
+          success: false,
+          error: 'Facebook extraction timed out. This video may be too long or unavailable. Please try a different recipe or try again later.',
+          isTimeout: true,
+          technicalError: apifyData.technicalError
+        });
+      }
+
+      // General failure
       return res.status(400).json({
         success: false,
         error: apifyData.error || 'Failed to extract Facebook content',
         limitExceeded: apifyData.limitExceeded,
-        isTimeout: apifyData.isTimeout || false,
+        isTimeout: false,
         technicalError: apifyData.technicalError
       });
     }

@@ -4,6 +4,17 @@
  */
 
 const { getServiceClient } = require('../config/supabase');
+const NodeCache = require('node-cache');
+
+// Cache for limit checks - 5 minute TTL to reduce Supabase queries
+// This significantly speeds up request handling (eliminates 7-18s of DB queries)
+const limitCache = new NodeCache({
+  stdTTL: 300, // 5 minutes
+  checkperiod: 60, // Check for expired keys every 60s
+  useClones: false // Don't clone objects (faster, but careful with mutations)
+});
+
+console.log('[UsageService] Limit cache initialized with 5 minute TTL');
 
 /**
  * Get feature limits for a given tier
@@ -13,9 +24,10 @@ const { getServiceClient } = require('../config/supabase');
 function getLimitsForTier(tier) {
   const limits = {
     free: {
-      grocery_items: 20,
-      imported_recipes: 10,
-      uploaded_recipes: 10,
+      grocery_items: 10,
+      saved_recipes: 5, // 5 total recipes per week (all sources: imported, uploaded, manual)
+      imported_recipes: 10, // DEPRECATED - keeping for backwards compatibility
+      uploaded_recipes: 10, // DEPRECATED - keeping for backwards compatibility
       meal_logs: Infinity, // Unlimited - historical tracking shouldn't be limited
       owned_shopping_lists: 5,
       joined_shopping_lists: 1,
@@ -25,6 +37,7 @@ function getLimitsForTier(tier) {
     },
     premium: {
       grocery_items: Infinity,
+      saved_recipes: Infinity,
       imported_recipes: Infinity,
       uploaded_recipes: Infinity,
       meal_logs: Infinity,
@@ -37,6 +50,7 @@ function getLimitsForTier(tier) {
     grandfathered: {
       // Same as premium (lifetime free premium)
       grocery_items: Infinity,
+      saved_recipes: Infinity,
       imported_recipes: Infinity,
       uploaded_recipes: Infinity,
       meal_logs: Infinity,
@@ -60,6 +74,7 @@ function getLimitsForTier(tier) {
 function getColumnName(feature) {
   const columnMapping = {
     'ai_recipes': 'ai_recipe_generations_count',
+    'saved_recipes': 'saved_recipes_count',
     // All others follow the pattern: {feature}_count
   };
 
@@ -107,16 +122,17 @@ async function getUserUsage(userId) {
     const limits = getLimitsForTier(tier);
     const usage = usageLimits || {};
 
-    // Calculate next reset date (rolling 30 days)
+    // Calculate next reset date (weekly = 7 days)
     const nextResetDate = usage.last_reset_at
-      ? new Date(new Date(usage.last_reset_at).getTime() + 30 * 24 * 60 * 60 * 1000)
-      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      ? new Date(new Date(usage.last_reset_at).getTime() + 7 * 24 * 60 * 60 * 1000)
+      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
     return {
       tier,
       limits,
       current: {
         grocery_items_count: usage.grocery_items_count || 0,
+        saved_recipes_count: usage.saved_recipes_count || 0, // NEW: Weekly recipe counter
         imported_recipes_count: usage.imported_recipes_count || 0,
         uploaded_recipes_count: usage.uploaded_recipes_count || 0,
         meal_logs_count: usage.meal_logs_count || 0,
@@ -141,6 +157,15 @@ async function getUserUsage(userId) {
  */
 async function checkLimit(userId, feature) {
   try {
+    // Check cache first to avoid expensive Supabase queries
+    const cacheKey = `limit_${userId}_${feature}`;
+    const cached = limitCache.get(cacheKey);
+    if (cached) {
+      console.log(`[UsageService] ✅ Cache hit for ${cacheKey}`);
+      return cached;
+    }
+
+    console.log(`[UsageService] Cache miss for ${cacheKey}, querying database...`);
     const supabase = getServiceClient();
 
     // Get user tier
@@ -214,21 +239,24 @@ async function checkLimit(userId, feature) {
 
     // Special case: analytics is a boolean gate (premium only)
     if (feature === 'analytics') {
-      return {
+      const result = {
         allowed: tier === 'premium' || tier === 'grandfathered',
         current: null,
         limit: null,
         tier,
         premiumRequired: true,
       };
+      // Cache analytics check result
+      limitCache.set(cacheKey, result);
+      return result;
     }
 
-    // Rolling 30-day reset logic for free tier
+    // Weekly reset logic for free tier (7 days)
     if (tier === 'free' && usage.last_reset_at) {
       const lastReset = new Date(usage.last_reset_at);
       const daysSinceReset = (Date.now() - lastReset.getTime()) / (1000 * 60 * 60 * 24);
 
-      if (daysSinceReset >= 30) {
+      if (daysSinceReset >= 7) {
         console.log(`[UsageService] Auto-resetting usage for user ${userId} (${Math.floor(daysSinceReset)} days since last reset)`);
 
         // Reset all counters
@@ -236,8 +264,9 @@ async function checkLimit(userId, feature) {
           .from('usage_limits')
           .update({
             grocery_items_count: 0,
-            imported_recipes_count: 0,
-            uploaded_recipes_count: 0,
+            saved_recipes_count: 0, // NEW: Weekly recipe counter
+            imported_recipes_count: 0, // Keep for backwards compatibility
+            uploaded_recipes_count: 0, // Keep for backwards compatibility
             owned_shopping_lists_count: 0,
             joined_shopping_lists_count: 0,
             ai_recipe_generations_count: 0,
@@ -254,18 +283,24 @@ async function checkLimit(userId, feature) {
       }
     }
 
-    // Calculate next reset date for response
+    // Calculate next reset date for response (7 days = weekly)
     const nextResetDate = usage.last_reset_at
-      ? new Date(new Date(usage.last_reset_at).getTime() + 30 * 24 * 60 * 60 * 1000)
-      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      ? new Date(new Date(usage.last_reset_at).getTime() + 7 * 24 * 60 * 60 * 1000)
+      : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-    return {
+    const result = {
       allowed: current < limit,
       current,
       limit,
       tier,
       nextResetDate: nextResetDate.toISOString(),
     };
+
+    // Cache the result to speed up future requests
+    limitCache.set(cacheKey, result);
+    console.log(`[UsageService] Cached result for ${cacheKey}`);
+
+    return result;
   } catch (error) {
     console.error('[UsageService] Error checking limit:', error);
     throw error;
@@ -325,6 +360,11 @@ async function incrementUsage(userId, feature) {
     }
 
     console.log(`[UsageService] Incremented ${feature} for user:`, userId);
+
+    // Invalidate cache for this user/feature combination
+    const cacheKey = `limit_${userId}_${feature}`;
+    limitCache.del(cacheKey);
+    console.log(`[UsageService] Invalidated cache for ${cacheKey}`);
   } catch (error) {
     console.error('[UsageService] Error incrementing usage:', error);
     throw error;
@@ -370,6 +410,11 @@ async function decrementUsage(userId, feature) {
     }
 
     console.log(`[UsageService] Decremented ${feature} for user:`, userId);
+
+    // Invalidate cache for this user/feature combination
+    const cacheKey = `limit_${userId}_${feature}`;
+    limitCache.del(cacheKey);
+    console.log(`[UsageService] Invalidated cache for ${cacheKey}`);
   } catch (error) {
     console.error('[UsageService] Error decrementing usage:', error);
     throw error;

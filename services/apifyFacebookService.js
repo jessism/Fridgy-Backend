@@ -10,7 +10,8 @@ class ApifyFacebookService {
     this.postsActorId = process.env.APIFY_FACEBOOK_POSTS_ACTOR || 'apify~facebook-posts-scraper';
     // SHARED limit with Instagram
     this.freeLimit = parseInt(process.env.APIFY_FREE_TIER_LIMIT) || 50;
-    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 30;
+    // Reduced from 30s to 20s to fit within Railway's 30s timeout (with room for DB queries)
+    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 20;
 
     this.supabase = createClient(
       process.env.SUPABASE_URL,
@@ -155,6 +156,59 @@ class ApifyFacebookService {
 
     console.log('[ApifyFacebook] No og:image found after all attempts');
     return null;
+  }
+
+  /**
+   * Validate and filter invalid author names
+   * Facebook Apify responses sometimes return content-type keywords instead of actual usernames
+   * @param {string} name - Author name to validate
+   * @returns {string|null} - Valid name or null if invalid
+   */
+  validateAuthorName(name) {
+    if (!name || typeof name !== 'string') {
+      return null;
+    }
+
+    // List of invalid values that Apify sometimes returns as author names
+    const INVALID_NAMES = [
+      'reel', 'reels',
+      'video', 'videos',
+      'post', 'posts',
+      'share', 'watch',
+      'story', 'stories',
+      'facebook', 'fb',
+      'facebook_user', 'page', 'user'
+    ];
+
+    const normalized = name.toLowerCase().trim();
+
+    // Filter out invalid keywords
+    if (INVALID_NAMES.includes(normalized)) {
+      console.log(`[ApifyFacebook] ❌ Rejected invalid author name: "${name}"`);
+      return null;
+    }
+
+    // Filter out numeric IDs (should be resolved via Graph API separately)
+    if (/^\d+$/.test(normalized)) {
+      console.log(`[ApifyFacebook] ⚠️  Detected numeric ID as author: "${name}" - needs Graph API resolution`);
+      return null;
+    }
+
+    // Filter out very short names (likely invalid)
+    if (normalized.length < 2) {
+      console.log(`[ApifyFacebook] ❌ Rejected too-short author name: "${name}"`);
+      return null;
+    }
+
+    // Filter out URL-like strings
+    if (normalized.includes('http') || normalized.includes('www.')) {
+      console.log(`[ApifyFacebook] ❌ Rejected URL-like author name: "${name}"`);
+      return null;
+    }
+
+    // Valid name found
+    console.log(`[ApifyFacebook] ✅ Valid author name: "${name}"`);
+    return name.trim();
   }
 
   async extractFromUrl(facebookUrl, userId) {
@@ -311,9 +365,10 @@ class ApifyFacebookService {
     }
   }
 
-  async pollForResults(actorId, runId, maxAttempts = 30) {
+  async pollForResults(actorId, runId, maxAttempts = 20) {
     let attempts = 0;
-    const pollInterval = 2000;
+    // Reduced from 2s to 1s for faster detection (20 attempts * 1s = 20s max)
+    const pollInterval = 1000;
 
     while (attempts < maxAttempts) {
       try {
@@ -601,9 +656,20 @@ class ApifyFacebookService {
 
     // Extract author info (different field names between actors)
     // Priority: display names first, then fall back to user ID
+    // IMPORTANT: Validate each field to filter out invalid values like "reel", "video", etc.
+    const validUsername = this.validateAuthorName(data.owner?.name) ||
+                          this.validateAuthorName(data.pageName) ||
+                          this.validateAuthorName(data.authorName) ||
+                          this.validateAuthorName(data.ownerUsername) ||
+                          this.validateAuthorName(data.owner?.username) ||
+                          this.validateAuthorName(data.pageUsername) ||
+                          null;  // null instead of 'facebook_user' for better downstream handling
+
     const author = {
-      username: data.owner?.name || data.pageName || data.authorName || data.ownerUsername || 'facebook_user',
-      fullName: data.owner?.name || data.pageName || data.authorName || '',
+      username: validUsername,
+      fullName: this.validateAuthorName(data.owner?.name) ||
+                this.validateAuthorName(data.pageName) ||
+                this.validateAuthorName(data.authorName) || '',
       profilePic: data.owner?.profilePicUrl || data.ownerProfilePicUrl || ''
     };
 

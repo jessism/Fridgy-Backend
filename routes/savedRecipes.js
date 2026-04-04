@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
-const { checkUploadedRecipeLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
+const { checkSavedRecipeLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 const { createClient } = require('@supabase/supabase-js');
 const { generateRecipeTags } = require('../services/recipeTagService');
 
@@ -11,7 +11,7 @@ const supabase = createClient(
 );
 
 // POST /api/saved-recipes - Create a new saved recipe
-router.post('/', authMiddleware.authenticateToken, checkUploadedRecipeLimit, async (req, res) => {
+router.post('/', authMiddleware.authenticateToken, checkSavedRecipeLimit, async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id;
     const recipeData = req.body;
@@ -25,6 +25,8 @@ router.post('/', authMiddleware.authenticateToken, checkUploadedRecipeLimit, asy
       user_id: userId,
       source_type: recipeData.source_type || 'manual',
       source_author: recipeData.source_author || null,
+      source_url: recipeData.source_url || null,
+      source_author_image: recipeData.source_author_image || null,
       title: recipeData.title || 'Untitled Recipe',
       summary: recipeData.summary || recipeData.description || '',
       image: recipeData.image || null,
@@ -72,9 +74,9 @@ router.post('/', authMiddleware.authenticateToken, checkUploadedRecipeLimit, asy
 
     console.log(`[SavedRecipes] Recipe created successfully with ID: ${data.id}`);
 
-    // Increment usage counter
-    await incrementUsageCounter(userId, 'uploaded_recipes');
-    console.log(`[SavedRecipes] Usage counter incremented for user ${userId}`);
+    // Increment usage counter (all recipe saves count toward weekly limit)
+    await incrementUsageCounter(userId, 'saved_recipes');
+    console.log(`[SavedRecipes] Saved recipes counter incremented for user ${userId}`);
 
     res.json({
       success: true,

@@ -65,14 +65,17 @@ function checkLimit(feature) {
 
 console.log('[checkLimits] MODULE LOADING - Creating middleware instances...');
 
-// Inventory/grocery items limit (20 for free tier)
+// Inventory/grocery items limit (10 for free tier)
 const checkInventoryLimit = checkLimit('grocery_items');
 console.log('[checkLimits] checkInventoryLimit created:', typeof checkInventoryLimit);
 
-// Imported recipes limit (10 for free tier)
+// Saved recipes limit (5 per week for free tier - ALL recipe sources)
+const checkSavedRecipeLimit = checkLimit('saved_recipes');
+
+// Imported recipes limit (10 for free tier) - DEPRECATED, use checkSavedRecipeLimit
 const checkImportedRecipeLimit = checkLimit('imported_recipes');
 
-// Uploaded/manual recipes limit (10 for free tier)
+// Uploaded/manual recipes limit (10 for free tier) - DEPRECATED, use checkSavedRecipeLimit
 const checkUploadedRecipeLimit = checkLimit('uploaded_recipes');
 
 // Meal logs limit (10 for free tier)
@@ -190,8 +193,9 @@ async function decrementUsageCounter(userId, feature) {
 module.exports = {
   // Specific limit checkers
   checkInventoryLimit,
-  checkImportedRecipeLimit,
-  checkUploadedRecipeLimit,
+  checkSavedRecipeLimit, // NEW: Combined limit for all recipe saves (5/week)
+  checkImportedRecipeLimit, // DEPRECATED
+  checkUploadedRecipeLimit, // DEPRECATED
   checkMealLogLimit,
   checkShoppingListLimit,
   checkJoinedListLimit,

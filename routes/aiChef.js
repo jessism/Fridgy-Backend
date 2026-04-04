@@ -15,7 +15,7 @@ router.post('/ask', authMiddleware.authenticateToken, async (req, res) => {
   const requestId = Math.random().toString(36).substring(7);
 
   try {
-    const { question, recipe, conversationHistory = [] } = req.body;
+    const { question, recipe, conversationHistory = [], inputMode = 'text' } = req.body;
 
     // Input validation
     if (!question || typeof question !== 'string') {
@@ -83,7 +83,7 @@ Respond naturally as if you're in the kitchen together.`;
     const apiKey = process.env.OPENROUTER_API_KEY;
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000); // 25 second timeout
+    const timeout = setTimeout(() => controller.abort(), 45000); // 45 seconds - allow time for TTS
 
     try {
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -128,9 +128,11 @@ Respond naturally as if you're in the kitchen together.`;
 
       console.log(`[AI-Chef:${requestId}] Answer: "${answer.substring(0, 100)}..."`);
 
-      // Generate TTS with Google Cloud (ACTIVE)
+      // Generate TTS ONLY if input mode is 'voice'
       let audioUrl = null;
-      try {
+      if (inputMode === 'voice') {
+        console.log(`[AI-Chef:${requestId}] Voice mode - generating TTS`);
+        try {
         const ttsResponse = await fetch(
           `https://texttospeech.googleapis.com/v1/text:synthesize?key=${GOOGLE_TTS_API_KEY}`,
           {
@@ -167,9 +169,12 @@ Respond naturally as if you're in the kitchen together.`;
             errorBody: errorBody
           });
         }
-      } catch (ttsError) {
-        console.error(`[AI-Chef:${requestId}] Google TTS Error:`, ttsError);
-        // Continue without audio - mobile will use expo-speech fallback
+        } catch (ttsError) {
+          console.error(`[AI-Chef:${requestId}] Google TTS Error:`, ttsError);
+          // Continue without audio - mobile will use expo-speech fallback
+        }
+      } else {
+        console.log(`[AI-Chef:${requestId}] Text mode - skipping TTS generation`);
       }
 
       /* BACKUP: ElevenLabs TTS (currently blocked by abuse detection)
@@ -253,6 +258,74 @@ Respond naturally as if you're in the kitchen together.`;
     res.status(500).json({
       success: false,
       error: 'AI Chef temporarily unavailable. Please try again.'
+    });
+  }
+});
+
+// Speech-to-Text endpoint for voice input
+router.post('/transcribe', authMiddleware.authenticateToken, async (req, res) => {
+  const requestId = Math.random().toString(36).substring(7);
+
+  try {
+    const { audioBase64 } = req.body;
+
+    // Input validation
+    if (!audioBase64) {
+      return res.status(400).json({
+        success: false,
+        error: 'Audio data required'
+      });
+    }
+
+    console.log(`[STT:${requestId}] User: ${req.user.id}, Audio size: ${audioBase64.length} bytes`);
+
+    // Convert base64 to buffer
+    const audioBuffer = Buffer.from(audioBase64, 'base64');
+
+    // Create FormData for OpenAI Whisper
+    const FormData = require('form-data');
+    const formData = new FormData();
+    formData.append('file', audioBuffer, {
+      filename: 'audio.m4a',
+      contentType: 'audio/m4a',
+    });
+    formData.append('model', 'whisper-1');
+    formData.append('language', 'en'); // Optimize for English
+
+    // Call OpenAI Whisper API
+    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        ...formData.getHeaders(),
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[STT:${requestId}] Whisper API error:`, response.status, errorText);
+      throw new Error(`Whisper API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (!data.text) {
+      throw new Error('No transcript in response');
+    }
+
+    console.log(`[STT:${requestId}] Transcript: "${data.text}"`);
+
+    res.json({
+      success: true,
+      transcript: data.text,
+    });
+
+  } catch (error) {
+    console.error(`[STT:${requestId}] Error:`, error);
+    res.status(500).json({
+      success: false,
+      error: 'Transcription failed. Please try again.',
     });
   }
 });

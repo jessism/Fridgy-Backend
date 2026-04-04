@@ -413,7 +413,7 @@ class ExpiryNotificationScheduler {
       }
 
       const payload = {
-        title: `${emoji} Trackabite Reminder`,
+        title: `Trackabite Reminder`,
         body: message,
         icon: '/logo192.png',
         badge: '/logo192.png',

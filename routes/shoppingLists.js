@@ -77,8 +77,8 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/shopping-lists - Create new list
-router.post('/', authMiddleware.authenticateToken, checkShoppingListLimit, async (req, res) => {
+// POST /api/shopping-lists - Create new list (unlimited for all tiers)
+router.post('/', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const { name, color, items, settings } = req.body;
     const userId = req.user.id;
@@ -567,6 +567,22 @@ router.post('/:id/share', authMiddleware.authenticateToken, async (req, res) => 
     const { emails } = req.body; // Array of emails
     const inviterId = req.user.id;
     const inviterName = `${req.user.firstName || ''}`.trim() || req.user.email;
+
+    // Check if user has premium access (sharing is premium only)
+    const { data: userData } = await supabase
+      .from('users')
+      .select('tier')
+      .eq('id', inviterId)
+      .single();
+
+    const userTier = userData?.tier || 'free';
+    if (userTier === 'free') {
+      return res.status(402).json({
+        error: 'SHARING_PREMIUM_ONLY',
+        message: 'List sharing is only available with a premium subscription.',
+        upgradeRequired: true,
+      });
+    }
 
     // Check if user is owner or member
     const { data: member } = await supabase

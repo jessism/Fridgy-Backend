@@ -251,7 +251,7 @@ class PushNotificationService {
     if (!url) return '/(tabs)/inventory';
     const routes = {
       '/inventory': '/(tabs)/inventory',
-      '/mealplans': '/(tabs)/meals',
+      '/mealplans': '/(tabs)/meals?tab=meallog',
       '/recipes': '/(tabs)/meals',
       '/shopping-lists': '/(tabs)/meals',
     };
@@ -469,7 +469,7 @@ class PushNotificationService {
     }
 
     const payload = {
-      title: `${emoji} Trackabite Reminder`,
+      title: `Trackabite Reminder`,
       body: message,
       icon: '/logo192.png',
       badge: '/logo192.png',

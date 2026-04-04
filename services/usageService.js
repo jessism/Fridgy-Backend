@@ -29,7 +29,7 @@ function getLimitsForTier(tier) {
       imported_recipes: 10, // DEPRECATED - keeping for backwards compatibility
       uploaded_recipes: 10, // DEPRECATED - keeping for backwards compatibility
       meal_logs: Infinity, // Unlimited - historical tracking shouldn't be limited
-      owned_shopping_lists: 5,
+      owned_shopping_lists: Infinity, // Unlimited lists for free tier (just can't share)
       joined_shopping_lists: 1,
       joined_cookbooks: 1, // 1 joined cookbook for free tier
       ai_recipes: 3, // 3 generations per month (9 recipes total)

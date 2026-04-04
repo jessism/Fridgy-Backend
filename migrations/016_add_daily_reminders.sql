@@ -28,7 +28,7 @@ ADD COLUMN IF NOT EXISTS daily_reminders JSONB DEFAULT '{
     "enabled": false,
     "time": "08:00",
     "message": "Start your day right - check breakfast options",
-    "emoji": "🌅"
+    "emoji": "☀️"
   },
   "lunch_reminder": {
     "enabled": false,

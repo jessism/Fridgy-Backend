@@ -203,11 +203,27 @@ const inventoryController = {
       }));
       
       console.log(`📦 [${requestId}] Formatted items:`, formattedItems);
-      
+
+      // Get limit info for user
+      const usageService = require('../services/usageService');
+      let limits = null;
+      try {
+        const limitCheck = await usageService.checkLimit(userId, 'grocery_items');
+        limits = {
+          tier: limitCheck.tier,
+          current: formattedItems.length,
+          max: limitCheck.limit === Infinity ? null : limitCheck.limit,
+        };
+      } catch (limitError) {
+        console.error(`📦 [${requestId}] Error checking limits:`, limitError);
+        // Don't fail the request if limit check fails
+      }
+
       res.json({
         success: true,
         items: formattedItems,
         count: formattedItems.length,
+        limits: limits,
         requestId: requestId
       });
       

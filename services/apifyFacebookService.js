@@ -654,6 +654,18 @@ class ApifyFacebookService {
       }
     }
 
+    // Debug: Log all author-related fields from Apify response
+    console.log('[ApifyFacebook] 🔍 Author fields from Apify:', {
+      'owner.name': data.owner?.name,
+      'owner.username': data.owner?.username,
+      'owner.id': data.owner?.id,
+      'pageName': data.pageName,
+      'authorName': data.authorName,
+      'ownerUsername': data.ownerUsername,
+      'pageUsername': data.pageUsername,
+      'full owner object': data.owner
+    });
+
     // Extract author info (different field names between actors)
     // Priority: display names first, then fall back to user ID
     // IMPORTANT: Validate each field to filter out invalid values like "reel", "video", etc.

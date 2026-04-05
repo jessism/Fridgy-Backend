@@ -93,6 +93,9 @@ const checkJoinedCookbookLimit = checkLimit('joined_cookbooks');
 // AI recipe generation limit (3 for free tier)
 const checkAIRecipeLimit = checkLimit('ai_recipes');
 
+// Aggregated shopping lists from meal plan limit (1 per week for free tier)
+const checkAggregatedListLimit = checkLimit('aggregated_shopping_lists');
+
 /**
  * Premium feature gate - requires premium or grandfathered tier
  * Used for features that are completely blocked on free tier (analytics)
@@ -198,6 +201,7 @@ module.exports = {
   checkUploadedRecipeLimit, // DEPRECATED
   checkMealLogLimit,
   checkShoppingListLimit,
+  checkAggregatedListLimit, // NEW: Aggregated shopping lists from meal plan (1/week)
   checkJoinedListLimit,
   checkJoinedCookbookLimit,
   checkAIRecipeLimit,

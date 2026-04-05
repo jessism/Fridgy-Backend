@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
+const { checkAggregatedListLimit, incrementUsageCounter } = require('../middleware/checkLimits');
 const { createClient } = require('@supabase/supabase-js');
 const googleCalendarService = require('../services/googleCalendarService');
 const ingredientAggregationService = require('../services/ingredientAggregationService');
@@ -199,8 +200,25 @@ router.get('/week-counts', authMiddleware.authenticateToken, async (req, res) =>
   }
 });
 
+/**
+ * Conditional middleware for aggregated list limit
+ * Only check limit when creating a list (list_name provided)
+ * Allow unlimited preview (no list_name)
+ */
+async function checkAggregatedListLimitConditional(req, res, next) {
+  // Only check limit if user is creating (list_name provided)
+  // Allow preview without limit check
+  if (req.body.list_name) {
+    return checkAggregatedListLimit(req, res, next);
+  }
+  next();
+}
+
 // POST /api/meal-plans/generate-grocery-list - Generate consolidated grocery list from meal plans
-router.post('/generate-grocery-list', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/generate-grocery-list',
+  authMiddleware.authenticateToken,
+  checkAggregatedListLimitConditional,
+  async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id;
     const { start_date, end_date, list_name, list_color } = req.body;
@@ -384,6 +402,10 @@ router.post('/generate-grocery-list', authMiddleware.authenticateToken, async (r
       }
 
       console.log(`[MealPlans] Created shopping list ${newList.id} with ${items.length} items`);
+
+      // Increment usage counter for aggregated shopping lists
+      await incrementUsageCounter(userId, 'aggregated_shopping_lists');
+      console.log(`[MealPlans] Incremented aggregated_shopping_lists counter for user ${userId}`);
 
       return res.json({
         success: true,

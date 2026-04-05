@@ -30,6 +30,7 @@ function getLimitsForTier(tier) {
       uploaded_recipes: 10, // DEPRECATED - keeping for backwards compatibility
       meal_logs: Infinity, // Unlimited - historical tracking shouldn't be limited
       owned_shopping_lists: Infinity, // Unlimited lists for free tier (just can't share)
+      aggregated_shopping_lists: 1, // 1 aggregated list from meal plan per week
       joined_shopping_lists: 1,
       joined_cookbooks: 1, // 1 joined cookbook for free tier
       ai_recipes: 3, // 3 generations per month (9 recipes total)
@@ -42,6 +43,7 @@ function getLimitsForTier(tier) {
       uploaded_recipes: Infinity,
       meal_logs: Infinity,
       owned_shopping_lists: Infinity,
+      aggregated_shopping_lists: Infinity,
       joined_shopping_lists: Infinity,
       joined_cookbooks: Infinity,
       ai_recipes: Infinity,
@@ -55,6 +57,7 @@ function getLimitsForTier(tier) {
       uploaded_recipes: Infinity,
       meal_logs: Infinity,
       owned_shopping_lists: Infinity,
+      aggregated_shopping_lists: Infinity,
       joined_shopping_lists: Infinity,
       joined_cookbooks: Infinity,
       ai_recipes: Infinity,
@@ -75,6 +78,7 @@ function getColumnName(feature) {
   const columnMapping = {
     'ai_recipes': 'ai_recipe_generations_count',
     'saved_recipes': 'saved_recipes_count',
+    'aggregated_shopping_lists': 'aggregated_shopping_lists_count',
     // All others follow the pattern: {feature}_count
   };
 
@@ -137,6 +141,7 @@ async function getUserUsage(userId) {
         uploaded_recipes_count: usage.uploaded_recipes_count || 0,
         meal_logs_count: usage.meal_logs_count || 0,
         owned_shopping_lists_count: usage.owned_shopping_lists_count || 0,
+        aggregated_shopping_lists_count: usage.aggregated_shopping_lists_count || 0, // NEW: Weekly aggregated list counter
         joined_shopping_lists_count: usage.joined_shopping_lists_count || 0,
         ai_recipe_generations_count: usage.ai_recipe_generations_count || 0,
       },
@@ -264,7 +269,8 @@ async function checkLimit(userId, feature) {
           .from('usage_limits')
           .update({
             grocery_items_count: 0,
-            saved_recipes_count: 0, // NEW: Weekly recipe counter
+            saved_recipes_count: 0, // Weekly recipe counter
+            aggregated_shopping_lists_count: 0, // Weekly aggregated list counter
             imported_recipes_count: 0, // Keep for backwards compatibility
             uploaded_recipes_count: 0, // Keep for backwards compatibility
             owned_shopping_lists_count: 0,

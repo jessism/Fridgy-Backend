@@ -263,11 +263,16 @@ class ApifyFacebookService {
       // Parse and normalize results to match Instagram format
       let parsedData = await this.parseApifyResponse(results.data, contentType, facebookUrl);
 
-      // FALLBACK: If reels scraper returned no caption, try posts scraper
+      // FALLBACK: If reels scraper returned no caption OR no valid author, try posts scraper
       // This handles /share/r/ URLs that the reels scraper can't process
-      if ((contentType === 'reel' || contentType === 'video') &&
-          (!parsedData.caption || parsedData.caption.length === 0)) {
-        console.log('[ApifyFacebook] Reels/video scraper returned no caption, trying posts scraper as fallback...');
+      // Also handles /share/v/ URLs where reels scraper returns pageName='reel' instead of actual username
+      const hasValidAuthor = parsedData.author && parsedData.author.username;
+      const needsFallback = !parsedData.caption || parsedData.caption.length === 0 || !hasValidAuthor;
+
+      if ((contentType === 'reel' || contentType === 'video') && needsFallback) {
+        const fallbackReason = !parsedData.caption ? 'no caption' :
+                               !hasValidAuthor ? 'no valid author' : 'short caption';
+        console.log(`[ApifyFacebook] Reels/video scraper returned ${fallbackReason}, trying posts scraper as fallback...`);
 
         try {
           const fallbackRunResponse = await this.startActorRun(this.postsActorId, facebookUrl, 'post');
@@ -275,15 +280,24 @@ class ApifyFacebookService {
             const fallbackResults = await this.pollForResults(this.postsActorId, fallbackRunResponse.runId);
             if (fallbackResults.success && fallbackResults.data) {
               const fallbackParsed = await this.parseApifyResponse(fallbackResults.data, 'post', facebookUrl);
-              if (fallbackParsed.caption && fallbackParsed.caption.length > 0) {
-                console.log('[ApifyFacebook] Posts scraper fallback successful, got caption with', fallbackParsed.caption.length, 'chars');
+              const fallbackHasCaption = fallbackParsed.caption && fallbackParsed.caption.length > 0;
+              const fallbackHasAuthor = fallbackParsed.author && fallbackParsed.author.username;
+
+              // Use fallback if it has better caption OR better author
+              if (fallbackHasCaption || (fallbackHasAuthor && !hasValidAuthor)) {
+                if (fallbackHasCaption) {
+                  console.log('[ApifyFacebook] Posts scraper fallback successful, got caption with', fallbackParsed.caption.length, 'chars');
+                }
+                if (fallbackHasAuthor && !hasValidAuthor) {
+                  console.log('[ApifyFacebook] Posts scraper fallback successful, got author:', fallbackParsed.author.username);
+                }
                 // Merge: keep original images if fallback has none
                 if (parsedData.images?.length > 0 && (!fallbackParsed.images || fallbackParsed.images.length === 0)) {
                   fallbackParsed.images = parsedData.images;
                 }
                 parsedData = fallbackParsed;
               } else {
-                console.log('[ApifyFacebook] Posts scraper fallback also returned no caption');
+                console.log('[ApifyFacebook] Posts scraper fallback also returned no caption or valid author');
               }
             }
           }

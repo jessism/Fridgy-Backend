@@ -115,17 +115,59 @@ function generateRecipeTags(recipe) {
   }
 
   // === PRIORITY 4: Protein Type (from ingredients) ===
+  // Common non-protein derivatives to exclude from protein tag detection
+  const NON_PROTEIN_KEYWORDS = [
+    'bouillon', 'broth', 'stock', 'powder', 'cube', 'base', 'concentrate',
+    'seasoning', 'flavoring', 'extract', 'essence'
+  ];
+
+  /**
+   * Check if an ingredient is a protein derivative (bouillon, broth, stock)
+   * rather than actual protein
+   * @param {string} ingredientName - Lowercase ingredient name
+   * @returns {boolean} True if it's a derivative, not actual protein
+   */
+  const isProteinDerivative = (ingredientName) => {
+    return NON_PROTEIN_KEYWORDS.some(keyword =>
+      ingredientName.includes(keyword)
+    );
+  };
+
   const ingredientText = extendedIngredients
     .map(ing => (ing.name || ing.original || '').toLowerCase())
     .join(' ');
 
-  if (/chicken|turkey|poultry/.test(ingredientText)) {
+  // Process each ingredient individually to avoid false positives
+  const hasChicken = extendedIngredients.some(ing => {
+    const name = (ing.name || ing.original || '').toLowerCase();
+    return /\b(chicken|turkey|poultry)\b/.test(name) && !isProteinDerivative(name);
+  });
+
+  // BEEF CAVEAT: Include beef even if it's just broth/stock, as some people
+  // have dietary restrictions that prevent them from consuming beef derivatives
+  const hasBeef = extendedIngredients.some(ing => {
+    const name = (ing.name || ing.original || '').toLowerCase();
+    return /\b(beef|steak|ground beef|hamburger)\b/.test(name);
+  });
+
+  const hasSeafood = extendedIngredients.some(ing => {
+    const name = (ing.name || ing.original || '').toLowerCase();
+    return /\b(shrimp|salmon|fish|tuna|seafood|lobster|crab|tilapia|cod|halibut|mahi)\b/.test(name) && !isProteinDerivative(name);
+  });
+
+  const hasPork = extendedIngredients.some(ing => {
+    const name = (ing.name || ing.original || '').toLowerCase();
+    return /\b(pork|bacon|ham|sausage|prosciutto|pepperoni)\b/.test(name) && !isProteinDerivative(name);
+  });
+
+  // Assign protein tags
+  if (hasChicken) {
     tags.push(findTag('tag_chicken'));
-  } else if (/beef|steak|ground beef|hamburger/.test(ingredientText)) {
+  } else if (hasBeef) {
     tags.push(findTag('tag_beef'));
-  } else if (/shrimp|salmon|fish|tuna|seafood|lobster|crab|tilapia|cod/.test(ingredientText)) {
+  } else if (hasSeafood) {
     tags.push(findTag('tag_seafood'));
-  } else if (/pork|bacon|ham|sausage/.test(ingredientText)) {
+  } else if (hasPork) {
     tags.push(findTag('tag_pork'));
   } else if (vegetarian || vegan || /tofu|tempeh|lentil|chickpea|beans/.test(ingredientText)) {
     tags.push(findTag('tag_plant_based'));

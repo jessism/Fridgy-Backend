@@ -438,10 +438,13 @@ async function syncUsageCounts(userId) {
     const supabase = getServiceClient();
 
     // Calculate actual counts from database
+    // IMPORTANT: Only count non-deleted items (deleted_at IS NULL)
+    // This ensures limit enforcement matches what users see in the UI
     const { count: groceryCount } = await supabase
       .from('fridge_items')
       .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .is('deleted_at', null);
 
     const { count: importedRecipesCount } = await supabase
       .from('saved_recipes')

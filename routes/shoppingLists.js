@@ -30,6 +30,96 @@ const canUserModifyList = async (userId, listId) => {
   return data !== null;
 };
 
+// GET /api/shopping-lists/public/:shareCode - Public view of a shared list (no auth)
+router.get('/public/:shareCode', async (req, res) => {
+  try {
+    const { shareCode } = req.params;
+    const normalized = shareCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const formatted = normalized.length === 8
+      ? `${normalized.slice(0, 4)}-${normalized.slice(4)}`
+      : shareCode.toUpperCase();
+
+    const { data: list, error } = await supabase
+      .from('shopping_lists')
+      .select('name, color, shopping_list_items(name, quantity, unit, category, is_checked)')
+      .eq('share_code', formatted)
+      .single();
+
+    if (error || !list) {
+      return res.status(404).json({ error: 'List not found' });
+    }
+
+    const items = list.shopping_list_items || [];
+    const unchecked = items.filter(i => !i.is_checked);
+    const checked = items.filter(i => i.is_checked);
+
+    // Return HTML for browsers
+    if (req.accepts('html') && !req.accepts('json')) {
+      const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      const renderItem = (item, done) => {
+        const qty = [item.quantity, item.unit].filter(Boolean).join(' ');
+        const label = esc(qty ? `${item.name} — ${qty}` : item.name);
+        return `<li style="padding:12px 0;border-bottom:1px solid #e9e9e1;${done ? 'text-decoration:line-through;color:#9ca3af;' : 'color:#2e2f2b;'}font-size:16px;list-style:none;">${done ? '&#10003; ' : ''}${label}</li>`;
+      };
+
+      const checkedSection = checked.length > 0
+        ? `<div style="margin-top:24px;"><p style="font-size:13px;font-weight:700;color:#8a8b86;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Done (${checked.length})</p><ul style="margin:0;padding:0;">${checked.map(i => renderItem(i, true)).join('')}</ul></div>`
+        : '';
+
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${esc(list.name)} — Trackabite</title>
+  <meta property="og:title" content="${esc(list.name)}">
+  <meta property="og:description" content="Shopping list with ${items.length} item${items.length !== 1 ? 's' : ''} — shared from Trackabite">
+  <meta property="og:type" content="website">
+  <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f8f7f0;min-height:100vh;}</style>
+</head>
+<body>
+  <div style="max-width:480px;margin:0 auto;padding:20px 16px 40px;">
+    <div style="text-align:center;margin-bottom:24px;padding-top:20px;">
+      <p style="font-size:13px;color:#8a8b86;margin-bottom:4px;">Shared from Trackabite</p>
+      <h1 style="font-size:24px;font-weight:800;color:#2e2f2b;letter-spacing:-0.3px;">${esc(list.name)}</h1>
+      <p style="font-size:14px;color:#8a8b86;margin-top:4px;">${items.length} item${items.length !== 1 ? 's' : ''}</p>
+    </div>
+    <div style="background:#fff;border-radius:16px;padding:16px 20px;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+      <ul style="margin:0;padding:0;">${unchecked.map(i => renderItem(i, false)).join('')}</ul>
+      ${checkedSection}
+    </div>
+    <div style="text-align:center;margin-top:32px;">
+      <a href="https://apps.apple.com/app/trackabite/id6738028065" style="display:inline-block;background:#c5fe01;color:#2e2f2b;font-weight:700;font-size:15px;padding:14px 32px;border-radius:50px;text-decoration:none;">Get Trackabite</a>
+    </div>
+  </div>
+</body>
+</html>`;
+
+      return res.type('html').send(html);
+    }
+
+    // JSON response for API consumers
+    res.json({
+      success: true,
+      list: {
+        name: list.name,
+        color: list.color,
+        items: items.map(i => ({
+          name: i.name,
+          quantity: i.quantity,
+          unit: i.unit,
+          category: i.category,
+          is_checked: i.is_checked,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching public list:', error);
+    res.status(500).json({ error: 'Failed to fetch list' });
+  }
+});
+
 // GET /api/shopping-lists - Get all lists for user
 router.get('/', authMiddleware.authenticateToken, async (req, res) => {
   try {

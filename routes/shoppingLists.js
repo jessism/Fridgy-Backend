@@ -120,6 +120,82 @@ router.get('/public/:shareCode', async (req, res) => {
   }
 });
 
+// GET /api/shopping-lists/join-page/:shareCode - Public landing page for collab list join links (no auth)
+router.get('/join-page/:shareCode', async (req, res) => {
+  try {
+    const { shareCode } = req.params;
+    const normalized = shareCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const formatted = normalized.length === 8
+      ? `${normalized.slice(0, 4)}-${normalized.slice(4)}`
+      : shareCode.toUpperCase();
+
+    const { data: list, error } = await supabase
+      .from('shopping_lists')
+      .select('name, color, shopping_list_items(id)')
+      .eq('share_code', formatted)
+      .single();
+
+    if (error || !list) {
+      return res.status(404).json({ error: 'List not found' });
+    }
+
+    const itemCount = list.shopping_list_items?.length || 0;
+    const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Join ${esc(list.name)} — Trackabite</title>
+  <meta property="og:title" content="${esc(list.name)}">
+  <meta property="og:description" content="You've been invited to collaborate on a shopping list with ${itemCount} item${itemCount !== 1 ? 's' : ''} on Trackabite">
+  <meta property="og:type" content="website">
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f8f7f0;min-height:100vh;}
+    .container{max-width:480px;margin:0 auto;padding:60px 24px 40px;text-align:center;}
+    .icon{font-size:64px;margin-bottom:16px;}
+    h1{font-size:24px;font-weight:800;color:#2e2f2b;letter-spacing:-0.3px;margin-bottom:8px;}
+    .subtitle{font-size:16px;color:#5b5c57;margin-bottom:8px;}
+    .item-count{font-size:14px;color:#8a8b86;margin-bottom:40px;}
+    .opening{font-size:15px;color:#8a8b86;margin-bottom:32px;display:none;}
+    .btn{display:inline-block;background:#c5fe01;color:#2e2f2b;font-weight:700;font-size:16px;padding:16px 40px;border-radius:50px;text-decoration:none;}
+    .btn-secondary{display:inline-block;color:#4c6400;font-weight:600;font-size:14px;margin-top:16px;text-decoration:none;}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">📋</div>
+    <h1>${esc(list.name)}</h1>
+    <p class="subtitle">You've been invited to collaborate</p>
+    <p class="item-count">${itemCount} item${itemCount !== 1 ? 's' : ''}</p>
+    <p class="opening" id="opening">Opening Trackabite...</p>
+    <div id="fallback" style="display:none;">
+      <a class="btn" href="https://apps.apple.com/app/trackabite/id6738028065">Get Trackabite</a>
+      <br>
+      <a class="btn-secondary" href="trackabite://join/list/${formatted}">I have the app →</a>
+    </div>
+  </div>
+  <script>
+    var deepLink = 'trackabite://join/list/${formatted}';
+    document.getElementById('opening').style.display = 'block';
+    window.location.href = deepLink;
+    setTimeout(function() {
+      document.getElementById('opening').style.display = 'none';
+      document.getElementById('fallback').style.display = 'block';
+    }, 1500);
+  </script>
+</body>
+</html>`;
+
+    res.type('html').send(html);
+  } catch (error) {
+    console.error('Error fetching join page:', error);
+    res.status(500).json({ error: 'Failed to load join page' });
+  }
+});
+
 // GET /api/shopping-lists - Get all lists for user
 router.get('/', authMiddleware.authenticateToken, async (req, res) => {
   try {

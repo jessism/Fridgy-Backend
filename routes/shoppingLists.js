@@ -120,6 +120,58 @@ router.get('/public/:shareCode', async (req, res) => {
   }
 });
 
+// POST /api/shopping-lists/public/:shareCode/toggle/:itemId - Toggle item check from web (no auth)
+router.post('/public/:shareCode/toggle/:itemId', async (req, res) => {
+  try {
+    const { shareCode, itemId } = req.params;
+    const normalized = shareCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const formatted = normalized.length === 8
+      ? `${normalized.slice(0, 4)}-${normalized.slice(4)}`
+      : shareCode.toUpperCase();
+
+    // Find list by share code
+    const { data: list, error: listError } = await supabase
+      .from('shopping_lists')
+      .select('id')
+      .eq('share_code', formatted)
+      .single();
+
+    if (listError || !list) {
+      return res.status(404).json({ error: 'List not found' });
+    }
+
+    // Get current item state and verify it belongs to this list
+    const { data: currentItem } = await supabase
+      .from('shopping_list_items')
+      .select('is_checked, name')
+      .eq('id', itemId)
+      .eq('list_id', list.id)
+      .single();
+
+    if (!currentItem) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    const newCheckedState = !currentItem.is_checked;
+
+    const { error: updateError } = await supabase
+      .from('shopping_list_items')
+      .update({
+        is_checked: newCheckedState,
+        checked_by_name: newCheckedState ? 'Web' : null,
+        checked_at: newCheckedState ? new Date().toISOString() : null,
+      })
+      .eq('id', itemId);
+
+    if (updateError) throw updateError;
+
+    res.json({ success: true, is_checked: newCheckedState });
+  } catch (error) {
+    console.error('Error toggling item:', error);
+    res.status(500).json({ error: 'Failed to toggle item' });
+  }
+});
+
 // GET /api/shopping-lists/join-page/:shareCode - Public landing page for collab list join links (no auth)
 router.get('/join-page/:shareCode', async (req, res) => {
   try {
@@ -131,7 +183,7 @@ router.get('/join-page/:shareCode', async (req, res) => {
 
     const { data: list, error } = await supabase
       .from('shopping_lists')
-      .select('name, color, shopping_list_items(id)')
+      .select('name, color, shopping_list_items(id, name, quantity, unit, is_checked)')
       .eq('share_code', formatted)
       .single();
 
@@ -139,52 +191,95 @@ router.get('/join-page/:shareCode', async (req, res) => {
       return res.status(404).json({ error: 'List not found' });
     }
 
-    const itemCount = list.shopping_list_items?.length || 0;
+    const items = list.shopping_list_items || [];
+    const unchecked = items.filter(i => !i.is_checked);
+    const checked = items.filter(i => i.is_checked);
+    const itemCount = items.length;
     const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    const renderItem = (item) => {
+      const qty = [item.quantity, item.unit].filter(Boolean).join(' ');
+      const label = esc(qty ? `${item.name} — ${qty}` : item.name);
+      const checkedAttr = item.is_checked ? 'checked' : '';
+      const strikeStyle = item.is_checked ? 'text-decoration:line-through;color:#9ca3af;' : '';
+      return `<li class="item" id="item-${item.id}">
+        <label style="display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid #e9e9e1;cursor:pointer;">
+          <input type="checkbox" ${checkedAttr} onchange="toggleItem('${item.id}', this)" style="width:22px;height:22px;accent-color:#4c6400;cursor:pointer;flex-shrink:0;">
+          <span style="${strikeStyle}font-size:16px;color:${item.is_checked ? '#9ca3af' : '#2e2f2b'};" id="label-${item.id}">${label}</span>
+        </label>
+      </li>`;
+    };
+
+    const checkedSection = checked.length > 0
+      ? `<div style="margin-top:24px;" id="done-section">
+          <p style="font-size:13px;font-weight:700;color:#8a8b86;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Done (<span id="done-count">${checked.length}</span>)</p>
+          <ul style="margin:0;padding:0;list-style:none;" id="done-list">${checked.map(i => renderItem(i)).join('')}</ul>
+        </div>`
+      : '<div style="display:none;" id="done-section"><p style="font-size:13px;font-weight:700;color:#8a8b86;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;margin-top:24px;">Done (<span id="done-count">0</span>)</p><ul style="margin:0;padding:0;list-style:none;" id="done-list"></ul></div>';
 
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Join ${esc(list.name)} — Trackabite</title>
+  <title>${esc(list.name)} — Trackabite</title>
   <meta property="og:title" content="${esc(list.name)}">
-  <meta property="og:description" content="You've been invited to collaborate on a shopping list with ${itemCount} item${itemCount !== 1 ? 's' : ''} on Trackabite">
+  <meta property="og:description" content="Shopping list with ${itemCount} item${itemCount !== 1 ? 's' : ''} — shared from Trackabite">
   <meta property="og:type" content="website">
   <style>
     *{margin:0;padding:0;box-sizing:border-box;}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f8f7f0;min-height:100vh;}
-    .container{max-width:480px;margin:0 auto;padding:60px 24px 40px;text-align:center;}
-    .icon{font-size:64px;margin-bottom:16px;}
-    h1{font-size:24px;font-weight:800;color:#2e2f2b;letter-spacing:-0.3px;margin-bottom:8px;}
-    .subtitle{font-size:16px;color:#5b5c57;margin-bottom:8px;}
-    .item-count{font-size:14px;color:#8a8b86;margin-bottom:40px;}
-    .opening{font-size:15px;color:#8a8b86;margin-bottom:32px;display:none;}
-    .btn{display:inline-block;background:#c5fe01;color:#2e2f2b;font-weight:700;font-size:16px;padding:16px 40px;border-radius:50px;text-decoration:none;}
-    .btn-secondary{display:inline-block;color:#4c6400;font-weight:600;font-size:14px;margin-top:16px;text-decoration:none;}
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="icon">📋</div>
-    <h1>${esc(list.name)}</h1>
-    <p class="subtitle">You've been invited to collaborate</p>
-    <p class="item-count">${itemCount} item${itemCount !== 1 ? 's' : ''}</p>
-    <p class="opening" id="opening">Opening Trackabite...</p>
-    <div id="fallback" style="display:none;">
-      <a class="btn" href="https://apps.apple.com/app/trackabite/id6738028065">Get Trackabite</a>
+  <div style="max-width:480px;margin:0 auto;padding:20px 16px 40px;">
+    <div style="text-align:center;margin-bottom:24px;padding-top:20px;">
+      <p style="font-size:13px;color:#8a8b86;margin-bottom:4px;">Shared from Trackabite</p>
+      <h1 style="font-size:24px;font-weight:800;color:#2e2f2b;letter-spacing:-0.3px;">${esc(list.name)}</h1>
+      <p style="font-size:14px;color:#8a8b86;margin-top:4px;">${itemCount} item${itemCount !== 1 ? 's' : ''}</p>
+    </div>
+    <div style="background:#fff;border-radius:16px;padding:16px 20px;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+      <ul style="margin:0;padding:0;list-style:none;" id="todo-list">${unchecked.map(i => renderItem(i)).join('')}</ul>
+      ${checkedSection}
+    </div>
+    <div style="text-align:center;margin-top:32px;">
+      <a href="trackabite://join/list/${formatted}" style="display:inline-block;background:#c5fe01;color:#2e2f2b;font-weight:700;font-size:15px;padding:14px 32px;border-radius:50px;text-decoration:none;">Open in Trackabite</a>
       <br>
-      <a class="btn-secondary" href="trackabite://join/list/${formatted}">I have the app →</a>
+      <a href="https://apps.apple.com/app/trackabite/id6738028065" style="display:inline-block;color:#4c6400;font-weight:600;font-size:14px;margin-top:12px;text-decoration:none;">Get the app →</a>
     </div>
   </div>
   <script>
-    var deepLink = 'trackabite://join/list/${formatted}';
-    document.getElementById('opening').style.display = 'block';
-    window.location.href = deepLink;
-    setTimeout(function() {
-      document.getElementById('opening').style.display = 'none';
-      document.getElementById('fallback').style.display = 'block';
-    }, 1500);
+    var apiBase = window.location.origin + '/api/shopping-lists';
+    var shareCode = '${formatted}';
+
+    function toggleItem(itemId, checkbox) {
+      var label = document.getElementById('label-' + itemId);
+      var isNowChecked = checkbox.checked;
+
+      // Optimistic UI update
+      if (isNowChecked) {
+        label.style.textDecoration = 'line-through';
+        label.style.color = '#9ca3af';
+      } else {
+        label.style.textDecoration = 'none';
+        label.style.color = '#2e2f2b';
+      }
+
+      fetch(apiBase + '/public/' + shareCode + '/toggle/' + itemId, { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (!data.success) {
+            checkbox.checked = !isNowChecked;
+            label.style.textDecoration = isNowChecked ? 'none' : 'line-through';
+            label.style.color = isNowChecked ? '#2e2f2b' : '#9ca3af';
+          }
+        })
+        .catch(function() {
+          checkbox.checked = !isNowChecked;
+          label.style.textDecoration = isNowChecked ? 'none' : 'line-through';
+          label.style.color = isNowChecked ? '#2e2f2b' : '#9ca3af';
+        });
+    }
   </script>
 </body>
 </html>`;
@@ -227,13 +322,35 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
 
     if (error) throw error;
 
-    // Format response with counts
+    // Collect all member user IDs to fetch names
+    const allMemberIds = new Set();
+    lists.forEach(list => {
+      list.shopping_list_members?.forEach(m => allMemberIds.add(m.user_id));
+    });
+
+    // Fetch member names
+    let usersMap = {};
+    if (allMemberIds.size > 0) {
+      const { data: users } = await supabase
+        .from('users')
+        .select('id, first_name')
+        .in('id', Array.from(allMemberIds));
+      if (users) {
+        users.forEach(u => { usersMap[u.id] = u.first_name; });
+      }
+    }
+
+    // Format response with counts and member names
     const formattedLists = lists.map(list => ({
       ...list,
       total_items: list.shopping_list_items?.length || 0,
       checked_items: list.shopping_list_items?.filter(i => i.is_checked).length || 0,
       member_count: list.shopping_list_members?.length || 0,
-      is_owner: list.owner_id === userId
+      is_owner: list.owner_id === userId,
+      members: (list.shopping_list_members || []).map(m => ({
+        user_id: m.user_id,
+        first_name: usersMap[m.user_id] || null,
+      })),
     }));
 
     res.json({ lists: formattedLists });

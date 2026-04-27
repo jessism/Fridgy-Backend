@@ -56,7 +56,8 @@ const sanitizeRecipeData = (recipeData) => {
   const sourceUrl = recipeData.source_url || recipeData.sourceUrl || '';
   const sourceType = recipeData.source_type ||
     (sourceUrl.includes('instagram.com') ? 'instagram' :
-     sourceUrl.includes('facebook.com') || sourceUrl.includes('fb.watch') ? 'facebook' : 'web');
+     sourceUrl.includes('facebook.com') || sourceUrl.includes('fb.watch') ? 'facebook' :
+     sourceUrl.includes('tiktok.com') || sourceUrl.includes('vm.tiktok.com') ? 'tiktok' : 'web');
 
   // Ensure all required fields are present and properly typed
   return {

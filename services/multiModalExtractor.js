@@ -1515,12 +1515,20 @@ Return this JSON:
       }
     }
 
-    // Handle direct video URLs (Instagram, Facebook, etc.)
+    // Handle direct video URLs (Instagram, Facebook, TikTok, etc.)
+    // Use platform-appropriate referer to avoid CDN rejection
+    let referer = 'https://www.instagram.com/';
+    if (videoUrl.includes('tiktokcdn.com') || videoUrl.includes('tiktok.com')) {
+      referer = 'https://www.tiktok.com/';
+    } else if (videoUrl.includes('fbcdn.net') || videoUrl.includes('facebook.com')) {
+      referer = 'https://www.facebook.com/';
+    }
+
     const response = await fetch(videoUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
         'Accept': 'video/mp4,video/*',
-        'Referer': 'https://www.instagram.com/'
+        'Referer': referer
       }
     });
 

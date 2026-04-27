@@ -33,11 +33,13 @@ const calendarRoutes = require('./routes/calendar');
 const cookbooksRoutes = require('./routes/cookbooks');
 const facebookRecipesRoutes = require('./routes/facebookRecipes');
 const youtubeRecipesRoutes = require('./routes/youtubeRecipes');
+const tiktokRecipesRoutes = require('./routes/tiktokRecipes');
 const driveRoutes = require('./routes/drive');
 const messengerRoutes = require('./routes/messenger');
 const instagramDMRoutes = require('./routes/instagramDM');
 const ttsRoutes = require('./routes/tts');
 const aiChefRoutes = require('./routes/aiChef');
+const blogRoutes = require('./routes/blogRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -122,11 +124,13 @@ app.use('/api/calendar', calendarRoutes);
 app.use('/api/cookbooks', cookbooksRoutes);
 app.use('/api/facebook-recipes', facebookRecipesRoutes);
 app.use('/api/youtube-recipes', youtubeRecipesRoutes);
+app.use('/api/tiktok-recipes', tiktokRecipesRoutes);
 app.use('/api/drive', driveRoutes);
 app.use('/api/messenger', messengerRoutes);
 app.use('/api/instagram-dm', instagramDMRoutes);
 app.use('/api/tts', ttsRoutes);
 app.use('/api/ai-chef', aiChefRoutes);
+app.use('/api/blog', blogRoutes);
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)
 app.get('/api/proxy-image', async (req, res) => {

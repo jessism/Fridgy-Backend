@@ -414,6 +414,64 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
     console.log('[WebImport] Request from user:', userId);
     console.log('[WebImport] URL:', url);
 
+    // Redirect TikTok URLs to TikTok multi-modal pipeline (handles case where mobile app hasn't updated yet)
+    if (url && (url.includes('tiktok.com') || url.includes('vm.tiktok.com') || url.includes('vt.tiktok.com'))) {
+      console.log('[WebImport] TikTok URL detected, redirecting to TikTok pipeline...');
+      const tiktokService = require('../services/apifyTikTokService');
+      const MultiModalExtractor = require('../services/multiModalExtractor');
+      const NutritionExtractor = require('../services/nutritionExtractor');
+      const NutritionAnalysisService = require('../services/nutritionAnalysisService');
+      const { sanitizeRecipeData } = require('../middleware/validation');
+      const multiModalExtractor = new MultiModalExtractor();
+      const nutritionExtractor = new NutritionExtractor();
+      const nutritionAnalysis = new NutritionAnalysisService();
+
+      if (!process.env.APIFY_API_TOKEN) {
+        return res.status(503).json({ success: false, error: 'TikTok import service not available' });
+      }
+
+      const apifyData = await tiktokService.extractFromUrl(url, userId);
+      if (!apifyData.success) {
+        return res.status(400).json({ success: false, error: apifyData.error || 'Failed to extract TikTok content' });
+      }
+
+      const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+      if (!result.success || !result.recipe) {
+        return res.status(400).json({ success: false, error: result.error || 'Could not extract recipe' });
+      }
+
+      // Download image
+      const primaryImageUrl = result.recipe.image || apifyData.images?.[0]?.url;
+      let permanentImageUrl = null;
+      if (primaryImageUrl && primaryImageUrl.startsWith('http')) {
+        const tempId = `tt-temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        permanentImageUrl = await tiktokService.downloadTikTokImage(primaryImageUrl, tempId, userId);
+      }
+      const PLACEHOLDER = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
+
+      const sanitized = sanitizeRecipeData({
+        ...result.recipe,
+        source_type: 'tiktok',
+        source_url: url,
+        source_author: apifyData.author?.username,
+        image: permanentImageUrl || PLACEHOLDER
+      });
+
+      // Nutrition
+      try {
+        const extracted = await nutritionExtractor.extractFromCaption(apifyData.caption);
+        sanitized.nutrition = (extracted?.found) ? nutritionExtractor.formatNutritionData(extracted) : await nutritionAnalysis.analyzeRecipeNutrition(sanitized);
+      } catch (e) { sanitized.nutrition = null; }
+
+      return res.json({
+        success: true,
+        recipe: sanitized,
+        confidence: result.confidence,
+        extractionMethod: 'multi-modal',
+        platform: 'tiktok'
+      });
+    }
+
     // Validate URL
     if (!url) {
       return res.status(400).json({
@@ -1352,6 +1410,37 @@ router.get('/apify-usage', authMiddleware.authenticateToken, async (req, res) =>
 router.get('/suggestions', authMiddleware.authenticateToken, recipeController.getSuggestions);
 router.post('/suggestions', authMiddleware.authenticateToken, recipeController.getSuggestions);
 
+// Get curated/popular recipes
+// GET /api/recipes/curated
+router.get('/curated', async (req, res) => {
+  try {
+    console.log('[Curated] Fetching curated recipes');
+
+    const { data: recipes, error } = await supabase
+      .from('saved_recipes')
+      .select('*')
+      .eq('visibility', 'curated')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[Curated] Database error:', error);
+      throw error;
+    }
+
+    console.log(`[Curated] Found ${recipes?.length || 0} curated recipes`);
+
+    res.json({
+      success: true,
+      recipes: recipes || []
+    });
+  } catch (error) {
+    console.error('[Curated] Error fetching curated recipes:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch curated recipes'
+    });
+  }
+});
 
 // Save extracted recipe (from multi-modal or other extraction methods)
 // POST /api/recipes/save

@@ -98,11 +98,47 @@ class ApifyTikTokService {
     return name.trim();
   }
 
+  /**
+   * Resolve vt.tiktok.com / vm.tiktok.com short URLs to canonical tiktok.com URLs.
+   * The Apify actor can't follow these redirects on its own.
+   */
+  async resolveShortUrl(url) {
+    if (!url) return url;
+    const isShort = /^https?:\/\/(vm|vt)\.tiktok\.com\//i.test(url);
+    if (!isShort) return url;
+
+    try {
+      console.log('[ApifyTikTok] Resolving short URL:', url);
+      const response = await axios.get(url, {
+        maxRedirects: 5,
+        timeout: 5000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version 16.0 Mobile/15E148 Safari/604.1'
+        },
+        // We just need the final URL after redirects, not the page content
+        validateStatus: () => true
+      });
+      const resolved = response.request?.res?.responseUrl || response.request?._redirectable?._currentUrl || url;
+      if (resolved !== url) {
+        console.log('[ApifyTikTok] Resolved short URL:', url, '->', resolved);
+      } else {
+        console.log('[ApifyTikTok] Short URL did not redirect, using as-is');
+      }
+      return resolved;
+    } catch (error) {
+      console.warn('[ApifyTikTok] Failed to resolve short URL, using original:', error.message);
+      return url;
+    }
+  }
+
   async extractFromUrl(tiktokUrl, userId) {
     console.log('[ApifyTikTok] Starting extraction for:', tiktokUrl);
     console.log('[ApifyTikTok] User ID:', userId);
 
     try {
+      // Resolve short URLs (vt.tiktok.com, vm.tiktok.com) to canonical form
+      tiktokUrl = await this.resolveShortUrl(tiktokUrl);
+
       // Check usage limits (SHARED with Instagram/Facebook/YouTube)
       const canUse = await this.checkUsageLimit(userId);
       if (!canUse.allowed) {

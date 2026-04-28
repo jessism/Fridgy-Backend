@@ -25,7 +25,7 @@ class ApifyTikTokService {
    */
   isTikTokUrl(url) {
     if (!url) return false;
-    return /tiktok\.com|vm\.tiktok\.com|m\.tiktok\.com/i.test(url);
+    return /tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|m\.tiktok\.com/i.test(url);
   }
 
   /**
@@ -174,7 +174,7 @@ class ApifyTikTokService {
   async startActorRun(tiktokUrl) {
     try {
       const inputData = {
-        startUrls: [tiktokUrl],
+        startUrls: [{ url: tiktokUrl }],
         maxItems: 1
       };
 

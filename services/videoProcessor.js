@@ -9,14 +9,11 @@ let ffmpegPath = null;
 
 try {
   ffmpeg = require('fluent-ffmpeg');
-  ffmpegPath = require('ffmpeg-static');
-  if (ffmpegPath) {
-    ffmpeg.setFfmpegPath(ffmpegPath);
-  }
+  ffmpegPath = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
+  ffmpeg.setFfmpegPath(ffmpegPath);
   console.log('[VideoProcessor] FFmpeg loaded successfully');
 } catch (error) {
   console.warn('[VideoProcessor] FFmpeg not available - frame extraction disabled');
-  console.warn('[VideoProcessor] Run "npm install fluent-ffmpeg ffmpeg-static" to enable');
 }
 
 class VideoProcessor {

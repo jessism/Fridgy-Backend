@@ -1,4 +1,6 @@
 const ffmpeg = require('fluent-ffmpeg');
+// Use system ffmpeg (installed via nixpacks) instead of ffmpeg-static npm package
+ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH || '/usr/bin/ffmpeg');
 const fs = require('fs').promises;
 const fetch = require('node-fetch');
 const path = require('path');

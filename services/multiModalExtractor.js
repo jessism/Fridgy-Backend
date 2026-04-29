@@ -30,9 +30,12 @@ class MultiModalExtractor {
       audio: 0.6      // Tertiary source - moderate trust
     };
 
-    // Models for extraction (fallback)
-    this.primaryModel = 'google/gemini-2.5-flash-lite';
+    // Models for extraction (fallback) - use non-Google provider for true redundancy
+    this.primaryModel = 'openai/gpt-4o-mini';
     this.fallbackModel = 'google/gemini-2.5-flash';  // Paid fallback with video support
+
+    // Gemini outage circuit breaker: skip Gemini for 5 min after a 503
+    this.geminiDownUntil = 0;
 
     // Ingredient aggregation service for deduplicating ingredients
     this.ingredientAggregationService = require('./ingredientAggregationService');
@@ -152,7 +155,11 @@ class MultiModalExtractor {
       }
 
       // PRIMARY PATH: Use Google Gemini for direct video analysis if available
-      if (this.geminiModel && apifyData.videoUrl) {
+      const geminiCircuitOpen = Date.now() < this.geminiDownUntil;
+      if (geminiCircuitOpen) {
+        console.log('[MultiModal] ⚡ Skipping Gemini (circuit breaker active until', new Date(this.geminiDownUntil).toISOString(), ')');
+      }
+      if (this.geminiModel && apifyData.videoUrl && !geminiCircuitOpen) {
         console.log('[MultiModal] Using Google Gemini for direct video analysis');
         try {
           const result = await this.analyzeVideoWithGemini(apifyData);
@@ -163,6 +170,11 @@ class MultiModalExtractor {
           }
         } catch (geminiError) {
           console.error('[MultiModal] Gemini video analysis failed, falling back:', geminiError.message);
+          // Trip circuit breaker on 503/overload errors
+          if (geminiError.status === 503 || geminiError.message?.includes('503') || geminiError.message?.includes('high demand') || geminiError.message?.includes('overloaded')) {
+            this.geminiDownUntil = Date.now() + 5 * 60 * 1000; // 5 minutes
+            console.log('[MultiModal] ⚡ Gemini circuit breaker TRIPPED — skipping Gemini for 5 minutes');
+          }
         }
       }
 

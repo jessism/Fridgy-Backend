@@ -30,9 +30,11 @@ class MultiModalExtractor {
       audio: 0.6      // Tertiary source - moderate trust
     };
 
-    // Models for extraction (fallback) - use non-Google provider for true redundancy
-    this.primaryModel = 'openai/gpt-4o-mini';
-    this.fallbackModel = 'google/gemini-2.5-flash';  // Paid fallback with video support
+    // Models for OpenRouter fallback extraction
+    // Step 2: Cheap Google model (used when free tier rate-limited but Google is UP)
+    this.primaryModel = 'google/gemini-2.5-flash-lite';
+    // Step 3: Non-Google model (used when Google is DOWN, or Step 2 also fails)
+    this.fallbackModel = 'openai/gpt-4o-mini';
 
     // Gemini outage circuit breaker: skip Gemini for 5 min after a 503
     this.geminiDownUntil = 0;
@@ -179,7 +181,13 @@ class MultiModalExtractor {
       }
 
       // FALLBACK PATH: Original multi-source extraction
-      console.log('[MultiModal] Using fallback extraction method (caption + images)');
+      // If Google is down (circuit breaker active), skip Google OpenRouter models too
+      const googleDown = Date.now() < this.geminiDownUntil;
+      if (googleDown) {
+        console.log('[MultiModal] ⚡ Google is down — using gpt-4o-mini directly (skipping Google OpenRouter models)');
+      } else {
+        console.log('[MultiModal] Using fallback extraction method (caption + images)');
+      }
 
       // Log incoming Apify data for debugging
       console.log('[MultiModal] Apify data received:', {
@@ -202,11 +210,12 @@ class MultiModalExtractor {
       });
 
       // Use OpenRouter for synthesis with images + caption
+      // When Google is down, go straight to gpt-4o-mini (skip Google models on OpenRouter)
       const result = await this.synthesizeWithOpenRouter({
         caption: captionData,
         images: imageData,
         metadata: apifyData
-      });
+      }, googleDown ? this.fallbackModel : null);
 
       // Add extraction metadata
       result.extractionMethod = 'fallback-multi-modal';
@@ -520,7 +529,8 @@ RETURN COMPREHENSIVE JSON:
   /**
    * Call AI API with content
    */
-  async callAI(prompt, mediaContent = []) {
+  async callAI(prompt, mediaContent = [], modelOverride = null) {
+    const useModel = modelOverride || this.primaryModel;
     const messages = [{
       role: 'user',
       content: [
@@ -547,6 +557,7 @@ RETURN COMPREHENSIVE JSON:
     }];
 
     try {
+      console.log('[MultiModal] Calling OpenRouter with model:', useModel);
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -556,7 +567,7 @@ RETURN COMPREHENSIVE JSON:
           'X-Title': 'Fridgy Multi-Modal Import'
         },
         body: JSON.stringify({
-          model: this.primaryModel,
+          model: useModel,
           messages,
           response_format: { type: 'json_object' },
           temperature: 0.3,
@@ -808,6 +819,13 @@ Return this JSON:
       return { success: false, hasCompleteRecipe: false };
     } catch (error) {
       console.error('[MultiModal] Caption-only extraction failed:', error.message);
+      // If Gemini is down (503), trip circuit breaker and rethrow so we skip video analysis too
+      const isGoogleDown = error.status === 503 || error.message?.includes('503') || error.message?.includes('high demand') || error.message?.includes('overloaded');
+      if (isGoogleDown) {
+        this.geminiDownUntil = Date.now() + 5 * 60 * 1000;
+        console.log('[MultiModal] ⚡ Gemini 503 on caption extraction — circuit breaker TRIPPED, skipping video analysis');
+        throw error; // Rethrow so analyzeVideoWithGemini exits immediately
+      }
       return { success: false, hasCompleteRecipe: false, error: error.message };
     }
   }
@@ -956,24 +974,32 @@ Return this JSON:
     } catch (error) {
       console.error('[MultiModal] Gemini video analysis failed:', error);
 
-      // If rate limited, try paid model via OpenRouter
+      // If rate limited or service down, try OpenRouter fallback
       const isRateLimited = error.message?.includes('429') ||
                             error.message?.includes('quota') ||
-                            error.message?.includes('rate') ||
                             error.message?.includes('Too Many Requests');
+      const isGoogleDown = error.status === 503 || error.message?.includes('503') || error.message?.includes('high demand') || error.message?.includes('overloaded');
+      const shouldFallback = isRateLimited || isGoogleDown;
 
-      if (isRateLimited && videoPath) {
-        console.log('[MultiModal] Gemini quota exhausted, checking fallback options...');
+      if (isGoogleDown) {
+        this.geminiDownUntil = Date.now() + 5 * 60 * 1000;
+        console.log('[MultiModal] ⚡ Gemini 503 on video analysis — circuit breaker TRIPPED');
+      }
 
-        // OPTION 1: Text-based fallback (preferred - free)
+      if (shouldFallback && videoPath) {
+        console.log('[MultiModal] Gemini failed, checking fallback options...', { isRateLimited, isGoogleDown });
+
+        // OPTION 1: Text-based fallback (preferred - free/cheap)
         if (apifyData.transcript || apifyData.caption?.length > 100) {
-          console.log('[MultiModal] Using FREE text-based fallback');
+          console.log('[MultiModal] Using text-based fallback');
           await fs.unlink(videoPath).catch(e => {});
+          // If Google is down, skip Google models on OpenRouter too
+          const modelOverride = isGoogleDown ? this.fallbackModel : null;
           return await this.synthesizeWithOpenRouter({
             caption: apifyData.caption || '',
             images: apifyData.images || [],
             metadata: { ...apifyData, transcript: apifyData.transcript }
-          });
+          }, modelOverride);
         }
 
         // OPTION 2: Audio-visual fallback (NEW - when NO text available)
@@ -1840,7 +1866,7 @@ BEFORE RETURNING, VERIFY:
    * @param {object} sources - Caption and image sources
    * @returns {object} - Recipe extraction result
    */
-  async synthesizeWithOpenRouter(sources) {
+  async synthesizeWithOpenRouter(sources, modelOverride = null) {
     const { caption, images, metadata } = sources;
 
     // Ensure images structure exists
@@ -1874,8 +1900,8 @@ BEFORE RETURNING, VERIFY:
     });
 
     try {
-      // Call OpenRouter API
-      const response = await this.callAI(prompt, imageContent);
+      // Call OpenRouter API (use modelOverride to skip Google models when Google is down)
+      const response = await this.callAI(prompt, imageContent, modelOverride);
       const result = this.parseAIResponse(response);
 
       // Aggregate duplicate ingredients
@@ -1893,7 +1919,8 @@ BEFORE RETURNING, VERIFY:
         error: error.message,
         stack: error.stack,
         imageCount: safeImages.images?.length || 0,
-        captionLength: caption?.text?.length || 0
+        captionLength: caption?.text?.length || 0,
+        modelUsed: modelOverride || this.primaryModel
       });
       return {
         success: false,

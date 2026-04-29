@@ -989,12 +989,13 @@ Return this JSON:
       if (shouldFallback && videoPath) {
         console.log('[MultiModal] Gemini failed, checking fallback options...', { isRateLimited, isGoogleDown });
 
-        // OPTION 1: Text-based fallback (preferred - free/cheap)
+        // Choose model based on WHY Gemini failed
+        const modelOverride = isGoogleDown ? this.fallbackModel : null;
+
+        // OPTION 1: Text-based fallback (if caption has recipe content)
         if (apifyData.transcript || apifyData.caption?.length > 100) {
           console.log('[MultiModal] Using text-based fallback');
           await fs.unlink(videoPath).catch(e => {});
-          // If Google is down, skip Google models on OpenRouter too
-          const modelOverride = isGoogleDown ? this.fallbackModel : null;
           return await this.synthesizeWithOpenRouter({
             caption: apifyData.caption || '',
             images: apifyData.images || [],
@@ -1002,21 +1003,28 @@ Return this JSON:
           }, modelOverride);
         }
 
-        // OPTION 2: Audio-visual fallback (NEW - when NO text available)
-        console.log('[MultiModal] ⚠️ No text available - trying audio-visual extraction');
+        // OPTION 2: Frame-based video extraction (when caption is too short)
+        // Extract keyframes with ffmpeg (local, no API) + send to vision model
+        console.log('[MultiModal] ⚠️ Caption too short — extracting keyframes for vision analysis');
+        console.log('[MultiModal] Using model:', modelOverride || this.primaryModel);
         try {
-          const result = await this.extractRecipeFromAudioVisual(videoPath, apifyData);
+          const framesData = await this.videoProcessor.extractFramesFromLocalVideo(
+            videoPath,
+            apifyData.videoDuration || 30,
+            { maxFrames: 10, smartSampling: true }
+          );
+          const result = await this.extractRecipeFromKeyframesOnly(videoPath, apifyData, framesData, modelOverride);
           await fs.unlink(videoPath).catch(e => {});
           if (result.success) return result;
-        } catch (error) {
-          console.error('[MultiModal] Audio-visual extraction failed:', error.message);
+        } catch (frameError) {
+          console.error('[MultiModal] Keyframe extraction failed:', frameError.message);
         }
 
         // OPTION 3: All fallbacks exhausted
         await fs.unlink(videoPath).catch(e => {});
         return {
           success: false,
-          error: 'Recipe extraction temporarily unavailable. This video has no description or captions, and our video analysis service is at capacity. Please try again in a few minutes.',
+          error: 'Could not extract recipe from this video. Please try a video with a more detailed caption.',
           needsRetry: true
         };
       }
@@ -2139,7 +2147,7 @@ VERIFY BEFORE RETURNING:
    * @param {object} apifyData - Data from Apify extraction
    * @returns {Promise<object>} Extraction result with recipe
    */
-  async extractRecipeFromAudioVisual(videoPath, apifyData) {
+  async extractRecipeFromAudioVisual(videoPath, apifyData, modelOverride = null) {
     console.log('[MultiModal] 🎬 Starting audio-visual extraction...');
 
     try {
@@ -2189,7 +2197,7 @@ VERIFY BEFORE RETURNING:
       }));
 
       // Step 6: Call OpenRouter with transcript + frames
-      const response = await this.callAI(prompt, imageContent);
+      const response = await this.callAI(prompt, imageContent, modelOverride);
       const result = this.parseAIResponse(response);
 
       if (!result.success) {
@@ -2225,16 +2233,19 @@ VERIFY BEFORE RETURNING:
     } catch (error) {
       console.error('[MultiModal] Audio-visual extraction failed:', error.message);
 
-      // Fallback to keyframes-only if audio fails (silent video)
-      if (error.message.includes('silent') || error.message.includes('Audio file too small')) {
-        console.warn('[MultiModal] Video appears silent - falling back to keyframes-only');
-        // Try keyframes-only extraction
+      // Fallback to keyframes-only if audio fails (silent video, Google down, or any audio error)
+      const isAudioFailure = error.message.includes('silent') ||
+                             error.message.includes('Audio file too small') ||
+                             error.message.includes('503') ||
+                             error.message.includes('transcript');
+      if (isAudioFailure) {
+        console.warn('[MultiModal] Audio unavailable - falling back to keyframes-only with vision');
         const framesData = await this.videoProcessor.extractFramesFromLocalVideo(
           videoPath,
           apifyData.videoDuration || 30,
           { maxFrames: 10, smartSampling: true }
         );
-        return await this.extractRecipeFromKeyframesOnly(videoPath, apifyData, framesData);
+        return await this.extractRecipeFromKeyframesOnly(videoPath, apifyData, framesData, modelOverride);
       }
 
       throw error;
@@ -2400,8 +2411,8 @@ Use the ${frameCount} keyframes for:
    * @param {object} framesData - Pre-extracted frames data (optional)
    * @returns {Promise<object>} Extraction result
    */
-  async extractRecipeFromKeyframesOnly(videoPath, apifyData, framesData) {
-    console.log('[MultiModal] Extracting from keyframes only (silent video)');
+  async extractRecipeFromKeyframesOnly(videoPath, apifyData, framesData, modelOverride = null) {
+    console.log('[MultiModal] Extracting from keyframes only', modelOverride ? `(using ${modelOverride})` : '(silent video)');
 
     // If framesData not provided, extract frames
     if (!framesData) {
@@ -2418,7 +2429,7 @@ Use the ${frameCount} keyframes for:
       image_url: { url: frame.base64, detail: 'high' }
     }));
 
-    const response = await this.callAI(prompt, imageContent);
+    const response = await this.callAI(prompt, imageContent, modelOverride);
     const result = this.parseAIResponse(response);
 
     if (!result.success) {

@@ -440,8 +440,12 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
         return res.status(400).json({ success: false, error: result.error || 'Could not extract recipe' });
       }
 
-      // Download image
-      const primaryImageUrl = result.recipe.image || apifyData.images?.[0]?.url;
+      // Download image - prefer HTTP URLs, skip Gemini's non-URL image descriptions
+      const recipeImage = result.recipe.image;
+      const primaryImageUrl = (recipeImage && recipeImage.startsWith('http'))
+        ? recipeImage
+        : apifyData.images?.[0]?.url;
+      console.log('[WebImport] Image URL resolved:', primaryImageUrl?.substring(0, 100) || 'NONE');
       let permanentImageUrl = null;
       if (primaryImageUrl && primaryImageUrl.startsWith('http')) {
         const tempId = `tt-temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

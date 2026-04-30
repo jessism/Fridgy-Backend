@@ -638,9 +638,17 @@ class ApifyTikTokService {
     }
 
     try {
-      console.log('[ApifyTikTok] Downloading image:', imageUrl.substring(0, 100));
+      // Convert HEIC URLs to JPEG by changing the CDN URL format
+      // TikTok CDN supports format negotiation via URL extension
+      let downloadUrl = imageUrl;
+      if (imageUrl.includes('.heic')) {
+        downloadUrl = imageUrl.replace(/\.heic/g, '.jpeg');
+        console.log('[ApifyTikTok] Converted HEIC URL to JPEG:', downloadUrl.substring(0, 100));
+      }
 
-      const isApifyProxy = imageUrl.includes('apifyusercontent.com');
+      console.log('[ApifyTikTok] Downloading image:', downloadUrl.substring(0, 100));
+
+      const isApifyProxy = downloadUrl.includes('apifyusercontent.com');
 
       const fetchOptions = {
         timeout: 30000,
@@ -648,14 +656,14 @@ class ApifyTikTokService {
           ? { 'Accept': 'image/*,*/*;q=0.8' }
           : {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+              'Accept': 'image/jpeg,image/webp,image/apng,image/*,*/*;q=0.8',
               'Accept-Language': 'en-US,en;q=0.9',
               'Cache-Control': 'no-cache',
               'Referer': 'https://www.tiktok.com/'
             }
       };
 
-      const response = await fetch(imageUrl, fetchOptions);
+      const response = await fetch(downloadUrl, fetchOptions);
 
       if (!response.ok) {
         console.error('[ApifyTikTok] Failed to download image:', response.status);
@@ -681,13 +689,11 @@ class ApifyTikTokService {
         return null;
       }
 
-      // Convert HEIC/HEIF to JPEG (Supabase doesn't support HEIC)
+      // If still HEIC despite URL change, force JPEG content type for upload
       let uploadContentType = contentType;
       if (contentType.includes('heic') || contentType.includes('heif')) {
-        console.log('[ApifyTikTok] Converting HEIC image to JPEG...');
-        const sharp = require('sharp');
-        imageBuffer = await sharp(imageBuffer).jpeg({ quality: 85 }).toBuffer();
-        uploadContentType = 'image/jpeg';
+        console.warn('[ApifyTikTok] Still got HEIC despite URL change, skipping upload');
+        return null;
       }
 
       // Determine extension

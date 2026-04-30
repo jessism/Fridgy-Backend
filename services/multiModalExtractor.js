@@ -738,13 +738,19 @@ CRITICAL RULES:
    - If caption says "4 minced garlic cloves" → original: "4 minced garlic cloves"
    - Include ALL descriptors: minced, diced, chopped, boneless, skinless, etc.
 
-2. Extract ALL instructions/steps - look for:
-   - Numbered lists (1. 2. 3.)
-   - Section headers like "assemble:", "for the sauce:", "instructions:"
-   - Bullet points or dashes
-   - Paragraph-style instructions
+2. Extract EVERY instruction/step VERBATIM from the caption - do NOT summarize or combine:
+   - Numbered lists (1. 2. 3.) → each number = one step
+   - Section headers like "Baking Method:", "Air Fryer Method:", "assemble:", "for the sauce:" → include ALL sections
+   - Bullet points or dashes → each bullet = one step
+   - Paragraph-style instructions → split into individual steps
+   - If caption has 15 steps, return 15 steps. Not 6.
 
 3. Extract nutrition if mentioned (calories, protein, carbs, fat)
+
+4. DO NOT summarize, condense, or merge steps. Each distinct action in the caption = one step.
+   - If there are multiple methods (e.g. "Baking Method" AND "Air Fryer Method"), include BOTH as separate steps
+   - Sub-steps like "a. do X, b. do Y" should each be their own step
+   - NEVER reduce 10 steps to 3 by combining them
 
 Return this JSON:
 {

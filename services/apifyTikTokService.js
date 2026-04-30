@@ -638,17 +638,9 @@ class ApifyTikTokService {
     }
 
     try {
-      // Convert HEIC URLs to JPEG by changing the CDN URL format
-      // TikTok CDN supports format negotiation via URL extension
-      let downloadUrl = imageUrl;
-      if (imageUrl.includes('.heic')) {
-        downloadUrl = imageUrl.replace(/\.heic/g, '.jpeg');
-        console.log('[ApifyTikTok] Converted HEIC URL to JPEG:', downloadUrl.substring(0, 100));
-      }
+      console.log('[ApifyTikTok] Downloading image:', imageUrl.substring(0, 100));
 
-      console.log('[ApifyTikTok] Downloading image:', downloadUrl.substring(0, 100));
-
-      const isApifyProxy = downloadUrl.includes('apifyusercontent.com');
+      const isApifyProxy = imageUrl.includes('apifyusercontent.com');
 
       const fetchOptions = {
         timeout: 30000,
@@ -656,14 +648,14 @@ class ApifyTikTokService {
           ? { 'Accept': 'image/*,*/*;q=0.8' }
           : {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              'Accept': 'image/jpeg,image/webp,image/apng,image/*,*/*;q=0.8',
+              'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
               'Accept-Language': 'en-US,en;q=0.9',
               'Cache-Control': 'no-cache',
               'Referer': 'https://www.tiktok.com/'
             }
       };
 
-      const response = await fetch(downloadUrl, fetchOptions);
+      const response = await fetch(imageUrl, fetchOptions);
 
       if (!response.ok) {
         console.error('[ApifyTikTok] Failed to download image:', response.status);
@@ -689,11 +681,18 @@ class ApifyTikTokService {
         return null;
       }
 
-      // If still HEIC despite URL change, force JPEG content type for upload
+      // Convert HEIC/HEIF to JPEG using heic-convert (pure JS/WASM, works on all platforms)
       let uploadContentType = contentType;
       if (contentType.includes('heic') || contentType.includes('heif')) {
-        console.warn('[ApifyTikTok] Still got HEIC despite URL change, skipping upload');
-        return null;
+        console.log('[ApifyTikTok] Converting HEIC to JPEG via heic-convert...');
+        const convert = require('heic-convert');
+        imageBuffer = Buffer.from(await convert({
+          buffer: imageBuffer,
+          format: 'JPEG',
+          quality: 0.85
+        }));
+        uploadContentType = 'image/jpeg';
+        console.log('[ApifyTikTok] HEIC converted to JPEG:', imageBuffer.length, 'bytes');
       }
 
       // Determine extension

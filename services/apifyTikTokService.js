@@ -668,7 +668,7 @@ class ApifyTikTokService {
         return null;
       }
 
-      const imageBuffer = await response.buffer();
+      let imageBuffer = await response.buffer();
 
       if (!imageBuffer || imageBuffer.length === 0) {
         console.error('[ApifyTikTok] Downloaded image buffer is empty');
@@ -681,11 +681,20 @@ class ApifyTikTokService {
         return null;
       }
 
+      // Convert HEIC/HEIF to JPEG (Supabase doesn't support HEIC)
+      let uploadContentType = contentType;
+      if (contentType.includes('heic') || contentType.includes('heif')) {
+        console.log('[ApifyTikTok] Converting HEIC image to JPEG...');
+        const sharp = require('sharp');
+        imageBuffer = await sharp(imageBuffer).jpeg({ quality: 85 }).toBuffer();
+        uploadContentType = 'image/jpeg';
+      }
+
       // Determine extension
       let extension = 'jpg';
-      if (contentType.includes('png')) extension = 'png';
-      else if (contentType.includes('webp')) extension = 'webp';
-      else if (contentType.includes('gif')) extension = 'gif';
+      if (uploadContentType.includes('png')) extension = 'png';
+      else if (uploadContentType.includes('webp')) extension = 'webp';
+      else if (uploadContentType.includes('gif')) extension = 'gif';
 
       const timestamp = Date.now();
       const fileName = `${userId}/${recipeId}-tt-${timestamp}.${extension}`;
@@ -695,7 +704,7 @@ class ApifyTikTokService {
       const { error: uploadError } = await this.supabase.storage
         .from('recipe-images')
         .upload(fileName, imageBuffer, {
-          contentType: contentType || 'image/jpeg',
+          contentType: uploadContentType || 'image/jpeg',
           cacheControl: '31536000',
           upsert: false
         });

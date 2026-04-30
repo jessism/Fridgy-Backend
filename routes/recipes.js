@@ -463,9 +463,29 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
         sanitized.nutrition = (extracted?.found) ? nutritionExtractor.formatNutritionData(extracted) : await nutritionAnalysis.analyzeRecipeNutrition(sanitized);
       } catch (e) { sanitized.nutrition = null; }
 
+      // Save to database (production app routes here via import-web, expects saved recipe with DB id)
+      console.log('[WebImport] Saving TikTok recipe to database...');
+      const recipeToSave = {
+        user_id: userId,
+        ...sanitized,
+      };
+      const { data: savedRecipe, error: saveError } = await supabase
+        .from('saved_recipes')
+        .insert(recipeToSave)
+        .select()
+        .single();
+
+      if (saveError) {
+        console.error('[WebImport] TikTok recipe save error:', saveError);
+        throw saveError;
+      }
+
+      await incrementUsageCounter(userId, 'imported_recipes');
+      console.log('[WebImport] TikTok recipe saved successfully:', savedRecipe.id, savedRecipe.title);
+
       return res.json({
         success: true,
-        recipe: sanitized,
+        recipe: savedRecipe,
         confidence: result.confidence,
         extractionMethod: 'multi-modal',
         platform: 'tiktok'

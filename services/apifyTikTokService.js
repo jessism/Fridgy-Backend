@@ -423,6 +423,7 @@ class ApifyTikTokService {
     let hashtags = [];
     if (Array.isArray(data.hashtags)) {
       hashtags = data.hashtags.map(h => {
+        if (!h) return '';
         if (typeof h === 'string') return h;
         return h.name || h.title || h.hashtagName || '';
       }).filter(Boolean);

@@ -38,7 +38,10 @@ class ApifyTikTokService {
     const validDomains = [
       'tiktokcdn.com',
       'tiktokcdn-us.com',
+      'tiktokcdn-eu.com',
       'p16-sign',
+      'p16-common',
+      'p19-common',
       'p77-sign',
       'p19-sign',
       'muscdn.com',

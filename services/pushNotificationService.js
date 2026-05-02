@@ -208,7 +208,7 @@ class PushNotificationService {
       body: payload.body,
       data: {
         ...(payload.data || {}),
-        screen: this.mapUrlToMobileRoute(payload.data?.url),
+        screen: payload.data?.screen || this.mapUrlToMobileRoute(payload.data?.url),
       },
       sound: 'default',
       badge: 1,

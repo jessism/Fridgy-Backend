@@ -405,6 +405,438 @@ router.post('/import-instagram', authMiddleware.authenticateToken, checkImported
 });
 
 // Import recipe from ANY web URL (non-Instagram)
+// ============================================================
+// ASYNC RECIPE IMPORT (Background processing + push notification)
+// ============================================================
+
+const pushNotificationService = require('../services/pushNotificationService');
+
+/**
+ * POST /api/recipes/import-async
+ * Start an async recipe import. Returns immediately with a jobId.
+ * Backend processes extraction in the background and sends push notification when done.
+ */
+router.post('/import-async', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+  const { url, source_type } = req.body;
+  const userId = req.user?.userId || req.user?.id;
+
+  console.log('[AsyncImport] Request from user:', userId);
+  console.log('[AsyncImport] URL:', url, 'Source:', source_type);
+
+  if (!url || !source_type) {
+    return res.status(400).json({ success: false, error: 'URL and source_type are required' });
+  }
+
+  // Generate unique job ID
+  const jobId = `import_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  try {
+    // Create job record
+    const { error: insertError } = await supabase
+      .from('import_jobs')
+      .insert({
+        id: jobId,
+        user_id: userId,
+        url,
+        source_type,
+        status: 'processing',
+      });
+
+    if (insertError) {
+      console.error('[AsyncImport] Failed to create job:', insertError);
+      return res.status(500).json({ success: false, error: 'Failed to start import' });
+    }
+
+    // Return immediately — user is free to leave
+    res.json({ success: true, jobId, status: 'processing' });
+
+    // Fire-and-forget: process extraction async
+    processAsyncImport(jobId, userId, url, source_type).catch(err => {
+      console.error(`[AsyncImport] Job ${jobId} unhandled error:`, err);
+    });
+
+  } catch (error) {
+    console.error('[AsyncImport] Error:', error);
+    res.status(500).json({ success: false, error: 'Failed to start import' });
+  }
+});
+
+/**
+ * GET /api/recipes/import-status/:jobId
+ * Poll the status of an async import job.
+ */
+router.get('/import-status/:jobId', authMiddleware.authenticateToken, async (req, res) => {
+  const { jobId } = req.params;
+  const userId = req.user?.userId || req.user?.id;
+
+  try {
+    const { data, error } = await supabase
+      .from('import_jobs')
+      .select('id, status, recipe_id, recipe_name, error')
+      .eq('id', jobId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+
+    res.json({
+      jobId: data.id,
+      status: data.status,
+      recipeId: data.recipe_id || null,
+      recipeName: data.recipe_name || null,
+      error: data.error || null,
+    });
+  } catch (error) {
+    console.error('[AsyncImport] Status check error:', error);
+    res.status(500).json({ success: false, error: 'Failed to check status' });
+  }
+});
+
+/**
+ * Background processing function for async recipe imports.
+ * Reuses existing extraction pipelines (TikTok, Instagram, YouTube, Facebook).
+ */
+async function processAsyncImport(jobId, userId, url, sourceType) {
+  const NutritionExtractor = require('../services/nutritionExtractor');
+  const NutritionAnalysisService = require('../services/nutritionAnalysisService');
+  const MultiModalExtractor = require('../services/multiModalExtractor');
+  const { sanitizeRecipeData } = require('../middleware/validation');
+
+  const multiModalExtractor = new MultiModalExtractor();
+  const nutritionExtractor = new NutritionExtractor();
+  const nutritionAnalysis = new NutritionAnalysisService();
+
+  try {
+    console.log(`[AsyncImport] Job ${jobId}: Starting ${sourceType} extraction...`);
+
+    let extractedRecipe;
+
+    if (sourceType === 'tiktok') {
+      extractedRecipe = await extractTikTokRecipe(url, userId, multiModalExtractor, nutritionExtractor, nutritionAnalysis, sanitizeRecipeData);
+    } else if (sourceType === 'instagram') {
+      extractedRecipe = await extractInstagramRecipe(url, userId, multiModalExtractor, nutritionExtractor, nutritionAnalysis, sanitizeRecipeData);
+    } else if (sourceType === 'youtube') {
+      extractedRecipe = await extractYouTubeRecipe(url, userId, multiModalExtractor, nutritionExtractor, nutritionAnalysis, sanitizeRecipeData);
+    } else if (sourceType === 'facebook') {
+      extractedRecipe = await extractFacebookRecipe(url, userId, multiModalExtractor, nutritionExtractor, nutritionAnalysis, sanitizeRecipeData);
+    } else {
+      throw new Error(`Unsupported source type: ${sourceType}`);
+    }
+
+    if (!extractedRecipe) {
+      throw new Error('Extraction returned no recipe');
+    }
+
+    console.log(`[AsyncImport] Job ${jobId}: Extraction successful — "${extractedRecipe.title}"`);
+
+    // Save recipe to database
+    const recipeToSave = {
+      user_id: userId,
+      source_type: sourceType,
+      source_url: url,
+      import_method: 'multi-modal-async',
+      title: extractedRecipe.title,
+      summary: extractedRecipe.summary || '',
+      image: extractedRecipe.image || null,
+      image_urls: extractedRecipe.image_urls || null,
+      extendedIngredients: extractedRecipe.extendedIngredients || [],
+      analyzedInstructions: extractedRecipe.analyzedInstructions || [],
+      readyInMinutes: extractedRecipe.readyInMinutes || null,
+      cookingMinutes: extractedRecipe.cookingMinutes || null,
+      servings: extractedRecipe.servings || 4,
+      vegetarian: extractedRecipe.vegetarian || false,
+      vegan: extractedRecipe.vegan || false,
+      glutenFree: extractedRecipe.glutenFree || false,
+      dairyFree: extractedRecipe.dairyFree || false,
+      cuisines: extractedRecipe.cuisines || [],
+      dishTypes: extractedRecipe.dishTypes || [],
+      diets: extractedRecipe.diets || [],
+      extraction_confidence: extractedRecipe.extraction_confidence || null,
+      extraction_notes: extractedRecipe.extraction_notes || null,
+      missing_info: extractedRecipe.missing_info || [],
+      source_author: extractedRecipe.source_author || null,
+      source_author_image: extractedRecipe.source_author_image || null,
+      nutrition: extractedRecipe.nutrition || null,
+    };
+
+    const { data: savedRecipe, error: saveError } = await supabase
+      .from('saved_recipes')
+      .insert(recipeToSave)
+      .select()
+      .single();
+
+    if (saveError) {
+      console.error(`[AsyncImport] Job ${jobId}: Save error:`, saveError);
+      throw new Error('Failed to save recipe to database');
+    }
+
+    console.log(`[AsyncImport] Job ${jobId}: Saved as recipe ${savedRecipe.id}`);
+
+    // Increment usage counter
+    await incrementUsageCounter(userId, 'imported_recipes');
+
+    // Update job as completed
+    await supabase
+      .from('import_jobs')
+      .update({
+        status: 'completed',
+        recipe_id: savedRecipe.id,
+        recipe_name: savedRecipe.title,
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', jobId);
+
+    // Send push notification
+    try {
+      await pushNotificationService.sendToUser(userId, {
+        title: 'Recipe ready!',
+        body: `"${savedRecipe.title}" has been saved`,
+        tag: 'recipe-import',
+        data: {
+          screen: `/(tabs)/recipe/${savedRecipe.id}?fromImport=true`,
+          type: 'recipe_import_complete',
+          jobId,
+        },
+        requireInteraction: false,
+      });
+      console.log(`[AsyncImport] Job ${jobId}: Push notification sent`);
+    } catch (pushErr) {
+      console.error(`[AsyncImport] Job ${jobId}: Push notification failed:`, pushErr.message);
+      // Don't throw — recipe was saved successfully
+    }
+
+  } catch (error) {
+    console.error(`[AsyncImport] Job ${jobId}: Failed:`, error.message);
+
+    // Update job as failed
+    await supabase
+      .from('import_jobs')
+      .update({
+        status: 'failed',
+        error: error.message || 'Extraction failed',
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', jobId);
+
+    // Send failure notification
+    try {
+      await pushNotificationService.sendToUser(userId, {
+        title: 'Import failed',
+        body: "We couldn't extract a recipe from that video. Try again.",
+        tag: 'recipe-import',
+        data: {
+          screen: '/(tabs)',
+          type: 'recipe_import_failed',
+          jobId,
+        },
+        requireInteraction: false,
+      });
+    } catch (pushErr) {
+      console.error(`[AsyncImport] Job ${jobId}: Failure notification failed:`, pushErr.message);
+    }
+  }
+}
+
+/**
+ * Extract recipe from TikTok (reuses existing pipeline)
+ */
+async function extractTikTokRecipe(url, userId, multiModalExtractor, nutritionExtractor, nutritionAnalysis, sanitizeRecipeData) {
+  const tiktokService = require('../services/apifyTikTokService');
+
+  const apifyData = await tiktokService.extractFromUrl(url, userId);
+  if (!apifyData.success) {
+    throw new Error(apifyData.error || 'Failed to extract TikTok content');
+  }
+
+  const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+  if (!result.success || !result.recipe) {
+    throw new Error(result.error || 'Could not extract recipe from TikTok video');
+  }
+
+  // Download and store image permanently
+  const tempRecipeId = `tt-temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const primaryImageUrl = result.recipe.image || apifyData.images?.[0]?.url;
+  let permanentImageUrl = null;
+
+  if (primaryImageUrl && primaryImageUrl.startsWith('http')) {
+    permanentImageUrl = await tiktokService.downloadTikTokImage(primaryImageUrl, tempRecipeId, userId);
+  }
+
+  const PLACEHOLDER = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
+
+  const sanitized = sanitizeRecipeData({
+    ...result.recipe,
+    source_type: 'tiktok',
+    source_url: url,
+    source_author: apifyData.author?.username,
+    source_author_image: apifyData.author?.profilePic,
+    image: permanentImageUrl || PLACEHOLDER,
+  });
+
+  // Get nutrition
+  try {
+    const extractedNutrition = await nutritionExtractor.extractFromCaption(apifyData.caption);
+    if (extractedNutrition && extractedNutrition.found) {
+      sanitized.nutrition = nutritionExtractor.formatNutritionData(extractedNutrition);
+    } else {
+      sanitized.nutrition = await nutritionAnalysis.analyzeRecipeNutrition(sanitized);
+    }
+  } catch (nutritionError) {
+    console.error('[AsyncImport] TikTok nutrition failed:', nutritionError.message);
+    sanitized.nutrition = null;
+  }
+
+  return sanitized;
+}
+
+/**
+ * Extract recipe from Instagram (reuses existing pipeline)
+ */
+async function extractInstagramRecipe(url, userId, multiModalExtractor, nutritionExtractor, nutritionAnalysis, sanitizeRecipeData) {
+  const ApifyInstagramService = require('../services/apifyInstagramService');
+  const apifyService = new ApifyInstagramService();
+
+  const apifyData = await apifyService.extractFromUrl(url, userId);
+  if (!apifyData.success) {
+    throw new Error(apifyData.error || 'Failed to extract Instagram content');
+  }
+
+  const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+  if (!result.success || !result.recipe) {
+    throw new Error(result.error || 'Could not extract recipe from Instagram post');
+  }
+
+  // Download and store image permanently
+  const tempRecipeId = `ig-temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const primaryImageUrl = result.recipe.image || apifyData.images?.[0]?.url;
+  let permanentImageUrl = null;
+
+  if (primaryImageUrl && primaryImageUrl.startsWith('http')) {
+    permanentImageUrl = await apifyService.downloadInstagramImage(primaryImageUrl, tempRecipeId, userId, apifyData);
+  }
+
+  const PLACEHOLDER = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
+
+  const sanitized = sanitizeRecipeData({
+    ...result.recipe,
+    source_type: 'instagram',
+    source_url: url,
+    source_author: apifyData.author?.username,
+    source_author_image: apifyData.author?.profilePic,
+    image: permanentImageUrl || PLACEHOLDER,
+  });
+
+  // Get nutrition
+  try {
+    const extractedNutrition = await nutritionExtractor.extractFromCaption(apifyData.caption);
+    if (extractedNutrition && extractedNutrition.found) {
+      sanitized.nutrition = nutritionExtractor.formatNutritionData(extractedNutrition);
+    } else {
+      sanitized.nutrition = await nutritionAnalysis.analyzeRecipeNutrition(sanitized);
+    }
+  } catch (nutritionError) {
+    console.error('[AsyncImport] Instagram nutrition failed:', nutritionError.message);
+    sanitized.nutrition = null;
+  }
+
+  return sanitized;
+}
+
+/**
+ * Extract recipe from YouTube (reuses existing pipeline)
+ */
+async function extractYouTubeRecipe(url, userId, multiModalExtractor, nutritionExtractor, nutritionAnalysis, sanitizeRecipeData) {
+  const youtubeService = require('../services/apifyYouTubeService');
+
+  const apifyData = await youtubeService.extractFromUrl(url, userId);
+  if (!apifyData.success) {
+    throw new Error(apifyData.error || 'Failed to extract YouTube content');
+  }
+
+  const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+  if (!result.success || !result.recipe) {
+    throw new Error(result.error || 'Could not extract recipe from YouTube video');
+  }
+
+  const PLACEHOLDER = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
+
+  const sanitized = sanitizeRecipeData({
+    ...result.recipe,
+    source_type: 'youtube',
+    source_url: url,
+    source_author: apifyData.author?.username || apifyData.channelName,
+    image: result.recipe.image || apifyData.thumbnail || PLACEHOLDER,
+  });
+
+  // Get nutrition
+  try {
+    sanitized.nutrition = await nutritionAnalysis.analyzeRecipeNutrition(sanitized);
+  } catch (nutritionError) {
+    console.error('[AsyncImport] YouTube nutrition failed:', nutritionError.message);
+    sanitized.nutrition = null;
+  }
+
+  return sanitized;
+}
+
+/**
+ * Extract recipe from Facebook (reuses existing pipeline)
+ */
+async function extractFacebookRecipe(url, userId, multiModalExtractor, nutritionExtractor, nutritionAnalysis, sanitizeRecipeData) {
+  const facebookService = require('../services/apifyFacebookService');
+
+  const apifyData = await facebookService.extractFromUrl(url, userId);
+  if (!apifyData.success) {
+    throw new Error(apifyData.error || 'Failed to extract Facebook content');
+  }
+
+  const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+  if (!result.success || !result.recipe) {
+    throw new Error(result.error || 'Could not extract recipe from Facebook post');
+  }
+
+  // Download and store image permanently
+  const tempRecipeId = `fb-temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const primaryImageUrl = result.recipe.image || apifyData.images?.[0]?.url;
+  let permanentImageUrl = null;
+
+  if (primaryImageUrl && primaryImageUrl.startsWith('http')) {
+    permanentImageUrl = await facebookService.downloadFacebookImage(primaryImageUrl, tempRecipeId, userId);
+  }
+
+  const PLACEHOLDER = 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
+
+  const sanitized = sanitizeRecipeData({
+    ...result.recipe,
+    source_type: 'facebook',
+    source_url: url,
+    source_author: apifyData.author?.username,
+    source_author_image: apifyData.author?.profilePic,
+    image: permanentImageUrl || PLACEHOLDER,
+  });
+
+  // Get nutrition
+  try {
+    const extractedNutrition = await nutritionExtractor.extractFromCaption(apifyData.caption);
+    if (extractedNutrition && extractedNutrition.found) {
+      sanitized.nutrition = nutritionExtractor.formatNutritionData(extractedNutrition);
+    } else {
+      sanitized.nutrition = await nutritionAnalysis.analyzeRecipeNutrition(sanitized);
+    }
+  } catch (nutritionError) {
+    console.error('[AsyncImport] Facebook nutrition failed:', nutritionError.message);
+    sanitized.nutrition = null;
+  }
+
+  return sanitized;
+}
+
+// ============================================================
+// END ASYNC IMPORT
+// ============================================================
+
 // POST /api/recipes/import-web
 router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
   try {

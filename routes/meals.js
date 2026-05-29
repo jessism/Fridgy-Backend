@@ -27,6 +27,7 @@ router.post('/scan', authMiddleware.authenticateToken, upload.single('image'), m
 router.post('/log', authMiddleware.authenticateToken, mealController.logMeal);
 router.post('/dine-out', authMiddleware.authenticateToken, upload.single('image'), mealController.logDineOutMeal);
 router.get('/history', authMiddleware.authenticateToken, mealController.getMealHistory);
+router.get('/calendar-summary', authMiddleware.authenticateToken, mealController.getCalendarSummary);
 router.put('/:id', authMiddleware.authenticateToken, mealController.updateMeal);
 router.delete('/:id', authMiddleware.authenticateToken, mealController.deleteMeal);
 

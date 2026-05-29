@@ -623,6 +623,70 @@ const mealController = {
         timestamp: new Date().toISOString()
       });
     }
+  },
+
+  /**
+   * Get calendar summary — lightweight daily meal counts for a year
+   * GET /api/meals/calendar-summary?year=2026
+   */
+  async getCalendarSummary(req, res) {
+    try {
+      const userId = getUserIdFromToken(req);
+      const year = parseInt(req.query.year) || new Date().getFullYear();
+
+      const supabase = getSupabaseClient();
+
+      // Fetch user's timezone
+      const { data: userData } = await supabase
+        .from('users')
+        .select('timezone')
+        .eq('id', userId)
+        .single();
+
+      const userTimezone = userData?.timezone || 'America/Los_Angeles';
+
+      // Get UTC range for the full year in user's timezone
+      const startOfYear = moment.tz(`${year}-01-01`, userTimezone).startOf('day').utc().toISOString();
+      const endOfYear = moment.tz(`${year}-12-31`, userTimezone).endOf('day').utc().toISOString();
+
+      // Fetch only the fields we need
+      const { data: meals, error } = await supabase
+        .from('meal_logs')
+        .select('logged_at, is_dine_out')
+        .eq('user_id', userId)
+        .gte('logged_at', startOfYear)
+        .lte('logged_at', endOfYear);
+
+      if (error) throw error;
+
+      // Aggregate by local date
+      const summary = {};
+      (meals || []).forEach(meal => {
+        const localDate = moment.utc(meal.logged_at).tz(userTimezone).format('YYYY-MM-DD');
+        if (!summary[localDate]) {
+          summary[localDate] = { eat_in: 0, dine_out: 0 };
+        }
+        if (meal.is_dine_out) {
+          summary[localDate].dine_out++;
+        } else {
+          summary[localDate].eat_in++;
+        }
+      });
+
+      res.json({
+        success: true,
+        summary,
+        year,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      const statusCode = error.message.includes('token') ? 401 : 500;
+      res.status(statusCode).json({
+        success: false,
+        error: error.message.includes('token') ? 'Authentication required' : 'Failed to get calendar summary',
+        timestamp: new Date().toISOString()
+      });
+    }
   }
 };
 

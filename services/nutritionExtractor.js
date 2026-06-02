@@ -10,8 +10,8 @@ const fetch = require('node-fetch');
 class NutritionExtractor {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
-    this.model = 'google/gemini-2.0-flash-001'; // Same model as nutrition analysis
-    this.fallbackModel = 'google/gemini-flash-1.5-8b';
+    this.model = 'google/gemini-2.5-flash'; // Same model as nutrition analysis
+    this.fallbackModel = 'google/gemini-2.5-flash-lite';
   }
 
   /**

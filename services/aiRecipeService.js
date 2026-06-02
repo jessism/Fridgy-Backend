@@ -18,7 +18,7 @@ const getSupabaseClient = () => {
 // AI Recipe Service using Gemini 2.0 Flash (reusing existing OpenRouter setup)
 class AIRecipeService {
   constructor() {
-    this.model = "google/gemini-2.0-flash-001";
+    this.model = "google/gemini-2.5-flash";
     this.maxTokens = 2000; // Increased for detailed recipes
     this.temperature = 0.3; // Slightly higher for creativity
   }

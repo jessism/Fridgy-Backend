@@ -98,7 +98,7 @@ FIREWORKS_API_KEY=your-fireworks-key-here
 
 **OpenRouter** (Already configured)
 - Visit: https://openrouter.ai/
-- Model used: `google/gemini-2.0-flash-001`
+- Model used: `google/gemini-2.5-flash`
 
 **Fireworks AI** (New)
 - Visit: https://fireworks.ai/

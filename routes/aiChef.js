@@ -95,7 +95,7 @@ Respond naturally as if you're in the kitchen together.`;
           'X-Title': 'Trackabite AI Chef',
         },
         body: JSON.stringify({
-          model: 'google/gemini-2.0-flash-001',
+          model: 'google/gemini-2.5-flash',
           messages: [
             { role: 'system', content: systemPrompt },
             ...conversationHistory,

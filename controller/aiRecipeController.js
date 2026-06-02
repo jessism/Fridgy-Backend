@@ -643,7 +643,7 @@ const aiRecipeController = {
           openRouterConfigured: hasOpenRouter,
           fireworksConfigured: hasFireworks,
           supabaseConfigured: hasSupabase,
-          geminiModel: 'google/gemini-2.0-flash-001',
+          geminiModel: 'google/gemini-2.5-flash',
           fluxModel: 'flux-1-dev-fp8'
         },
         requestId: requestId,

@@ -338,7 +338,7 @@ const analyzeGroceryImages = async (images) => {
     // Step 3: Prepare request body
     console.log(`⚙️  [${aiRequestId}] Step 3: Preparing request body...`);
     const requestBody = {
-      model: "google/gemini-2.0-flash-001",
+      model: "google/gemini-2.5-flash",
       messages: messages,
       max_tokens: 1000,
       temperature: 0.1
@@ -657,7 +657,7 @@ const callOpenRouterWithFallback = async (requestData, requestId) => {
       console.log(`⚠️ [${requestId}] Rate limit details:`, errorData);
 
       // Fallback to paid model
-      console.log(`💳 [${requestId}] Trying paid model: google/gemini-flash-1.5`);
+      console.log(`💳 [${requestId}] Trying paid model: google/gemini-2.5-flash-lite`);
       const paidResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -668,7 +668,7 @@ const callOpenRouterWithFallback = async (requestData, requestId) => {
         },
         body: JSON.stringify({
           ...requestData,
-          model: 'google/gemini-flash-1.5'
+          model: 'google/gemini-2.5-flash-lite'
         })
       });
 

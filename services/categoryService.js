@@ -213,7 +213,7 @@ Return ONLY a JSON object mapping item names to categories, like:
           'X-Title': 'Fridgy Category Service'
         },
         body: JSON.stringify({
-          model: 'google/gemini-2.0-flash-001',
+          model: 'google/gemini-2.5-flash',
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.1,
           max_tokens: 500

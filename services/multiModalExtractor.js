@@ -1100,7 +1100,7 @@ Return this JSON:
         ]
       }];
 
-      console.log('[MultiModal] Calling OpenRouter paid model: google/gemini-2.0-flash-lite-001');
+      console.log('[MultiModal] Calling OpenRouter paid model: google/gemini-2.5-flash-lite');
 
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -1111,7 +1111,7 @@ Return this JSON:
           'X-Title': 'Fridgy Video Analysis (Paid Fallback)'
         },
         body: JSON.stringify({
-          model: 'google/gemini-2.0-flash-lite-001',  // Paid model with video support
+          model: 'google/gemini-2.5-flash-lite',  // Paid model with video support
           messages,
           response_format: { type: 'json_object' },
           temperature: 0.3,
@@ -1127,7 +1127,7 @@ Return this JSON:
           statusText: response.statusText,
           videoSize: fileSizeMB + ' MB',
           contentType: 'video_url',
-          modelUsed: 'google/gemini-2.0-flash-lite-001',
+          modelUsed: 'google/gemini-2.5-flash-lite',
           error: data.error,
           errorMessage: data.error?.message,
           errorCode: data.error?.code,

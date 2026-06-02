@@ -4,8 +4,8 @@ class NutritionAnalysisService {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
     // Use stable model that's confirmed working
-    this.model = 'google/gemini-2.0-flash-001'; // Stable model
-    this.fallbackModel = 'google/gemini-flash-1.5-8b'; // Paid fallback
+    this.model = 'google/gemini-2.5-flash'; // Stable model
+    this.fallbackModel = 'google/gemini-2.5-flash-lite'; // Paid fallback
   }
 
   /**

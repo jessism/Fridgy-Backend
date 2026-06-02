@@ -75,7 +75,7 @@ const mealAnalysisService = {
           'X-Title': 'Fridgy Meal Scanner'
         },
         body: JSON.stringify({
-          model: 'google/gemini-2.0-flash-001',  // Use stable model like grocery scanner
+          model: 'google/gemini-2.5-flash',  // Use stable model like grocery scanner
           messages: [
             {
               role: 'user',

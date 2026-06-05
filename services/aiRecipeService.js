@@ -19,7 +19,7 @@ const getSupabaseClient = () => {
 class AIRecipeService {
   constructor() {
     this.model = "google/gemini-2.5-flash";
-    this.maxTokens = 2000; // Increased for detailed recipes
+    this.maxTokens = 4000; // 3 detailed recipes with ingredients/instructions need ~3000 tokens
     this.temperature = 0.3; // Slightly higher for creativity
   }
 

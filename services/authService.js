@@ -24,7 +24,7 @@ const authService = {
       const supabase = getSupabaseClient();
       const { data: user, error} = await supabase
         .from('users')
-        .select('id, email, first_name, password_hash, created_at, has_seen_welcome_tour, tier, is_grandfathered')
+        .select('id, email, first_name, password_hash, created_at, has_seen_welcome_tour, tier, is_grandfathered, is_admin')
         .eq('email', email.toLowerCase())
         .single();
 
@@ -49,7 +49,7 @@ const authService = {
       const supabase = getSupabaseClient();
       const { data: user, error } = await supabase
         .from('users')
-        .select('id, email, first_name, created_at, has_seen_welcome_tour, tier, is_grandfathered')
+        .select('id, email, first_name, created_at, has_seen_welcome_tour, tier, is_grandfathered, is_admin')
         .eq('id', userId)
         .single();
 
@@ -75,7 +75,11 @@ const authService = {
   async createUser(userData) {
     try {
       const { email, firstName, passwordHash, signupPlatform } = userData;
-      
+
+      // Auto-grant premium for specific emails
+      const PREMIUM_EMAILS = ['mich.cabral@gmail.com'];
+      const isPremiumEmail = PREMIUM_EMAILS.includes(email.toLowerCase());
+
       const supabase = getSupabaseClient();
       const { data: newUser, error: insertError } = await supabase
         .from('users')
@@ -83,9 +87,10 @@ const authService = {
           email: email.toLowerCase(),
           first_name: firstName.trim(),
           password_hash: passwordHash,
-          signup_platform: signupPlatform || 'web'
+          signup_platform: signupPlatform || 'web',
+          ...(isPremiumEmail && { tier: 'grandfathered', is_grandfathered: true }),
         })
-        .select('id, email, first_name, created_at, tier, is_grandfathered, signup_platform')
+        .select('id, email, first_name, created_at, tier, is_grandfathered, is_admin, signup_platform')
         .single();
 
       if (insertError) {
@@ -138,7 +143,7 @@ const authService = {
           updated_at: new Date().toISOString()
         })
         .eq('id', userId)
-        .select('id, email, first_name, created_at, tier, is_grandfathered')
+        .select('id, email, first_name, created_at, tier, is_grandfathered, is_admin')
         .single();
 
       if (error) {

@@ -2135,6 +2135,272 @@ router.post('/upload-image', authMiddleware.authenticateToken, upload.single('im
   }
 });
 
+/**
+ * Transform AI nutrition response (nutrients array) into the mobile app's perServing format.
+ * Keeps unit info in the amount fields for display.
+ */
+function transformNutrition(nutrition) {
+  if (!nutrition) return null;
+
+  // If already in perServing format, return as-is
+  if (nutrition.perServing) return nutrition;
+
+  // Transform from nutrients array to perServing object
+  const nutrients = nutrition.nutrients || [];
+  const findNutrient = (name) => {
+    const n = nutrients.find(x => x.name.toLowerCase() === name.toLowerCase());
+    return n ? { amount: n.amount } : undefined;
+  };
+
+  return {
+    perServing: {
+      calories: findNutrient('Calories'),
+      protein: findNutrient('Protein'),
+      carbohydrates: findNutrient('Carbohydrates'),
+      fat: findNutrient('Fat'),
+      fiber: findNutrient('Fiber'),
+      sugar: findNutrient('Sugar'),
+      sodium: findNutrient('Sodium'),
+    },
+    caloricBreakdown: nutrition.caloricBreakdown || null,
+    isAIEstimated: true,
+  };
+}
+
+/**
+ * Create recipe from voice recording
+ * POST /api/recipes/create-from-voice
+ *
+ * Accepts multipart/form-data with an audio file.
+ * Backend transcribes via Whisper, then structures into a recipe via Gemini.
+ * Returns structured Recipe JSON with estimated nutrition.
+ */
+const voiceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 30 * 1024 * 1024 }, // 30MB for long recordings
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('audio/') || file.mimetype === 'application/octet-stream') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only audio files are allowed'), false);
+    }
+  }
+});
+
+router.post('/create-from-voice', authMiddleware.authenticateToken, checkImportedRecipeLimit, voiceUpload.single('audio'), async (req, res) => {
+  const requestId = Math.random().toString(36).substring(7);
+  const userId = req.user?.userId || req.user?.id;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Audio file is required' });
+    }
+
+    console.log(`[VoiceRecipe:${requestId}] User: ${userId}, Audio size: ${req.file.size} bytes, Type: ${req.file.mimetype}`);
+
+    // Step 1: Transcribe audio via OpenAI Whisper
+    console.log(`[VoiceRecipe:${requestId}] Transcribing audio...`);
+    const FormData = require('form-data');
+    const whisperForm = new FormData();
+    whisperForm.append('file', req.file.buffer, {
+      filename: 'recipe_audio.m4a',
+      contentType: req.file.mimetype || 'audio/m4a',
+    });
+    whisperForm.append('model', 'whisper-1');
+    whisperForm.append('language', 'en');
+
+    const whisperResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        ...whisperForm.getHeaders(),
+      },
+      body: whisperForm,
+    });
+
+    if (!whisperResponse.ok) {
+      const errorText = await whisperResponse.text();
+      console.error(`[VoiceRecipe:${requestId}] Whisper error:`, whisperResponse.status, errorText);
+      throw new Error(`Transcription failed: ${whisperResponse.status}`);
+    }
+
+    const whisperData = await whisperResponse.json();
+    const transcript = whisperData.text;
+
+    if (!transcript || transcript.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Could not transcribe audio. Please try recording again with clearer speech.'
+      });
+    }
+
+    console.log(`[VoiceRecipe:${requestId}] Transcript (${transcript.length} chars): "${transcript.substring(0, 200)}..."`);
+
+    // Step 2: Structure recipe via Gemini
+    console.log(`[VoiceRecipe:${requestId}] Structuring recipe with AI...`);
+    const recipePrompt = `You are a recipe extraction AI. A user has described a recipe by speaking aloud.
+The speech may be conversational, include filler words, um's, corrections, or tangents.
+Your job is to extract a clean, structured recipe from this transcript.
+
+TRANSCRIPT:
+${transcript}
+
+Return ONLY valid JSON (no markdown, no explanation) in this exact format:
+{
+  "title": "Recipe name",
+  "summary": "Brief 1-2 sentence description of the dish",
+  "extendedIngredients": [
+    {"id": 1, "amount": 2, "unit": "cups", "name": "flour", "original": "2 cups flour"}
+  ],
+  "analyzedInstructions": [
+    {"name": "", "steps": [{"number": 1, "step": "First step description"}]}
+  ],
+  "readyInMinutes": 30,
+  "servings": 4,
+  "vegetarian": false,
+  "vegan": false,
+  "glutenFree": false,
+  "dairyFree": false,
+  "cuisines": [],
+  "dishTypes": [],
+  "nutrition": {
+    "nutrients": [
+      {"name": "Calories", "amount": 350, "unit": "kcal"},
+      {"name": "Protein", "amount": 15, "unit": "g"},
+      {"name": "Carbohydrates", "amount": 45, "unit": "g"},
+      {"name": "Fat", "amount": 12, "unit": "g"},
+      {"name": "Fiber", "amount": 3, "unit": "g"},
+      {"name": "Sugar", "amount": 8, "unit": "g"},
+      {"name": "Sodium", "amount": 400, "unit": "mg"}
+    ],
+    "caloricBreakdown": {
+      "percentProtein": 17,
+      "percentFat": 31,
+      "percentCarbs": 52
+    },
+    "isEstimated": true
+  }
+}
+
+RULES:
+- Extract ALL ingredients with amounts and units
+- Extract ALL cooking steps in order
+- Convert fractions to decimals (1/2 → 0.5, 1 1/2 → 1.5)
+- Ignore filler words, pauses, tangents — extract the recipe intent
+- If the user corrects themselves ("no wait, 2 cups not 3"), use the correction
+- Estimate nutrition per serving based on the ingredients
+- Set dietary flags (vegetarian, vegan, etc.) based on ingredients
+- If no recipe can be found in the transcript, return {"error": "No recipe found in audio"}
+- Return ONLY the JSON object, no other text`;
+
+    const aiController = new AbortController();
+    const aiTimeout = setTimeout(() => aiController.abort(), 60000); // 60s for AI
+
+    const aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://trackabite.app',
+        'X-Title': 'Trackabite Voice Recipe',
+      },
+      body: JSON.stringify({
+        model: 'google/gemini-2.5-flash',
+        messages: [
+          { role: 'user', content: recipePrompt }
+        ],
+        max_tokens: 4000,
+        temperature: 0.3,
+      }),
+      signal: aiController.signal,
+    });
+
+    clearTimeout(aiTimeout);
+
+    if (!aiResponse.ok) {
+      const errorText = await aiResponse.text();
+      console.error(`[VoiceRecipe:${requestId}] AI error:`, aiResponse.status, errorText);
+      throw new Error(`AI structuring failed: ${aiResponse.status}`);
+    }
+
+    const aiData = await aiResponse.json();
+    const aiContent = aiData.choices?.[0]?.message?.content;
+
+    if (!aiContent) {
+      throw new Error('No response from AI');
+    }
+
+    // Parse JSON from AI response (handle markdown code blocks)
+    let recipe;
+    try {
+      const jsonStr = aiContent.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      recipe = JSON.parse(jsonStr);
+    } catch (parseError) {
+      console.error(`[VoiceRecipe:${requestId}] JSON parse error:`, parseError.message);
+      console.error(`[VoiceRecipe:${requestId}] Raw AI content:`, aiContent.substring(0, 500));
+      throw new Error('Failed to parse recipe from AI response');
+    }
+
+    // Check if AI couldn't find a recipe
+    if (recipe.error) {
+      return res.status(400).json({
+        success: false,
+        error: recipe.error
+      });
+    }
+
+    // Normalize the recipe structure
+    const structuredRecipe = {
+      title: recipe.title || 'Untitled Recipe',
+      summary: recipe.summary || '',
+      image: null,
+      extendedIngredients: (recipe.extendedIngredients || []).map((ing, index) => ({
+        id: ing.id || index + 1,
+        amount: ing.amount || 0,
+        unit: ing.unit || '',
+        name: ing.name || '',
+        original: ing.original || `${ing.amount || ''} ${ing.unit || ''} ${ing.name || ''}`.trim()
+      })),
+      analyzedInstructions: recipe.analyzedInstructions || [{ name: '', steps: [] }],
+      readyInMinutes: recipe.readyInMinutes || null,
+      servings: recipe.servings || 4,
+      vegetarian: recipe.vegetarian || false,
+      vegan: recipe.vegan || false,
+      glutenFree: recipe.glutenFree || false,
+      dairyFree: recipe.dairyFree || false,
+      cuisines: recipe.cuisines || [],
+      dishTypes: recipe.dishTypes || [],
+      nutrition: transformNutrition(recipe.nutrition),
+      source_type: 'voice',
+    };
+
+    console.log(`[VoiceRecipe:${requestId}] ✅ Recipe structured: "${structuredRecipe.title}" with ${structuredRecipe.extendedIngredients.length} ingredients, ${structuredRecipe.analyzedInstructions[0]?.steps?.length || 0} steps`);
+
+    // Increment usage counter
+    await incrementUsageCounter(userId, 'imported_recipes');
+
+    res.json({
+      success: true,
+      recipe: structuredRecipe,
+    });
+
+  } catch (error) {
+    console.error(`[VoiceRecipe:${requestId}] Error:`, error);
+
+    if (error.name === 'AbortError') {
+      return res.status(504).json({
+        success: false,
+        error: 'Recipe processing timed out. Please try a shorter recording.'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create recipe from voice. Please try again.',
+    });
+  }
+});
+
 // Get detailed recipe information
 // GET /api/recipes/:id
 // NOTE: This generic route must come AFTER all specific routes

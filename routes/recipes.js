@@ -2198,52 +2198,25 @@ router.post('/create-from-voice', authMiddleware.authenticateToken, checkImporte
 
     console.log(`[VoiceRecipe:${requestId}] User: ${userId}, Audio size: ${req.file.size} bytes, Type: ${req.file.mimetype}`);
 
-    // Step 1: Transcribe audio via OpenAI Whisper
-    console.log(`[VoiceRecipe:${requestId}] Transcribing audio...`);
-    const FormData = require('form-data');
-    const whisperForm = new FormData();
-    whisperForm.append('file', req.file.buffer, {
-      filename: 'recipe_audio.m4a',
-      contentType: req.file.mimetype || 'audio/m4a',
-    });
-    whisperForm.append('model', 'whisper-1');
-    whisperForm.append('language', 'en');
-
-    const whisperResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        ...whisperForm.getHeaders(),
-      },
-      body: whisperForm,
-    });
-
-    if (!whisperResponse.ok) {
-      const errorText = await whisperResponse.text();
-      console.error(`[VoiceRecipe:${requestId}] Whisper error:`, whisperResponse.status, errorText);
-      throw new Error(`Transcription failed: ${whisperResponse.status}`);
+    // Use Google Gemini to transcribe audio + structure recipe in one call
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const geminiKey = process.env.GOOGLE_GEMINI_API_KEY;
+    if (!geminiKey) {
+      throw new Error('Google Gemini API key not configured');
     }
 
-    const whisperData = await whisperResponse.json();
-    const transcript = whisperData.text;
+    const genAI = new GoogleGenerativeAI(geminiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-    if (!transcript || transcript.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Could not transcribe audio. Please try recording again with clearer speech.'
-      });
-    }
+    // Convert audio buffer to base64 for inline data
+    const audioBase64 = req.file.buffer.toString('base64');
+    const mimeType = req.file.mimetype || 'audio/mp4';
 
-    console.log(`[VoiceRecipe:${requestId}] Transcript (${transcript.length} chars): "${transcript.substring(0, 200)}..."`);
+    console.log(`[VoiceRecipe:${requestId}] Sending audio to Gemini for transcription + recipe structuring...`);
 
-    // Step 2: Structure recipe via Gemini
-    console.log(`[VoiceRecipe:${requestId}] Structuring recipe with AI...`);
-    const recipePrompt = `You are a recipe extraction AI. A user has described a recipe by speaking aloud.
+    const recipePrompt = `You are a recipe extraction AI. Listen to this audio recording where a user describes a recipe by speaking aloud.
 The speech may be conversational, include filler words, um's, corrections, or tangents.
-Your job is to extract a clean, structured recipe from this transcript.
-
-TRANSCRIPT:
-${transcript}
+Your job is to transcribe what they said and extract a clean, structured recipe from it.
 
 Return ONLY valid JSON (no markdown, no explanation) in this exact format:
 {
@@ -2290,45 +2263,27 @@ RULES:
 - If the user corrects themselves ("no wait, 2 cups not 3"), use the correction
 - Estimate nutrition per serving based on the ingredients
 - Set dietary flags (vegetarian, vegan, etc.) based on ingredients
-- If no recipe can be found in the transcript, return {"error": "No recipe found in audio"}
+- If no recipe can be found in the audio, return {"error": "No recipe found in audio"}
 - Return ONLY the JSON object, no other text`;
 
-    const aiController = new AbortController();
-    const aiTimeout = setTimeout(() => aiController.abort(), 60000); // 60s for AI
-
-    const aiResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://trackabite.app',
-        'X-Title': 'Trackabite Voice Recipe',
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType: mimeType,
+          data: audioBase64,
+        }
       },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          { role: 'user', content: recipePrompt }
-        ],
-        max_tokens: 4000,
-        temperature: 0.3,
-      }),
-      signal: aiController.signal,
-    });
+      recipePrompt,
+    ]);
 
-    clearTimeout(aiTimeout);
-
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      console.error(`[VoiceRecipe:${requestId}] AI error:`, aiResponse.status, errorText);
-      throw new Error(`AI structuring failed: ${aiResponse.status}`);
-    }
-
-    const aiData = await aiResponse.json();
-    const aiContent = aiData.choices?.[0]?.message?.content;
+    const aiContent = result.response?.text();
 
     if (!aiContent) {
-      throw new Error('No response from AI');
+      throw new Error('No response from Gemini');
     }
+
+    console.log(`[VoiceRecipe:${requestId}] Gemini response (${aiContent.length} chars)`);
+
 
     // Parse JSON from AI response (handle markdown code blocks)
     let recipe;

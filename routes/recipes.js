@@ -2397,6 +2397,7 @@ RULES:
     res.status(500).json({
       success: false,
       error: 'Failed to create recipe from voice. Please try again.',
+      details: error.message,
     });
   }
 });

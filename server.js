@@ -10,6 +10,7 @@ const multer = require('multer');
 
 // Import middleware
 const authMiddleware = require('./middleware/auth');
+const { checkImportedRecipeLimit, incrementUsageCounter } = require('./middleware/checkLimits');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -628,43 +629,43 @@ Respond with ONLY the JSON object, no additional text.`
 const callOpenRouterWithFallback = async (requestData, requestId) => {
   const apiKey = process.env.OPENROUTER_API_KEY;
 
-  // Try free model first
-  console.log(`🆓 [${requestId}] Trying free model: google/gemini-2.5-flash-lite`);
+  // Try primary model first
+  console.log(`🆓 [${requestId}] Trying primary model: google/gemini-2.5-flash`);
   try {
     const freeResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': 'http://localhost:5000',
-        'X-Title': 'Fridgy Recipe Scanner'
+        'HTTP-Referer': 'https://trackabite.app',
+        'X-Title': 'Trackabite Recipe Scanner'
       },
       body: JSON.stringify({
         ...requestData,
-        model: 'google/gemini-2.5-flash-lite'
+        model: 'google/gemini-2.5-flash'
       })
     });
 
     if (freeResponse.ok) {
-      console.log(`✅ [${requestId}] Free model successful!`);
+      console.log(`✅ [${requestId}] Primary model successful!`);
       return await freeResponse.json();
     }
 
     // Check if it's a rate limit error
     if (freeResponse.status === 429) {
       const errorData = await freeResponse.text();
-      console.log(`⚠️ [${requestId}] Free model rate limited (429), trying paid fallback...`);
+      console.log(`⚠️ [${requestId}] Primary model rate limited (429), trying fallback...`);
       console.log(`⚠️ [${requestId}] Rate limit details:`, errorData);
 
-      // Fallback to paid model
-      console.log(`💳 [${requestId}] Trying paid model: google/gemini-2.5-flash-lite`);
+      // Fallback to lite model
+      console.log(`💳 [${requestId}] Trying fallback model: google/gemini-2.5-flash-lite`);
       const paidResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
-          'HTTP-Referer': 'http://localhost:5000',
-          'X-Title': 'Fridgy Recipe Scanner'
+          'HTTP-Referer': 'https://trackabite.app',
+          'X-Title': 'Trackabite Recipe Scanner'
         },
         body: JSON.stringify({
           ...requestData,
@@ -1087,7 +1088,7 @@ app.post('/api/process-images', upload.array('images', 10), async (req, res) => 
 });
 
 // Recipe Scanning Endpoint - Supports multiple images for multi-page recipes
-app.post('/api/scan-recipe', authMiddleware.authenticateToken, upload.array('images', 10), async (req, res) => {
+app.post('/api/scan-recipe', authMiddleware.authenticateToken, checkImportedRecipeLimit, upload.array('images', 10), async (req, res) => {
   const requestId = Math.random().toString(36).substring(7);
 
   console.log(`\n🍳 ================== RECIPE SCAN REQUEST START ==================`);
@@ -1239,6 +1240,12 @@ app.post('/api/scan-recipe', authMiddleware.authenticateToken, upload.array('ima
     if (imageUrl) {
       recipeData.image = imageUrl;
       recipeData.imageStoragePath = imageStoragePath;
+    }
+
+    // Increment usage counter
+    const userId = req.user?.userId || req.user?.id;
+    if (userId) {
+      await incrementUsageCounter(userId, 'imported_recipes');
     }
 
     // Send successful response

@@ -596,9 +596,15 @@ Respond with ONLY the JSON object, no additional text.`
       throw new Error('Failed to parse recipe data');
     }
 
-    // Ensure required fields exist
-    if (!recipeData.title) {
-      recipeData.title = "Scanned Recipe";
+    // Ensure required fields exist - derive title from ingredients if missing
+    if (!recipeData.title || recipeData.title.trim() === '') {
+      const mainIngredients = (recipeData.extendedIngredients || [])
+        .slice(0, 3)
+        .map(ing => ing.name || ing.original || '')
+        .filter(Boolean);
+      recipeData.title = mainIngredients.length > 0
+        ? mainIngredients.join(', ') + ' Recipe'
+        : 'My Recipe';
     }
 
     if (!recipeData.extendedIngredients || !Array.isArray(recipeData.extendedIngredients)) {
@@ -726,7 +732,7 @@ MULTI-PAGE HANDLING:
 - Combine ALL information from ALL pages into a single complete recipe
 
 EXTRACTION REQUIREMENTS:
-1. Recipe title/name - extract the exact title (usually on first page)
+1. Recipe title/name - CRITICAL: Extract the exact title visible in the image. Look for large/bold text, headers, or any prominent text that names the dish. If NO title is visible anywhere, create a descriptive name from the main protein and cooking method (e.g., "Pan-Seared Pork Chops with Roasted Potatoes"). NEVER return an empty title or generic placeholder.
 2. Complete ingredients list with quantities and units (combine from all pages)
 3. Step-by-step cooking instructions in order (may span multiple pages)
 4. Cooking time and servings (if visible on any page)
@@ -829,9 +835,15 @@ Respond with ONLY the JSON object, no additional text.`
       throw new Error('Failed to parse recipe data');
     }
 
-    // Ensure required fields exist
-    if (!recipeData.title) {
-      recipeData.title = "Scanned Recipe";
+    // Ensure required fields exist - derive title from ingredients if missing
+    if (!recipeData.title || recipeData.title.trim() === '') {
+      const mainIngredients = (recipeData.extendedIngredients || [])
+        .slice(0, 3)
+        .map(ing => ing.name || ing.original || '')
+        .filter(Boolean);
+      recipeData.title = mainIngredients.length > 0
+        ? mainIngredients.join(', ') + ' Recipe'
+        : 'My Recipe';
     }
 
     if (!recipeData.extendedIngredients || !Array.isArray(recipeData.extendedIngredients)) {

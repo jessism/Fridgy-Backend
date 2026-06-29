@@ -2257,7 +2257,8 @@ Return ONLY valid JSON (no markdown, no explanation) in this exact format:
 
 RULES:
 - Extract ALL ingredients with amounts and units
-- Extract ALL cooking steps in order
+- Extract ALL cooking steps in order — if the user describes specific steps, honor the exact number of steps they describe. Do NOT split one step into multiple or add extra steps
+- Only elaborate steps if the user is vague or gives no clear step breakdown
 - Convert fractions to decimals (1/2 → 0.5, 1 1/2 → 1.5)
 - Ignore filler words, pauses, tangents — extract the recipe intent
 - If the user corrects themselves ("no wait, 2 cups not 3"), use the correction

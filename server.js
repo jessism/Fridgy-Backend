@@ -736,6 +736,8 @@ IMPORTANT GUIDELINES:
 - Extract and COMBINE all visible text related to the recipe from ALL pages
 - Preserve exact quantities and measurements
 - Keep instructions in the original order, even if split across pages
+- If the recipe shows numbered steps, use EXACTLY those steps — do NOT split, expand, or add extra steps
+- Only create your own steps if the recipe has NO explicit steps written (e.g., just a paragraph of text)
 - If handwritten, do your best to interpret the handwriting
 - If parts are unclear, make reasonable assumptions based on context
 - Ensure continuity between pages (e.g., step 5 on page 2 follows step 4 from page 1)

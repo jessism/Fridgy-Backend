@@ -727,7 +727,7 @@ MULTI-PAGE HANDLING:
 
 EXTRACTION REQUIREMENTS:
 1. Recipe title/name - CRITICAL: Extract the exact title visible in the image. Look for large/bold text, headers, or any prominent text that names the dish. If NO explicit title is visible, you MUST create a descriptive, appetizing name based on the ingredients and cooking method you extracted (e.g., "Pan-Seared Pork Chops with Sour Cream Smashed Potatoes"). NEVER return an empty title, "Scanned Recipe", or any generic placeholder.
-2. Complete ingredients list with quantities and units (combine from all pages). If NO explicit ingredients list is visible, extract ALL ingredients mentioned in the cooking instructions — include every ingredient referenced in the steps with its quantity and unit. NEVER return an empty ingredients list if ingredients are mentioned in the steps.
+2. Complete ingredients list with quantities and units (combine from all pages). If NO explicit ingredients list is visible, extract ALL ingredients mentioned in the cooking instructions — include every ingredient referenced in the steps with its quantity and unit. NEVER return an empty ingredients list if ingredients are mentioned in the steps. IMPORTANT: Each ingredient must appear ONLY ONCE in the list. If the same ingredient (e.g., "potatoes" or "oil") is mentioned in multiple steps, combine them into a single entry with the total quantity. NEVER list duplicate ingredients.
 3. Step-by-step cooking instructions in order (may span multiple pages)
 4. Cooking time and servings (if visible on any page)
 5. Any dietary information mentioned

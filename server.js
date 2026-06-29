@@ -735,9 +735,15 @@ EXTRACTION REQUIREMENTS:
 IMPORTANT GUIDELINES:
 - Extract and COMBINE all visible text related to the recipe from ALL pages
 - Preserve exact quantities and measurements
+
+STEP EXTRACTION — THIS IS CRITICAL:
+- If the recipe image shows numbered steps (e.g., Step 1, Step 2... Step 6), return EXACTLY that number of steps with the EXACT same content. Do NOT split one step into multiple steps. Do NOT add extra steps. Do NOT expand or elaborate beyond what is written.
+- If a step has multiple sentences (e.g., "Season the pork. Heat oil in a pan. Sear for 3 minutes."), keep it as ONE step — do not break it apart.
+- The number of steps you return MUST match the number of steps shown in the image. If the image shows 6 steps, return exactly 6 steps.
+- ONLY generate your own steps if the recipe has NO explicit numbered steps (e.g., just a paragraph of text or a list of bullet points without step numbers).
+
+OTHER GUIDELINES:
 - Keep instructions in the original order, even if split across pages
-- If the recipe shows numbered steps, use EXACTLY those steps — do NOT split, expand, or add extra steps
-- Only create your own steps if the recipe has NO explicit steps written (e.g., just a paragraph of text)
 - If handwritten, do your best to interpret the handwriting
 - If parts are unclear, make reasonable assumptions based on context
 - Ensure continuity between pages (e.g., step 5 on page 2 follows step 4 from page 1)

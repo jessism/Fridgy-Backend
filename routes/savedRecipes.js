@@ -30,6 +30,7 @@ router.post('/', authMiddleware.authenticateToken, checkSavedRecipeLimit, async 
       title: recipeData.title || 'Untitled Recipe',
       summary: recipeData.summary || recipeData.description || '',
       image: recipeData.image || null,
+      image_urls: recipeData.image_urls || null,
       nutrition: recipeData.nutrition || null,
 
       // Match RecipeDetailModal structure - camelCase columns

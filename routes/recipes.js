@@ -2256,13 +2256,23 @@ Return ONLY valid JSON (no markdown, no explanation) in this exact format:
 }
 
 RULES:
-- Extract ALL ingredients with amounts and units
-- Extract ALL cooking steps in order — if the user describes specific steps, honor the exact number of steps they describe. Do NOT split one step into multiple or add extra steps
-- Only elaborate steps if the user is vague or gives no clear step breakdown
+
+INGREDIENTS — STAY FAITHFUL TO THE USER'S WORDS:
+- Extract ONLY what the user actually said. Do NOT invent amounts, quantities, or measurements they didn't mention.
+- If the user says "chicken thighs" without a quantity, set amount to 0 and unit to "" — just the name "chicken thighs". Do NOT guess "4" or "500g".
+- If the user gives a measurement (e.g., "2 cups of rice"), use exactly that amount and unit.
+- The "original" field should reflect what the user actually said as closely as possible.
+
+INSTRUCTIONS — STAY FAITHFUL TO THE USER'S WORDS:
+- Extract ALL cooking steps in order — honor the exact number of steps the user describes. Do NOT split one step into multiple or add extra steps.
+- Use the user's own words and phrasing. Clean up filler words (um, uh, like) but keep the actual content faithful.
+- Only elaborate steps if the user is extremely vague or gives no clear step breakdown.
+
+OTHER RULES:
 - Convert fractions to decimals (1/2 → 0.5, 1 1/2 → 1.5)
-- Ignore filler words, pauses, tangents — extract the recipe intent
+- Ignore filler words, pauses, tangents — but preserve the recipe content exactly
 - If the user corrects themselves ("no wait, 2 cups not 3"), use the correction
-- Estimate nutrition per serving based on the ingredients
+- Estimate nutrition per serving based on the ingredients (nutrition estimation is OK to be AI-generated)
 - Set dietary flags (vegetarian, vegan, etc.) based on ingredients
 - If no recipe can be found in the audio, return {"error": "No recipe found in audio"}
 - Return ONLY the JSON object, no other text`;

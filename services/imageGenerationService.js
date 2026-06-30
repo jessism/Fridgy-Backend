@@ -1,24 +1,109 @@
 const { createClient } = require('@supabase/supabase-js');
+const { GoogleGenAI } = require('@google/genai');
 const crypto = require('crypto');
 
 // Helper function to get Supabase client
 const getSupabaseClient = () => {
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
+
   if (!supabaseUrl || !supabaseKey) {
     throw new Error('Supabase configuration missing');
   }
-  
+
   return createClient(supabaseUrl, supabaseKey);
 };
 
-// Image Generation Service using Fireworks AI with FLUX.1 model
+// Image Generation Service — Gemini (primary) with Fireworks AI fallback
 class ImageGenerationService {
   constructor() {
+    // Gemini (primary)
+    this.geminiModel = 'gemini-3.1-flash-image';
+    // Fireworks (fallback)
     this.baseUrl = 'https://api.fireworks.ai/inference/v1/workflows/accounts/fireworks/models/flux-1-schnell-fp8/text_to_image';
-    this.model = 'flux-1-schnell-fp8'; // FLUX.1 schnell model for text-to-image
-    this.defaultCost = 0.005; // $0.005 per image
+    this.fireworksModel = 'flux-1-schnell-fp8';
+    this.defaultCost = 0.005;
+  }
+
+  // Build Gemini prompt — ported from TikTok carousel automation (Nano Banana)
+  buildGeminiImagePrompt(recipeTitle, keyIngredients, cuisineType = '') {
+    const ingredientsList = keyIngredients.join(', ');
+    const cuisineContext = cuisineType ? ` (${cuisineType} cuisine)` : '';
+    const slideDescription = `A beautifully plated dish of ${recipeTitle}, made with ${ingredientsList}${cuisineContext}. Show the finished dish ready to eat.`;
+
+    return `Generate a vertical 9:16 photo for a food app.
+
+STYLE — professional editorial food photography that looks premium but believable:
+- Tight close-up shot — food fills at least 90% of the frame, almost no background visible
+- Shot on Canon R5 with 85mm lens, very shallow depth of field (f/1.8), background completely blurred out
+- Natural window light from one side, subtle shadows — not uniformly lit
+- Background is just a soft blur of color — no distracting objects, props, or kitchen items
+- Slightly off-center framing — not perfectly symmetrical
+- The plate/container edges can be partially cropped, but the plate geometry must be realistic
+- Food should look homemade and delicious but NOT hyperperfect:
+  - Realistic food textures (visible muscle fibers on meat, natural grain)
+  - Slightly uneven portions, cuts, and slices
+  - Vegetables with natural variation in size and ripeness
+  - A few grains or crumbs scattered naturally
+- Glass or ceramic containers/plates — realistic, not brand new
+- Authentic home-cooked appearance — premium but believable, not CGI, not stock photo
+
+STRICT RULES:
+- ABSOLUTELY NO text, words, letters, numbers, labels, or watermarks anywhere in the image
+- NO human faces, NO hands, NO human body parts
+- NO wooden utensils — if any utensils are visible, they must be METAL only
+- NO background props, towels, jars, or kitchen items — only the food and its container
+- NO overly styled or cluttered background — keep focus extremely tight on the food
+
+AVOID these AI giveaways:
+- Perfect symmetry or mathematical arrangement of food
+- Every ingredient identical in size, color, and placement
+- Unnaturally smooth meat textures with no fibers
+- Spotless containers with zero food residue
+- Uniform lighting with no shadows
+- Overly saturated colors that look like a 3D render
+- Wide shots showing too much background, props, towels, or kitchen items
+- Plates or bowls with impossible geometry
+
+DISH TO PHOTOGRAPH:
+${slideDescription}
+
+CRITICAL REMINDER: Generate a PHOTOGRAPH ONLY. Do NOT render ANY text, labels, titles, captions, dish names, or words of any kind in the image. The dish names in the description are for context only — do NOT write them on the image. The output must be a pure food photograph with ZERO text.`;
+  }
+
+  // Generate image using Gemini (Nano Banana) — primary provider
+  async generateImageWithGemini(recipeTitle, keyIngredients, cuisineType = '') {
+    const requestId = Math.random().toString(36).substring(7);
+
+    console.log(`\n🍌 [${requestId}] ===== GEMINI (Nano Banana) IMAGE GENERATION =====`);
+    console.log(`🍌 [${requestId}] Recipe: ${recipeTitle}`);
+    console.log(`🍌 [${requestId}] Model: ${this.geminiModel}`);
+
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      throw new Error('GOOGLE_GEMINI_API_KEY is missing from environment variables');
+    }
+
+    const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_GEMINI_API_KEY });
+    const prompt = this.buildGeminiImagePrompt(recipeTitle, keyIngredients, cuisineType);
+
+    console.log(`📝 [${requestId}] Prompt length: ${prompt.length} chars`);
+
+    const response = await ai.models.generateContent({
+      model: this.geminiModel,
+      contents: prompt,
+      config: { responseModalities: ['IMAGE'] },
+    });
+
+    // Extract image data from response
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.mimeType.startsWith('image/')) {
+        const base64Image = part.inlineData.data;
+        console.log(`✅ [${requestId}] Gemini image generated, base64 length: ${base64Image.length}`);
+        return `data:image/jpeg;base64,${base64Image}`;
+      }
+    }
+
+    throw new Error('No image returned from Gemini API');
   }
 
   // Generate recipe hash for image caching
@@ -145,167 +230,110 @@ class ImageGenerationService {
     }
   }
 
-  // Generate image using Fireworks AI (no caching - always fresh)
-  async generateImage(recipeTitle, keyIngredients, cuisineType = '', userId = null) {
+  // Generate image using Fireworks AI (fallback provider)
+  async generateImageWithFireworks(recipeTitle, keyIngredients, cuisineType = '') {
     const requestId = Math.random().toString(36).substring(7);
 
-    try {
-      console.log(`\n🎨 =============== IMAGE GENERATION START ===============`);
-      console.log(`🎨 REQUEST ID: ${requestId}`);
-      console.log(`🎨 Recipe: ${recipeTitle}`);
-      console.log(`🎨 Key ingredients: ${keyIngredients.join(', ')}`);
-      console.log(`🎨 Using Fireworks AI FLUX.1 dev model (NO CACHE)`);
-      console.log(`🎨 Timestamp: ${new Date().toISOString()}`);
-      console.log(`🎨 ======================================================\n`);
+    console.log(`\n🔥 [${requestId}] ===== FIREWORKS (fallback) IMAGE GENERATION =====`);
+    console.log(`🔥 [${requestId}] Recipe: ${recipeTitle}`);
 
-      // Step 1: Validate API key
-      console.log(`🔐 [${requestId}] Step 1: Validating Fireworks API key...`);
-      if (!process.env.FIREWORKS_API_KEY) {
-        throw new Error('FIREWORKS_API_KEY is missing from environment variables');
-      }
-      
-      const apiKey = process.env.FIREWORKS_API_KEY;
-      console.log(`🔐 [${requestId}] Fireworks API key validated: ${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)}`);
-      console.log(`🌐 [${requestId}] Using endpoint: ${this.baseUrl}`);
-      console.log(`🏷️  [${requestId}] Model: ${this.model}`);
+    if (!process.env.FIREWORKS_API_KEY) {
+      throw new Error('FIREWORKS_API_KEY is missing from environment variables');
+    }
 
-      // Step 2: Build image generation prompt (removed cache check)
-      console.log(`📝 [${requestId}] Step 2: Building image prompt...`);
-      const { prompt, negative_prompt } = this.buildImagePrompt(recipeTitle, keyIngredients, cuisineType);
-      
-      console.log(`📝 [${requestId}] Prompt length: ${prompt.length} chars`);
-      console.log(`📝 [${requestId}] Prompt preview: ${prompt.substring(0, 100)}...`);
+    const apiKey = process.env.FIREWORKS_API_KEY;
+    const { prompt, negative_prompt } = this.buildImagePrompt(recipeTitle, keyIngredients, cuisineType);
 
-      // Step 3: Prepare request body for Fireworks workflow endpoint
-      const requestBody = {
-        prompt: prompt,
-        negative_prompt: negative_prompt,
-        width: 512,
-        height: 512,
-        guidance_scale: 7.5, // Higher guidance for better prompt following
-        num_inference_steps: 25, // Balance between quality and speed
-        seed: Math.floor(Math.random() * 1000000), // Random seed for variety
-        safety_check: false, // Food images are safe
-        output_image_format: 'JPEG'
-      };
+    const requestBody = {
+      prompt: prompt,
+      negative_prompt: negative_prompt,
+      width: 512,
+      height: 512,
+      guidance_scale: 7.5,
+      num_inference_steps: 25,
+      seed: Math.floor(Math.random() * 1000000),
+      safety_check: false,
+      output_image_format: 'JPEG'
+    };
 
-      console.log(`⚙️  [${requestId}] Step 3: Prepared image generation request`);
-      console.log(`📋 [${requestId}] Request body:`, JSON.stringify(requestBody, null, 2));
-
-      // Step 4: Make API request to Fireworks
-      console.log(`🌐 [${requestId}] Step 4: Making Fireworks AI request...`);
-      console.log(`🎯 [${requestId}] Full URL: ${this.baseUrl}`);
-      const fetchStartTime = Date.now();
-      
-      const requestOptions = {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      };
-      
-      console.log(`📤 [${requestId}] Request headers:`, {
-        'Authorization': `Bearer ${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)}`,
+    const response = await fetch(this.baseUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
-      });
-      
-      const response = await fetch(this.baseUrl, requestOptions);
-      
-      const fetchDuration = Date.now() - fetchStartTime;
-      console.log(`🌐 [${requestId}] API request completed in ${fetchDuration}ms`);
-      console.log(`🌐 [${requestId}] Response status: ${response.status} ${response.statusText}`);
-      console.log(`📋 [${requestId}] Response headers:`, Object.fromEntries(response.headers.entries()));
+      },
+      body: JSON.stringify(requestBody)
+    });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`❌ [${requestId}] Fireworks API error: ${response.status} - ${errorText}`);
-        console.error(`🔍 [${requestId}] Error response details:`, {
-          status: response.status,
-          statusText: response.statusText,
-          url: response.url,
-          errorText: errorText
-        });
-        throw new Error(`Fireworks API error: ${response.status} ${response.statusText} - ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Fireworks API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    let imageUrl;
+
+    if (contentType.includes('application/json')) {
+      const result = await response.json();
+      if (!result || !result.images || result.images.length === 0) {
+        throw new Error('No images returned from Fireworks API');
       }
+      const base64Image = result.images[0].b64_json || result.images[0].url;
+      if (!base64Image) throw new Error('No image data returned from Fireworks API');
+      imageUrl = base64Image.startsWith('data:') ? base64Image : `data:image/jpeg;base64,${base64Image}`;
+    } else {
+      const imageBuffer = await response.arrayBuffer();
+      const base64String = Buffer.from(imageBuffer).toString('base64');
+      imageUrl = `data:image/jpeg;base64,${base64String}`;
+    }
 
-      // Step 5: Process response - handle both binary and JSON formats
-      console.log(`📥 [${requestId}] Step 5: Processing image response...`);
-      const contentType = response.headers.get('content-type') || '';
-      console.log(`📋 [${requestId}] Response Content-Type: ${contentType}`);
-      
-      let imageUrl;
-      
-      if (contentType.includes('application/json')) {
-        // Handle JSON response format
-        console.log(`🔍 [${requestId}] Processing JSON response...`);
-        const responseText = await response.text();
-        console.log(`📄 [${requestId}] JSON response (first 500 chars):`, responseText.substring(0, 500));
-        
-        let result;
-        try {
-          result = JSON.parse(responseText);
-          console.log(`📊 [${requestId}] Parsed JSON response:`, JSON.stringify(result, null, 2));
-        } catch (parseError) {
-          console.error(`❌ [${requestId}] Failed to parse JSON response:`, parseError.message);
-          throw new Error(`Failed to parse Fireworks JSON response: ${parseError.message}`);
-        }
-        
-        if (!result || !result.images || result.images.length === 0) {
-          console.error(`❌ [${requestId}] No images in JSON response:`, result);
-          throw new Error('No images returned in JSON from Fireworks API');
-        }
+    console.log(`✅ [${requestId}] Fireworks image generated`);
+    return imageUrl;
+  }
 
-        // Extract base64 from JSON response
-        const base64Image = result.images[0].b64_json || result.images[0].url;
-        if (!base64Image) {
-          console.error(`❌ [${requestId}] No base64 image data found:`, result.images[0]);
-          throw new Error('No image data returned in JSON from Fireworks API');
-        }
+  // Generate image — tries Gemini first, falls back to Fireworks
+  async generateImage(recipeTitle, keyIngredients, cuisineType = '', userId = null) {
+    const requestId = Math.random().toString(36).substring(7);
+    let imageUrl;
+    let provider;
 
-        // Convert to data URL
-        imageUrl = base64Image.startsWith('data:') ? base64Image : `data:image/jpeg;base64,${base64Image}`;
-        console.log(`📥 [${requestId}] Image from JSON (base64): ${imageUrl.substring(0, 50)}...`);
-        
-      } else {
-        // Handle binary image response (raw JPEG data)
-        console.log(`🖼️  [${requestId}] Processing binary image response...`);
-        const imageBuffer = await response.arrayBuffer();
-        console.log(`📊 [${requestId}] Binary image size: ${imageBuffer.byteLength} bytes`);
-        
-        // Convert binary data to base64
-        const base64String = Buffer.from(imageBuffer).toString('base64');
-        console.log(`🔄 [${requestId}] Converted to base64, length: ${base64String.length} chars`);
-        
-        // Create data URL
-        imageUrl = `data:image/jpeg;base64,${base64String}`;
-        console.log(`📥 [${requestId}] Image from binary (base64): ${imageUrl.substring(0, 50)}...`);
+    console.log(`\n🎨 =============== IMAGE GENERATION START ===============`);
+    console.log(`🎨 REQUEST ID: ${requestId}`);
+    console.log(`🎨 Recipe: ${recipeTitle}`);
+    console.log(`🎨 Timestamp: ${new Date().toISOString()}`);
+    console.log(`🎨 ======================================================\n`);
+
+    // Try Gemini first (primary)
+    try {
+      imageUrl = await this.generateImageWithGemini(recipeTitle, keyIngredients, cuisineType);
+      provider = 'Gemini';
+    } catch (geminiError) {
+      console.warn(`⚠️ [${requestId}] Gemini failed: ${geminiError.message}`);
+      console.warn(`⚠️ [${requestId}] Falling back to Fireworks...`);
+
+      // Try Fireworks as fallback
+      try {
+        imageUrl = await this.generateImageWithFireworks(recipeTitle, keyIngredients, cuisineType);
+        provider = 'Fireworks';
+      } catch (fireworksError) {
+        console.error(`💥 [${requestId}] Both providers failed`);
+        console.error(`💥 [${requestId}] Gemini: ${geminiError.message}`);
+        console.error(`💥 [${requestId}] Fireworks: ${fireworksError.message}`);
+        throw new Error(`Image generation failed — Gemini: ${geminiError.message} | Fireworks: ${fireworksError.message}`);
       }
+    }
 
-      console.log(`🎉 [${requestId}] Image generation complete! (No caching)`);
+    console.log(`✅ [${requestId}] Image generated via ${provider}`);
 
-      // Upload to Supabase Storage instead of returning base64
-      if (userId) {
-        console.log(`📤 [${requestId}] Uploading to Supabase Storage...`);
-        const recipeHash = this.generateRecipeHash(recipeTitle, keyIngredients);
-        const permanentUrl = await this.uploadImageToSupabase(imageUrl, recipeHash, userId);
-        console.log(`✅ [${requestId}] Permanent URL: ${permanentUrl}`);
-        console.log(`\n✅ [${requestId}] =============== IMAGE GENERATION COMPLETE ===============\n`);
-        return permanentUrl;
-      } else {
-        // Fallback: return base64 if no userId (shouldn't happen)
-        console.warn(`⚠️  [${requestId}] No userId provided, returning base64 (not recommended)`);
-        console.log(`\n✅ [${requestId}] =============== IMAGE GENERATION COMPLETE ===============\n`);
-        return imageUrl;
-      }
-
-    } catch (error) {
-      console.error(`\n💥 [${requestId}] ========== IMAGE GENERATION ERROR ==========`);
-      console.error(`💥 [${requestId}] Error:`, error.message);
-      console.error(`💥 [${requestId}] Stack:`, error.stack);
-      console.error(`💥 [${requestId}] ==========================================\n`);
-      throw error;
+    // Upload to Supabase Storage
+    if (userId) {
+      const recipeHash = this.generateRecipeHash(recipeTitle, keyIngredients);
+      const permanentUrl = await this.uploadImageToSupabase(imageUrl, recipeHash, userId);
+      console.log(`✅ [${requestId}] Permanent URL: ${permanentUrl}`);
+      return permanentUrl;
+    } else {
+      console.warn(`⚠️ [${requestId}] No userId provided, returning base64`);
+      return imageUrl;
     }
   }
 
@@ -397,8 +425,7 @@ class ImageGenerationService {
           })}`);
           console.error(`🔍 [${requestId}] Full error stack:`, error.stack);
           
-          // DEBUGGING: Throw the real error instead of using placeholders
-          throw new Error(`Fireworks API failed for "${recipe.title}": ${error.message}`);
+          throw new Error(`Image generation failed for "${recipe.title}": ${error.message}`);
         }
       });
 
@@ -428,8 +455,7 @@ class ImageGenerationService {
       console.error(`💥 [${requestId}] Batch image generation failed after ${totalDuration}ms:`, error.message);
       console.error(`🔍 [${requestId}] Full error stack:`, error.stack);
       
-      // DEBUGGING: Throw the real error instead of using placeholders
-      throw new Error(`Fireworks API batch failure: ${error.message}`);
+      throw new Error(`Image generation batch failure: ${error.message}`);
     }
   }
 

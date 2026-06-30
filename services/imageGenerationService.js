@@ -79,11 +79,11 @@ CRITICAL REMINDER: Generate a PHOTOGRAPH ONLY. Do NOT render ANY text, labels, t
     console.log(`🍌 [${requestId}] Recipe: ${recipeTitle}`);
     console.log(`🍌 [${requestId}] Model: ${this.geminiModel}`);
 
-    if (!process.env.GOOGLE_GEMINI_API_KEY) {
-      throw new Error('GOOGLE_GEMINI_API_KEY is missing from environment variables');
+    if (!process.env.GEMINI_IMAGE_API_KEY) {
+      throw new Error('GEMINI_IMAGE_API_KEY is missing from environment variables');
     }
 
-    const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_GEMINI_API_KEY });
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_IMAGE_API_KEY });
     const prompt = this.buildGeminiImagePrompt(recipeTitle, keyIngredients, cuisineType);
 
     console.log(`📝 [${requestId}] Prompt length: ${prompt.length} chars`);

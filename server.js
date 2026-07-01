@@ -213,8 +213,8 @@ const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
 const supabaseKey = process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// TikTok domain verification — serve verification files at domain root
-app.get('/tiktok*.txt', async (req, res) => {
+// TikTok domain verification — serve verification files at domain root (no slashes in filename)
+app.get(/^\/tiktok[^/]+\.txt$/, async (req, res) => {
   try {
     const filename = req.path.slice(1); // remove leading /
     const bucket = process.env.SUPABASE_BUCKET || 'tiktok-images';

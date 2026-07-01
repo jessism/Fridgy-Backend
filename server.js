@@ -213,6 +213,28 @@ const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
 const supabaseKey = process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// TikTok domain verification — serve verification files at domain root
+app.get('/tiktok*.txt', async (req, res) => {
+  try {
+    const filename = req.path.slice(1); // remove leading /
+    const bucket = process.env.SUPABASE_BUCKET || 'tiktok-images';
+
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .download(filename);
+
+    if (error || !data) {
+      return res.status(404).send('Not found');
+    }
+
+    const buffer = Buffer.from(await data.arrayBuffer());
+    res.set({ 'Content-Type': 'text/plain' });
+    res.send(buffer);
+  } catch (error) {
+    res.status(404).send('Not found');
+  }
+});
+
 // TikTok media proxy — serves images from Supabase Storage so TikTok can PULL_FROM_URL
 // using our verified domain instead of the unverifiable supabase.co domain
 app.get('/tiktok-media/:filename', async (req, res) => {

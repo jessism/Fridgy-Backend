@@ -14,14 +14,13 @@ const getSupabaseClient = () => {
   return createClient(supabaseUrl, supabaseKey);
 };
 
-// Image Generation Service — Gemini (primary) with Fireworks AI fallback
+// Image Generation Service — Gemini (primary) with OpenRouter fallback
 class ImageGenerationService {
   constructor() {
     // Gemini (primary)
     this.geminiModel = 'gemini-3.1-flash-image';
-    // Fireworks (fallback)
-    this.baseUrl = 'https://api.fireworks.ai/inference/v1/workflows/accounts/fireworks/models/flux-1-dev-fp8/text_to_image';
-    this.fireworksModel = 'flux-1-dev-fp8';
+    // OpenRouter (fallback)
+    this.fallbackModel = 'openai/gpt-image-1-mini';
     this.defaultCost = 0.005;
   }
 
@@ -230,68 +229,55 @@ CRITICAL REMINDER: Generate a PHOTOGRAPH ONLY. Do NOT render ANY text, labels, t
     }
   }
 
-  // Generate image using Fireworks AI (fallback provider)
-  async generateImageWithFireworks(recipeTitle, keyIngredients, cuisineType = '') {
+  // Generate image using OpenRouter GPT Image 1 Mini (fallback provider)
+  async generateImageWithOpenRouter(recipeTitle, keyIngredients, cuisineType = '') {
     const requestId = Math.random().toString(36).substring(7);
 
-    console.log(`\n🔥 [${requestId}] ===== FIREWORKS (fallback) IMAGE GENERATION =====`);
-    console.log(`🔥 [${requestId}] Recipe: ${recipeTitle}`);
+    console.log(`\n🖼️ [${requestId}] ===== OPENROUTER (fallback) IMAGE GENERATION =====`);
+    console.log(`🖼️ [${requestId}] Recipe: ${recipeTitle}`);
+    console.log(`🖼️ [${requestId}] Model: ${this.fallbackModel}`);
 
-    if (!process.env.FIREWORKS_API_KEY) {
-      throw new Error('FIREWORKS_API_KEY is missing from environment variables');
+    if (!process.env.OPENROUTER_API_KEY) {
+      throw new Error('OPENROUTER_API_KEY is missing from environment variables');
     }
 
-    const apiKey = process.env.FIREWORKS_API_KEY;
-    const { prompt, negative_prompt } = this.buildImagePrompt(recipeTitle, keyIngredients, cuisineType);
+    const { prompt } = this.buildImagePrompt(recipeTitle, keyIngredients, cuisineType);
 
-    const requestBody = {
-      prompt: prompt,
-      negative_prompt: negative_prompt,
-      width: 1024,
-      height: 1024,
-      guidance_scale: 7.5,
-      num_inference_steps: 28,
-      seed: Math.floor(Math.random() * 1000000),
-      safety_check: false,
-      output_image_format: 'JPEG'
-    };
-
-    const response = await fetch(this.baseUrl, {
+    const response = await fetch('https://openrouter.ai/api/v1/images', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://fridgy.app',
+        'X-Title': 'Fridgy AI Recipe Images'
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify({
+        model: this.fallbackModel,
+        prompt: prompt,
+        n: 1,
+        response_format: 'b64_json',
+        size: '1024x1024'
+      })
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Fireworks API error: ${response.status} ${response.statusText} - ${errorText}`);
+      throw new Error(`OpenRouter API error: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
-    const contentType = response.headers.get('content-type') || '';
-    let imageUrl;
-
-    if (contentType.includes('application/json')) {
-      const result = await response.json();
-      if (!result || !result.images || result.images.length === 0) {
-        throw new Error('No images returned from Fireworks API');
-      }
-      const base64Image = result.images[0].b64_json || result.images[0].url;
-      if (!base64Image) throw new Error('No image data returned from Fireworks API');
-      imageUrl = base64Image.startsWith('data:') ? base64Image : `data:image/jpeg;base64,${base64Image}`;
-    } else {
-      const imageBuffer = await response.arrayBuffer();
-      const base64String = Buffer.from(imageBuffer).toString('base64');
-      imageUrl = `data:image/jpeg;base64,${base64String}`;
+    const result = await response.json();
+    if (!result || !result.data || result.data.length === 0) {
+      throw new Error('No images returned from OpenRouter API');
     }
 
-    console.log(`✅ [${requestId}] Fireworks image generated`);
-    return imageUrl;
+    const base64Image = result.data[0].b64_json;
+    if (!base64Image) throw new Error('No image data returned from OpenRouter API');
+
+    console.log(`✅ [${requestId}] OpenRouter image generated, base64 length: ${base64Image.length}`);
+    return `data:image/jpeg;base64,${base64Image}`;
   }
 
-  // Generate image — tries Gemini first, falls back to Fireworks
+  // Generate image — tries Gemini first, falls back to OpenRouter
   async generateImage(recipeTitle, keyIngredients, cuisineType = '', userId = null) {
     const requestId = Math.random().toString(36).substring(7);
     let imageUrl;
@@ -309,17 +295,17 @@ CRITICAL REMINDER: Generate a PHOTOGRAPH ONLY. Do NOT render ANY text, labels, t
       provider = 'Gemini';
     } catch (geminiError) {
       console.warn(`⚠️ [${requestId}] Gemini failed: ${geminiError.message}`);
-      console.warn(`⚠️ [${requestId}] Falling back to Fireworks...`);
+      console.warn(`⚠️ [${requestId}] Falling back to OpenRouter...`);
 
-      // Try Fireworks as fallback
+      // Try OpenRouter as fallback
       try {
-        imageUrl = await this.generateImageWithFireworks(recipeTitle, keyIngredients, cuisineType);
-        provider = 'Fireworks';
-      } catch (fireworksError) {
+        imageUrl = await this.generateImageWithOpenRouter(recipeTitle, keyIngredients, cuisineType);
+        provider = 'OpenRouter';
+      } catch (openRouterError) {
         console.error(`💥 [${requestId}] Both providers failed`);
         console.error(`💥 [${requestId}] Gemini: ${geminiError.message}`);
-        console.error(`💥 [${requestId}] Fireworks: ${fireworksError.message}`);
-        throw new Error(`Image generation failed — Gemini: ${geminiError.message} | Fireworks: ${fireworksError.message}`);
+        console.error(`💥 [${requestId}] OpenRouter: ${openRouterError.message}`);
+        throw new Error(`Image generation failed — Gemini: ${geminiError.message} | OpenRouter: ${openRouterError.message}`);
       }
     }
 

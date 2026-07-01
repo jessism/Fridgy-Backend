@@ -20,8 +20,8 @@ class ImageGenerationService {
     // Gemini (primary)
     this.geminiModel = 'gemini-3.1-flash-image';
     // Fireworks (fallback)
-    this.baseUrl = 'https://api.fireworks.ai/inference/v1/workflows/accounts/fireworks/models/flux-1-schnell-fp8/text_to_image';
-    this.fireworksModel = 'flux-1-schnell-fp8';
+    this.baseUrl = 'https://api.fireworks.ai/inference/v1/workflows/accounts/fireworks/models/flux-1-dev-fp8/text_to_image';
+    this.fireworksModel = 'flux-1-dev-fp8';
     this.defaultCost = 0.005;
   }
 
@@ -247,10 +247,10 @@ CRITICAL REMINDER: Generate a PHOTOGRAPH ONLY. Do NOT render ANY text, labels, t
     const requestBody = {
       prompt: prompt,
       negative_prompt: negative_prompt,
-      width: 512,
-      height: 512,
+      width: 1024,
+      height: 1024,
       guidance_scale: 7.5,
-      num_inference_steps: 25,
+      num_inference_steps: 28,
       seed: Math.floor(Math.random() * 1000000),
       safety_check: false,
       output_image_format: 'JPEG'

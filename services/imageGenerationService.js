@@ -184,16 +184,27 @@ CRITICAL REMINDER: Generate a PHOTOGRAPH ONLY. Do NOT render ANY text, labels, t
     }
   }
 
-  // Build optimized image prompt for food photography
-  buildImagePrompt(recipeTitle, keyIngredients, cuisineType = '') {
+  // Build GPT-optimized prompt for food photography (used by OpenRouter fallback)
+  buildGPTImagePrompt(recipeTitle, keyIngredients, cuisineType = '') {
     const ingredientsList = keyIngredients.join(', ');
-    const cuisineContext = cuisineType ? `, ${cuisineType} style` : '';
+    const cuisineContext = cuisineType ? ` (${cuisineType} cuisine)` : '';
 
-    return {
-      prompt: `professional food photography, overhead shot, ${recipeTitle}, beautifully plated and garnished, made with ${ingredientsList}${cuisineContext}, natural lighting, restaurant quality presentation, modern white ceramic plate, minimal styling, photorealistic, 4K quality, editorial food styling, warm color temperature, shallow depth of field, appetizing, fresh ingredients visible, clean composition, subtle shadows, high detail textures`,
+    return `Photograph a real homemade dish of ${recipeTitle}, made with ${ingredientsList}${cuisineContext}.
 
-      negative_prompt: `cartoon, illustration, anime, painting, sketch, text overlay, watermarks, logos, utensils in frame, hands, people, messy plating, plastic appearance, low quality, blurry, oversaturated, unappetizing, raw ingredients only, dark lighting, cluttered background, unrealistic colors`
-    };
+This must look like a casual photo taken by someone at home with their phone — NOT a professional studio shot. Think "posted on Instagram by a home cook", not "food magazine cover".
+
+CAMERA: Slightly angled (about 30-45 degrees), not perfectly overhead. Natural window light from one side creating soft shadows. Shallow depth of field — background should be blurry.
+
+FOOD: The dish should look freshly cooked and imperfect:
+- Slightly uneven portions, a drip of sauce on the plate rim
+- Natural color variation in vegetables — not every piece identical
+- Visible texture on meat (muscle fibers, sear marks with slight char)
+- A few crumbs or grains scattered naturally around the plate
+- Steam or warmth implied through slight gloss on the food
+
+PLATE/SETTING: Simple ceramic plate or bowl, slightly off-center in frame. No props, no garnish towers, no napkins, no background objects. Just food on a plate, tight crop.
+
+DO NOT include: any text, labels, watermarks, human hands, wooden utensils, multiple dishes, garnish that looks decoratively placed, perfectly symmetrical food arrangement, unnaturally vibrant colors, or any element that makes this look AI-generated or styled by a food photographer.`;
   }
 
   // Check if we have a cached image for this recipe
@@ -241,7 +252,7 @@ CRITICAL REMINDER: Generate a PHOTOGRAPH ONLY. Do NOT render ANY text, labels, t
       throw new Error('OPENROUTER_API_KEY is missing from environment variables');
     }
 
-    const { prompt } = this.buildImagePrompt(recipeTitle, keyIngredients, cuisineType);
+    const prompt = this.buildGPTImagePrompt(recipeTitle, keyIngredients, cuisineType);
 
     const response = await fetch('https://openrouter.ai/api/v1/images', {
       method: 'POST',

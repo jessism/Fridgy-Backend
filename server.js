@@ -213,6 +213,38 @@ const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
 const supabaseKey = process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// TikTok media proxy — serves images from Supabase Storage so TikTok can PULL_FROM_URL
+// using our verified domain instead of the unverifiable supabase.co domain
+app.get('/tiktok-media/:filename', async (req, res) => {
+  try {
+    const { filename } = req.params;
+    const bucket = process.env.SUPABASE_BUCKET || 'tiktok-images';
+
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .download(filename);
+
+    if (error || !data) {
+      console.error('[TikTokMedia] Error downloading from Supabase:', error?.message);
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    const buffer = Buffer.from(await data.arrayBuffer());
+    const contentType = filename.endsWith('.txt') ? 'text/plain' : 'image/jpeg';
+
+    res.set({
+      'Content-Type': contentType,
+      'Content-Length': buffer.length,
+      'Cache-Control': 'public, max-age=3600',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.send(buffer);
+  } catch (error) {
+    console.error('[TikTokMedia] Error:', error.message);
+    res.status(500).json({ error: 'Failed to proxy file' });
+  }
+});
+
 // Real AI processing function using Gemini 2.0 Flash
 const analyzeGroceryImages = async (images) => {
   const aiRequestId = Math.random().toString(36).substring(7);

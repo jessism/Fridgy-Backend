@@ -300,23 +300,23 @@ DO NOT include: any text, labels, watermarks, human hands, wooden utensils, mult
     console.log(`🎨 Timestamp: ${new Date().toISOString()}`);
     console.log(`🎨 ======================================================\n`);
 
-    // Try Gemini first (primary)
+    // Try OpenRouter first (testing GPT image quality)
     try {
-      imageUrl = await this.generateImageWithGemini(recipeTitle, keyIngredients, cuisineType);
-      provider = 'Gemini';
-    } catch (geminiError) {
-      console.warn(`⚠️ [${requestId}] Gemini failed: ${geminiError.message}`);
-      console.warn(`⚠️ [${requestId}] Falling back to OpenRouter...`);
+      imageUrl = await this.generateImageWithOpenRouter(recipeTitle, keyIngredients, cuisineType);
+      provider = 'OpenRouter';
+    } catch (openRouterError) {
+      console.warn(`⚠️ [${requestId}] OpenRouter failed: ${openRouterError.message}`);
+      console.warn(`⚠️ [${requestId}] Falling back to Gemini...`);
 
-      // Try OpenRouter as fallback
+      // Try Gemini as fallback
       try {
-        imageUrl = await this.generateImageWithOpenRouter(recipeTitle, keyIngredients, cuisineType);
-        provider = 'OpenRouter';
-      } catch (openRouterError) {
+        imageUrl = await this.generateImageWithGemini(recipeTitle, keyIngredients, cuisineType);
+        provider = 'Gemini';
+      } catch (geminiError) {
         console.error(`💥 [${requestId}] Both providers failed`);
-        console.error(`💥 [${requestId}] Gemini: ${geminiError.message}`);
         console.error(`💥 [${requestId}] OpenRouter: ${openRouterError.message}`);
-        throw new Error(`Image generation failed — Gemini: ${geminiError.message} | OpenRouter: ${openRouterError.message}`);
+        console.error(`💥 [${requestId}] Gemini: ${geminiError.message}`);
+        throw new Error(`Image generation failed — OpenRouter: ${openRouterError.message} | Gemini: ${geminiError.message}`);
       }
     }
 

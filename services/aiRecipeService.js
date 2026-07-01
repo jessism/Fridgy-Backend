@@ -196,7 +196,7 @@ Create 3 delicious, creative recipes that match ALL the preferences above. You c
 - Matching the requested vibe (${vibeText})
 - Within the time constraint (${cookingTimeText})
 
-Return ONLY a valid JSON array with exactly 3 recipes in this format:
+Return ONLY a valid JSON array with exactly 2 recipes in this format:
 [
   {
     "title": "Descriptive Recipe Name",
@@ -292,7 +292,7 @@ ${this.getIngredientUsageSection(ingredientUsagePreference)}
 VALIDATION BEFORE RETURNING:
 □ Each recipe uses at least 2-3 MAIN ingredients from the fridge inventory
 □ NO allergic ingredients included anywhere
-□ All 3 recipes are ${questionnaire.meal_type || 'appropriate'} meals
+□ All 2 recipes are ${questionnaire.meal_type || 'appropriate'} meals
 □ All can be completed within ${cookingTimeText}
 □ All match the ${vibeText} style requested
 □ All serve exactly ${servingSizeText} people
@@ -308,7 +308,7 @@ BEFORE RETURNING YOUR ANSWER:
 - Confirm EVERY protein/meat is from: ${proteins.length > 0 ? proteins.join(', ') : 'NONE (vegetarian only)'}
 - If you included chicken/beef/pork/tilapia/fish and they're NOT in the list above, DELETE that recipe and create a new one
 
-Return ONLY a valid JSON array with exactly 3 recipes in this format:
+Return ONLY a valid JSON array with exactly 2 recipes in this format:
 [
   {
     "title": "Descriptive Recipe Name",
@@ -414,9 +414,9 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
       }
 
       // Validate recipes structure
-      if (!Array.isArray(recipes) || recipes.length !== 3) {
-        console.error(`❌ [${requestId}] Invalid recipe structure - expected 3 recipes, got:`, recipes.length);
-        throw new Error(`Expected exactly 3 recipes, got ${recipes.length}`);
+      if (!Array.isArray(recipes) || recipes.length !== 2) {
+        console.error(`❌ [${requestId}] Invalid recipe structure - expected 2 recipes, got:`, recipes.length);
+        throw new Error(`Expected exactly 2 recipes, got ${recipes.length}`);
       }
 
       // Post-generation validation: Ensure recipes use inventory items

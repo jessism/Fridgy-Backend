@@ -320,7 +320,8 @@ DO NOT include: any text, labels, watermarks, human hands, wooden utensils, mult
       }
     }
 
-    console.log(`✅ [${requestId}] Image generated via ${provider}`);
+    const modelUsed = provider === 'Gemini' ? this.geminiModel : this.fallbackModel;
+    console.log(`✅ [${requestId}] Image generated via ${provider} (model: ${modelUsed})`);
 
     // Upload to Supabase Storage
     if (userId) {

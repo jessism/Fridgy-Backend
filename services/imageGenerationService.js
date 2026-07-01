@@ -267,7 +267,7 @@ DO NOT include: any text, labels, watermarks, human hands, wooden utensils, mult
         prompt: prompt,
         n: 1,
         response_format: 'b64_json',
-        size: '512x512'
+        size: '1024x1024'
       })
     });
 

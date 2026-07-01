@@ -167,7 +167,7 @@ const aiRecipeController = {
 
         const imageGenerationPromise = imageGenerationService.generateImagesForRecipes(recipeResult.recipes, userId);
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Image generation timeout')), 20000) // 20 second timeout
+          setTimeout(() => reject(new Error('Image generation timeout')), 45000) // 45 second timeout (OpenRouter fallback is slower)
         );
         
         // Wait for images with timeout

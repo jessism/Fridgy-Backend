@@ -4,6 +4,7 @@ const authMiddleware = require('../middleware/auth');
 const { checkSavedRecipeLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 const { createClient } = require('@supabase/supabase-js');
 const { generateRecipeTags } = require('../services/recipeTagService');
+const streakService = require('../services/streakService');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -83,6 +84,11 @@ router.post('/', authMiddleware.authenticateToken, checkSavedRecipeLimit, async 
       success: true,
       recipe: data,
       message: 'Recipe saved successfully'
+    });
+
+    // Streak: fire-and-forget
+    streakService.recordAction(userId, 'recipe_save').catch(err => {
+      console.error('[Streak] Failed to record recipe_save:', err.message);
     });
 
   } catch (error) {

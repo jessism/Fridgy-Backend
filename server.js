@@ -40,6 +40,7 @@ const messengerRoutes = require('./routes/messenger');
 const instagramDMRoutes = require('./routes/instagramDM');
 const ttsRoutes = require('./routes/tts');
 const aiChefRoutes = require('./routes/aiChef');
+const streakRoutes = require('./routes/streaks');
 // const blogRoutes = require('./routes/blogRoutes');
 
 const app = express();
@@ -131,6 +132,7 @@ app.use('/api/messenger', messengerRoutes);
 app.use('/api/instagram-dm', instagramDMRoutes);
 app.use('/api/tts', ttsRoutes);
 app.use('/api/ai-chef', aiChefRoutes);
+app.use('/api/streaks', streakRoutes);
 // app.use('/api/blog', blogRoutes);
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)
@@ -1470,6 +1472,7 @@ app.get('/api/test', (req, res) => {
 const expiryNotificationScheduler = require('./services/expiryNotificationScheduler');
 const trialReminderScheduler = require('./services/trialReminderScheduler');
 const accountDeletionScheduler = require('./services/accountDeletionScheduler');
+const streakScheduler = require('./services/streakScheduler');
 
 // Import PostHog for analytics
 const { getPostHogClient } = require('./config/posthog');
@@ -1517,4 +1520,9 @@ app.listen(PORT, () => {
   console.log('\n🗑️  Starting account deletion scheduler...');
   accountDeletionScheduler.startScheduler();
   console.log('🗑️  Account deletion scheduler is running (runs daily at 2:00 AM)');
+
+  // Start the streak scheduler (overnight processing, monthly freeze reset, streak notifications)
+  console.log('\n🔥 Starting streak scheduler...');
+  streakScheduler.start();
+  console.log('🔥 Streak scheduler is running (every 30 min + monthly reset)');
 }); 

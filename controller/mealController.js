@@ -1,5 +1,6 @@
 const mealAnalysisService = require('../services/mealAnalysisService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
+const streakService = require('../services/streakService');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const moment = require('moment-timezone');
@@ -194,7 +195,12 @@ const mealController = {
         requestId: requestId,
         timestamp: new Date().toISOString()
       });
-      
+
+      // Streak: fire-and-forget; back-dated logs (targetDate ≠ today) don't count
+      streakService.recordActionForDate(userId, 'meal_log', targetDate).catch(err => {
+        console.error(`[Streak] Failed to record meal_log:`, err.message);
+      });
+
       console.log(`✅ [${requestId}] Meal log complete`);
       console.log(`✅ ================== MEAL LOG END ==================\n`);
       
@@ -606,6 +612,11 @@ const mealController = {
         meal: mealLog,
         requestId: requestId,
         timestamp: new Date().toISOString()
+      });
+
+      // Streak: fire-and-forget; back-dated logs (targetDate ≠ today) don't count
+      streakService.recordActionForDate(userId, 'meal_log', req.body.targetDate).catch(err => {
+        console.error(`[Streak] Failed to record meal_log (dine-out):`, err.message);
       });
 
       console.log(`✅ [${requestId}] Dine-out meal log complete`);

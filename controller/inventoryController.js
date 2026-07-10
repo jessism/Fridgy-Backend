@@ -1,6 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const { incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
+const streakService = require('../services/streakService');
 
 // Initialize Supabase client function
 const getSupabaseClient = () => {
@@ -125,7 +126,12 @@ const inventoryController = {
         count: insertedItems.length,
         requestId: requestId
       });
-      
+
+      // Streak: fire-and-forget
+      streakService.recordAction(userId, 'inventory_add').catch(err => {
+        console.error(`[Streak] Failed to record inventory_add:`, err.message);
+      });
+
       console.log(`\n✅ [${requestId}] =============== CREATE ITEMS COMPLETE ===============\n`);
       
     } catch (error) {

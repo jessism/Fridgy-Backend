@@ -5,6 +5,7 @@ const { checkAggregatedListLimit, incrementUsageCounter } = require('../middlewa
 const { createClient } = require('@supabase/supabase-js');
 const googleCalendarService = require('../services/googleCalendarService');
 const ingredientAggregationService = require('../services/ingredientAggregationService');
+const streakService = require('../services/streakService');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -498,6 +499,11 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
       message: 'Meal plan saved successfully'
     });
 
+    // Streak: fire-and-forget
+    streakService.recordAction(userId, 'meal_plan').catch(err => {
+      console.error('[Streak] Failed to record meal_plan:', err.message);
+    });
+
   } catch (error) {
     console.error('[MealPlans] Create plan error:', error);
     res.status(500).json({
@@ -727,6 +733,11 @@ router.post('/:id/complete', authMiddleware.authenticateToken, async (req, res) 
       plan: updatedPlan,
       mealLog: mealLog,
       message: 'Meal completed and logged to history'
+    });
+
+    // Streak: fire-and-forget
+    streakService.recordAction(userId, 'meal_cook').catch(err => {
+      console.error('[Streak] Failed to record meal_cook:', err.message);
     });
 
   } catch (error) {

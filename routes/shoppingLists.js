@@ -4,6 +4,7 @@ const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/auth');
 const { checkShoppingListLimit, checkJoinedListLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 const categoryService = require('../services/categoryService');
+const streakService = require('../services/streakService');
 
 // Initialize Supabase
 const supabase = createClient(
@@ -742,6 +743,13 @@ router.post('/:id/items/:itemId/toggle', authMiddleware.authenticateToken, async
       });
 
     res.json({ success: true, item });
+
+    // Streak: only checking off (not unchecking) counts; fire-and-forget
+    if (newCheckedState) {
+      streakService.recordAction(userId, 'shopping_check').catch(err => {
+        console.error('[Streak] Failed to record shopping_check:', err.message);
+      });
+    }
   } catch (error) {
     console.error('Error toggling item:', error);
     res.status(500).json({ error: 'Failed to toggle item' });

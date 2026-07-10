@@ -807,6 +807,11 @@ async function confirmSubscription(req, res) {
     } else {
       console.log(`✅ STEP 5 COMPLETE: User tier updated to premium`);
       console.log('[ConfirmSubscription] 🔍 Successfully set tier to premium for user:', userId);
+
+      // New premium users get their 3 streak freezes immediately
+      require('../services/streakService').topUpFreezesForPremium(userId).catch(err => {
+        console.error('[ConfirmSubscription] Streak freeze top-up failed:', err.message);
+      });
     }
 
     // If we got here, all database operations succeeded

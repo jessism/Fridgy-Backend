@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
+const moment = require('moment-timezone');
 const authService = require('../services/authService');
 // const { createDefaultRecipe } = require('../services/defaultRecipe'); // DISABLED: Not adding default recipe to new users
 const emailService = require('../services/emailService');
@@ -767,10 +768,22 @@ const authController = {
   async updateProfile(req, res) {
     try {
       const userId = req.user.id;
-      const { firstName, email } = req.body;
+      const { firstName, email, timezone } = req.body;
 
       // Build update object with only provided fields
       const updates = {};
+
+      if (timezone !== undefined) {
+        // IANA zone name, e.g. "America/Vancouver" — drives streak day boundaries
+        // and notification windows
+        if (typeof timezone !== 'string' || !moment.tz.zone(timezone)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid timezone'
+          });
+        }
+        updates.timezone = timezone;
+      }
 
       if (firstName !== undefined) {
         if (!validateName(firstName)) {
@@ -827,6 +840,17 @@ const authController = {
 
       if (error) {
         throw error;
+      }
+
+      // Keep notification_preferences.timezone in sync (schedulers read both)
+      if (updates.timezone) {
+        const { error: prefError } = await serviceClient
+          .from('notification_preferences')
+          .update({ timezone: updates.timezone })
+          .eq('user_id', userId);
+        if (prefError) {
+          console.error('Failed to mirror timezone to notification_preferences:', prefError);
+        }
       }
 
       res.json({

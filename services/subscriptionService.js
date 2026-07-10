@@ -146,6 +146,14 @@ async function upsertSubscription(subscriptionData) {
       throw userError;
     }
 
+    // New premium users get their 3 streak freezes immediately, not at the monthly reset
+    // (lazy require: streakService requires this module)
+    if (tier === 'premium' || tier === 'grandfathered') {
+      require('./streakService').topUpFreezesForPremium(userId).catch(err => {
+        console.error('[SubscriptionService] Streak freeze top-up failed:', err.message);
+      });
+    }
+
     console.log('[SubscriptionService] Upserted subscription for user:', userId, 'tier:', tier);
 
     // Verify what was actually saved to database

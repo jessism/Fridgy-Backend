@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const streakService = require('../services/streakService');
-const subscriptionService = require('../services/subscriptionService');
 
 const requestMeta = () => ({
   requestId: Math.random().toString(36).substring(7),
@@ -23,7 +22,8 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
   }
 });
 
-// GET /api/streaks/calendar?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD (premium)
+// GET /api/streaks/calendar?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+// Available to all tiers — the chain visual drives the habit loop (decision 2026-07-10)
 router.get('/calendar', authMiddleware.authenticateToken, async (req, res) => {
   const meta = requestMeta();
   try {
@@ -32,11 +32,6 @@ router.get('/calendar', authMiddleware.authenticateToken, async (req, res) => {
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) {
       return res.status(400).json({ success: false, error: 'start_date and end_date (YYYY-MM-DD) are required', ...meta });
-    }
-
-    const isPremium = await subscriptionService.isPremium(userId);
-    if (!isPremium) {
-      return res.status(403).json({ success: false, error: 'Streak calendar is a premium feature', upgrade_required: true, ...meta });
     }
 
     const days = await streakService.getCalendar(userId, startDate, endDate);

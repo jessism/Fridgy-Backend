@@ -438,10 +438,10 @@ router.post('/from-ai', authMiddleware.authenticateToken, async (req, res) => {
     const newRecipe = {
       user_id: userId,
       source_type: 'ai_generated',
-      is_favorite: true,
+      is_favorite: false,
       title: aiRecipe.title,
       summary: aiRecipe.description || '',
-      image: aiRecipe._imageUrl || aiRecipe.image || null,
+      image: aiRecipe.imageUrl || aiRecipe._imageUrl || aiRecipe.image || null,
       extendedIngredients: aiRecipe.ingredients?.map(ing => ({
         original: `${ing.amount} ${ing.item}`,
         name: ing.item,
@@ -460,6 +460,7 @@ router.post('/from-ai', authMiddleware.authenticateToken, async (req, res) => {
       glutenFree: aiRecipe.dietary_info?.gluten_free || false,
       dairyFree: aiRecipe.dietary_info?.dairy_free || false,
       cuisines: aiRecipe.cuisine_type ? [aiRecipe.cuisine_type] : [],
+      nutrition: aiRecipe.nutrition || null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };

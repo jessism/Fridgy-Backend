@@ -411,6 +411,7 @@ router.post('/import-instagram', authMiddleware.authenticateToken, checkImported
 
 const pushNotificationService = require('../services/pushNotificationService');
 const previewJobService = require('../services/previewJobService');
+const { parseAIJson } = require('../services/aiJsonParser');
 
 /**
  * POST /api/recipes/import-async
@@ -2293,7 +2294,7 @@ OTHER RULES:
 - Estimate nutrition per serving based on the ingredients (nutrition estimation is OK to be AI-generated)
 - Set dietary flags (vegetarian, vegan, etc.) based on ingredients
 - If no recipe can be found in the audio, return {"error": "No recipe found in audio"}
-- Return ONLY the JSON object, no other text`;
+- Return ONLY the JSON object, no other text. Output STRICT JSON: no comments (// or /* */), no trailing commas`;
 
     const result = await model.generateContent([
       {
@@ -2317,8 +2318,7 @@ OTHER RULES:
     // Parse JSON from AI response (handle markdown code blocks)
     let recipe;
     try {
-      const jsonStr = aiContent.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      recipe = JSON.parse(jsonStr);
+      recipe = parseAIJson(aiContent);
     } catch (parseError) {
       console.error(`[VoiceRecipe:${requestId}] JSON parse error:`, parseError.message);
       console.error(`[VoiceRecipe:${requestId}] Raw AI content:`, aiContent.substring(0, 500));

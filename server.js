@@ -590,7 +590,7 @@ Return the result as a JSON object with this EXACT structure:
   "dairyFree": false
 }
 
-Respond with ONLY the JSON object, no additional text.`
+Respond with ONLY the JSON object, no additional text. Output STRICT JSON: no comments (// or /* */), no trailing commas.`
           },
           {
             type: "image_url",
@@ -636,16 +636,10 @@ Respond with ONLY the JSON object, no additional text.`
     const content = responseData.choices[0].message.content;
     console.log(`📊 [${aiRequestId}] Parsing AI response...`);
 
-    // Parse the JSON response
+    // Parse the JSON response (tolerates code fences, comments, trailing commas)
     let recipeData;
     try {
-      // Clean the response in case there's extra text
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        recipeData = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('No JSON found in response');
-      }
+      recipeData = parseAIJson(content);
     } catch (parseError) {
       console.error(`❌ [${aiRequestId}] Failed to parse AI response:`, parseError);
       console.log(`❌ [${aiRequestId}] Raw content:`, content);
@@ -841,7 +835,7 @@ Return the result as a JSON object with this EXACT structure:
   "dairyFree": false
 }
 
-Respond with ONLY the JSON object, no additional text.`
+Respond with ONLY the JSON object, no additional text. Output STRICT JSON: no comments (// or /* */), no trailing commas.`
       }
     ];
 
@@ -869,7 +863,7 @@ Respond with ONLY the JSON object, no additional text.`
     const responseData = await callOpenRouterWithFallback({
       messages: messages,
       temperature: 0.3,
-      max_tokens: 3000  // Increased for potentially longer multi-page recipes
+      max_tokens: 6000  // Multi-page recipes were bumping against 3000 (truncation breaks JSON parsing)
     }, aiRequestId);
     console.log(`✅ [${aiRequestId}] OpenRouter API response received`);
 
@@ -880,16 +874,10 @@ Respond with ONLY the JSON object, no additional text.`
     const content = responseData.choices[0].message.content;
     console.log(`📊 [${aiRequestId}] Parsing AI response...`);
 
-    // Parse the JSON response
+    // Parse the JSON response (tolerates code fences, comments, trailing commas)
     let recipeData;
     try {
-      // Clean the response in case there's extra text
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        recipeData = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('No JSON found in response');
-      }
+      recipeData = parseAIJson(content);
     } catch (parseError) {
       console.error(`❌ [${aiRequestId}] Failed to parse AI response:`, parseError);
       console.log(`❌ [${aiRequestId}] Raw content:`, content);
@@ -1379,6 +1367,7 @@ app.post('/api/scan-recipe', authMiddleware.authenticateToken, checkImportedReci
 // ============================================================
 
 const previewJobService = require('./services/previewJobService');
+const { parseAIJson } = require('./services/aiJsonParser');
 
 /**
  * POST /api/scan-recipe-async

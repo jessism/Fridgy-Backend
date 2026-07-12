@@ -5,12 +5,18 @@
 
 const fetch = require('node-fetch');
 
-const REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_API_KEY;
+// Trim whitespace/quotes — a stray newline or pasted quotes in the Railway
+// env var makes the Authorization header invalid and RevenueCat returns 403.
+const RAW_RC_KEY = process.env.REVENUECAT_SECRET_API_KEY || '';
+const REVENUECAT_SECRET_KEY = RAW_RC_KEY.trim().replace(/^["']|["']$/g, '') || null;
 const REVENUECAT_API_BASE = 'https://api.revenuecat.com/v1';
 
 // Debug: Log if key is set (first 10 chars only for security)
 if (REVENUECAT_SECRET_KEY) {
-  console.log('[RevenueCat] API key loaded:', REVENUECAT_SECRET_KEY.substring(0, 10) + '...');
+  console.log('[RevenueCat] API key loaded:', REVENUECAT_SECRET_KEY.substring(0, 10) + '...', `(len ${REVENUECAT_SECRET_KEY.length})`);
+  if (REVENUECAT_SECRET_KEY !== RAW_RC_KEY) {
+    console.warn(`[RevenueCat] ⚠️ Env var had surrounding whitespace/quotes (raw len ${RAW_RC_KEY.length}) — sanitized in code. Fix the Railway variable to silence this warning.`);
+  }
 } else {
   console.error('[RevenueCat] ⚠️ WARNING: REVENUECAT_SECRET_API_KEY not set!');
 }
@@ -47,9 +53,11 @@ async function checkRevenueCatSubscription(userId) {
         console.log(`[RevenueCat] User ${userId} not found in RevenueCat`);
         return null;
       }
+      const errorBody = await response.text().catch(() => '');
       console.error(`[RevenueCat] API error: ${response.status}`);
       console.error(`[RevenueCat] Request URL: ${url}`);
-      console.error(`[RevenueCat] Auth header: Bearer ${REVENUECAT_SECRET_KEY.substring(0, 15)}...`);
+      console.error(`[RevenueCat] Response body: ${errorBody.slice(0, 300)}`);
+      console.error(`[RevenueCat] Auth header: Bearer ${REVENUECAT_SECRET_KEY.substring(0, 15)}... (len ${REVENUECAT_SECRET_KEY.length})`);
       return null;
     }
 

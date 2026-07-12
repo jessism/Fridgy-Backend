@@ -260,8 +260,12 @@ class PushNotificationService {
 
   mapTagToChannel(tag) {
     if (!tag) return 'default';
-    if (tag.includes('expir')) return 'expiry-alerts';
-    if (tag.includes('reminder')) return 'daily-reminders';
+    // Explicit tag -> Android channel routing. Prefix-based so future
+    // `streak_<type>` / `daily-reminder-<type>` tags still resolve.
+    // Unknown tags (recipe-import*, test-*) intentionally fall through to 'default'.
+    if (tag.startsWith('streak_')) return 'streaks';
+    if (tag === 'expiry-notification' || tag === 'expired-notification') return 'expiry-alerts';
+    if (tag.startsWith('daily-reminder-')) return 'daily-reminders';
     return 'default';
   }
 

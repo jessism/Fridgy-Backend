@@ -410,6 +410,7 @@ router.post('/import-instagram', authMiddleware.authenticateToken, checkImported
 // ============================================================
 
 const pushNotificationService = require('../services/pushNotificationService');
+const previewJobService = require('../services/previewJobService');
 
 /**
  * POST /api/recipes/import-async
@@ -472,7 +473,7 @@ router.get('/import-status/:jobId', authMiddleware.authenticateToken, async (req
   try {
     const { data, error } = await supabase
       .from('import_jobs')
-      .select('id, status, recipe_id, recipe_name, error')
+      .select('id, status, source_type, recipe_id, recipe_name, error')
       .eq('id', jobId)
       .eq('user_id', userId)
       .single();
@@ -481,12 +482,34 @@ router.get('/import-status/:jobId', authMiddleware.authenticateToken, async (req
       return res.status(404).json({ success: false, error: 'Job not found' });
     }
 
+    // Scan/voice jobs carry the extracted recipe for preview (URL imports
+    // save server-side and only need recipeId). Memory is the fast path;
+    // result_data (migration 072) survives restarts — selected separately
+    // and best-effort so a missing column can't break the shared endpoint.
+    let recipe = null;
+    if (data.status === 'completed' && ['scan', 'voice'].includes(data.source_type)) {
+      recipe = previewJobService.getResult(jobId);
+      if (!recipe) {
+        try {
+          const { data: resultRow } = await supabase
+            .from('import_jobs')
+            .select('result_data')
+            .eq('id', jobId)
+            .single();
+          recipe = resultRow?.result_data || null;
+        } catch (resultErr) {
+          console.warn(`[AsyncImport] result_data lookup failed for ${jobId}:`, resultErr.message);
+        }
+      }
+    }
+
     res.json({
       jobId: data.id,
       status: data.status,
       recipeId: data.recipe_id || null,
       recipeName: data.recipe_name || null,
       error: data.error || null,
+      ...(recipe ? { recipe } : {}),
     });
   } catch (error) {
     console.error('[AsyncImport] Status check error:', error);
@@ -2187,17 +2210,12 @@ const voiceUpload = multer({
   }
 });
 
-router.post('/create-from-voice', authMiddleware.authenticateToken, checkImportedRecipeLimit, voiceUpload.single('audio'), async (req, res) => {
-  const requestId = Math.random().toString(36).substring(7);
-  const userId = req.user?.userId || req.user?.id;
-
-  try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: 'Audio file is required' });
-    }
-
-    console.log(`[VoiceRecipe:${requestId}] User: ${userId}, Audio size: ${req.file.size} bytes, Type: ${req.file.mimetype}`);
-
+/**
+ * Transcribe + structure a voice recording into a recipe via Gemini.
+ * Shared by the sync route (old app bundles) and the async route.
+ * Throws an Error with code 'NO_RECIPE' when no recipe is found in the audio.
+ */
+async function voiceAudioToRecipe(file, requestId) {
     // Use Google Gemini to transcribe audio + structure recipe in one call
     const { GoogleGenerativeAI } = require('@google/generative-ai');
     const geminiKey = process.env.GOOGLE_GEMINI_API_KEY;
@@ -2209,8 +2227,8 @@ router.post('/create-from-voice', authMiddleware.authenticateToken, checkImporte
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
     // Convert audio buffer to base64 for inline data
-    const audioBase64 = req.file.buffer.toString('base64');
-    const mimeType = req.file.mimetype || 'audio/mp4';
+    const audioBase64 = file.buffer.toString('base64');
+    const mimeType = file.mimetype || 'audio/mp4';
 
     console.log(`[VoiceRecipe:${requestId}] Sending audio to Gemini for transcription + recipe structuring...`);
 
@@ -2309,10 +2327,9 @@ OTHER RULES:
 
     // Check if AI couldn't find a recipe
     if (recipe.error) {
-      return res.status(400).json({
-        success: false,
-        error: recipe.error
-      });
+      const noRecipeErr = new Error(recipe.error);
+      noRecipeErr.code = 'NO_RECIPE';
+      throw noRecipeErr;
     }
 
     // Normalize the recipe structure
@@ -2342,6 +2359,22 @@ OTHER RULES:
 
     console.log(`[VoiceRecipe:${requestId}] ✅ Recipe structured: "${structuredRecipe.title}" with ${structuredRecipe.extendedIngredients.length} ingredients, ${structuredRecipe.analyzedInstructions[0]?.steps?.length || 0} steps`);
 
+    return structuredRecipe;
+}
+
+router.post('/create-from-voice', authMiddleware.authenticateToken, checkImportedRecipeLimit, voiceUpload.single('audio'), async (req, res) => {
+  const requestId = Math.random().toString(36).substring(7);
+  const userId = req.user?.userId || req.user?.id;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'Audio file is required' });
+    }
+
+    console.log(`[VoiceRecipe:${requestId}] User: ${userId}, Audio size: ${req.file.size} bytes, Type: ${req.file.mimetype}`);
+
+    const structuredRecipe = await voiceAudioToRecipe(req.file, requestId);
+
     // Increment usage counter
     await incrementUsageCounter(userId, 'imported_recipes');
 
@@ -2352,6 +2385,13 @@ OTHER RULES:
 
   } catch (error) {
     console.error(`[VoiceRecipe:${requestId}] Error:`, error);
+
+    if (error.code === 'NO_RECIPE') {
+      return res.status(400).json({
+        success: false,
+        error: error.message
+      });
+    }
 
     if (error.name === 'AbortError') {
       return res.status(504).json({
@@ -2367,6 +2407,57 @@ OTHER RULES:
     });
   }
 });
+
+/**
+ * POST /api/recipes/create-from-voice-async
+ * Same payload as /create-from-voice, but returns a jobId immediately and
+ * processes in the background — avoids Railway's ~30s request timeout on
+ * long recordings. Poll via GET /api/recipes/import-status/:jobId; the
+ * completed job carries the extracted recipe for preview.
+ */
+router.post('/create-from-voice-async', authMiddleware.authenticateToken, checkImportedRecipeLimit, voiceUpload.single('audio'), async (req, res) => {
+  const userId = req.user?.userId || req.user?.id;
+
+  if (!req.file) {
+    return res.status(400).json({ success: false, error: 'Audio file is required' });
+  }
+
+  try {
+    const jobId = await previewJobService.createPreviewJob(userId, 'voice');
+
+    console.log(`[VoiceJob] Job ${jobId}: user ${userId}, audio ${req.file.size} bytes (${req.file.mimetype})`);
+
+    // Return immediately — the phone polls for the result
+    res.json({ success: true, jobId, status: 'processing' });
+
+    processVoiceJob(jobId, userId, req.file).catch(err => {
+      console.error(`[VoiceJob] Job ${jobId} unhandled error:`, err);
+    });
+  } catch (error) {
+    console.error('[VoiceJob] Failed to start:', error);
+    res.status(500).json({ success: false, error: 'Failed to start voice recipe' });
+  }
+});
+
+/**
+ * Background processor for voice recipe jobs.
+ */
+async function processVoiceJob(jobId, userId, file) {
+  try {
+    const structuredRecipe = await voiceAudioToRecipe(file, jobId);
+
+    await incrementUsageCounter(userId, 'imported_recipes');
+
+    console.log(`[VoiceJob] Job ${jobId}: completed — "${structuredRecipe.title}"`);
+    await previewJobService.completePreviewJob(jobId, userId, structuredRecipe, 'voice');
+  } catch (error) {
+    console.error(`[VoiceJob] Job ${jobId}: failed:`, error.message);
+    const message = error.code === 'NO_RECIPE'
+      ? error.message
+      : 'Failed to create recipe from voice. Please try again.';
+    await previewJobService.failPreviewJob(jobId, userId, message, 'voice');
+  }
+}
 
 // Get detailed recipe information
 // GET /api/recipes/:id

@@ -1372,6 +1372,119 @@ app.post('/api/scan-recipe', authMiddleware.authenticateToken, checkImportedReci
   }
 });
 
+// ============================================================
+// ASYNC RECIPE SCAN (Background processing — avoids Railway's
+// ~30s request timeout that kills the synchronous /api/scan-recipe
+// on multi-page scans. Mirrors the async URL-import pattern.)
+// ============================================================
+
+const previewJobService = require('./services/previewJobService');
+
+/**
+ * POST /api/scan-recipe-async
+ * Accepts the same multipart images as /api/scan-recipe, but returns a jobId
+ * immediately and processes in the background. Poll via
+ * GET /api/recipes/import-status/:jobId — the completed job carries the
+ * extracted recipe for preview.
+ */
+app.post('/api/scan-recipe-async', authMiddleware.authenticateToken, checkImportedRecipeLimit, upload.array('images', 10), async (req, res) => {
+  const userId = req.user?.userId || req.user?.id;
+
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'No images provided. Please upload recipe photos.'
+    });
+  }
+
+  // Validate images up front so obvious problems fail fast, not in the job
+  const maxFileSize = 10 * 1024 * 1024; // 10MB
+  const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  for (let i = 0; i < req.files.length; i++) {
+    const file = req.files[i];
+    if (file.size > maxFileSize) {
+      return res.status(400).json({ success: false, error: `Image ${i + 1} is too large. Maximum size is 10MB.` });
+    }
+    if (!allowedMimeTypes.includes(file.mimetype)) {
+      return res.status(400).json({ success: false, error: `Image ${i + 1} has invalid format. Please use JPEG, PNG, or WebP.` });
+    }
+    if (!file.buffer || file.buffer.length === 0) {
+      return res.status(400).json({ success: false, error: `Image ${i + 1} appears to be corrupted or empty.` });
+    }
+  }
+
+  try {
+    const jobId = await previewJobService.createPreviewJob(userId, 'scan');
+
+    // Return immediately — the phone polls for the result
+    res.json({ success: true, jobId, status: 'processing' });
+
+    processScanJob(jobId, userId, req.files).catch(err => {
+      console.error(`[ScanJob] Job ${jobId} unhandled error:`, err);
+    });
+  } catch (error) {
+    console.error('[ScanJob] Failed to start:', error);
+    res.status(500).json({ success: false, error: 'Failed to start recipe scan' });
+  }
+});
+
+/**
+ * Background processor for scan jobs. Reuses analyzeRecipeImages() and the
+ * best-photo storage upload from the synchronous handler.
+ */
+async function processScanJob(jobId, userId, files) {
+  try {
+    console.log(`[ScanJob] Job ${jobId}: analyzing ${files.length} image(s)...`);
+
+    const base64Images = files.map(file =>
+      `data:${file.mimetype};base64,${file.buffer.toString('base64')}`
+    );
+
+    const { recipeData, bestPhotoIndex } = await analyzeRecipeImages(base64Images);
+
+    // Upload the best photo to Supabase Storage (non-fatal on failure)
+    try {
+      const bestPhoto = files[bestPhotoIndex];
+      if (bestPhoto) {
+        const fileName = `${userId}/${Date.now()}_${Math.random().toString(36).substring(7)}_recipe.jpg`;
+        const { error: uploadError } = await supabase.storage
+          .from('recipe-images')
+          .upload(fileName, bestPhoto.buffer, {
+            contentType: bestPhoto.mimetype || 'image/jpeg',
+            upsert: false
+          });
+
+        if (uploadError) {
+          console.error(`[ScanJob] Job ${jobId}: storage upload error:`, uploadError.message || uploadError);
+        } else {
+          const { data: urlData } = supabase.storage
+            .from('recipe-images')
+            .getPublicUrl(fileName);
+          recipeData.image = urlData.publicUrl;
+          recipeData.imageStoragePath = fileName;
+        }
+      }
+    } catch (storageError) {
+      console.error(`[ScanJob] Job ${jobId}: storage error:`, storageError.message || storageError);
+    }
+
+    if (userId) {
+      await incrementUsageCounter(userId, 'imported_recipes');
+    }
+
+    console.log(`[ScanJob] Job ${jobId}: completed — "${recipeData.title}"`);
+    await previewJobService.completePreviewJob(jobId, userId, recipeData, 'scan');
+  } catch (error) {
+    console.error(`[ScanJob] Job ${jobId}: failed:`, error.message);
+    await previewJobService.failPreviewJob(
+      jobId,
+      userId,
+      'Failed to analyze recipe image. Please try again with a clearer photo.',
+      'scan'
+    );
+  }
+}
+
 // Save confirmed items to Supabase database
 app.post('/api/save-items', async (req, res) => {
   const saveRequestId = Math.random().toString(36).substring(7);

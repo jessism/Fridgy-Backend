@@ -9,8 +9,11 @@ class ApifyTikTokService {
     this.actorId = process.env.APIFY_TIKTOK_ACTOR || 'apidojo~tiktok-scraper';
     // SHARED limit with Instagram/Facebook/YouTube
     this.freeLimit = parseInt(process.env.APIFY_FREE_TIER_LIMIT) || 50;
-    // Reduced to fit within Railway's 30s timeout
-    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 20;
+    // Import runs as an async background job (push notification on completion),
+    // so we can afford a real scrape budget. The old 20s value predates async
+    // import — it existed to fit Railway's 30s synchronous request window — and
+    // killed any scrape that took longer, failing the import.
+    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 120;
 
     this.supabase = createClient(
       process.env.SUPABASE_URL,
@@ -248,9 +251,11 @@ class ApifyTikTokService {
     }
   }
 
-  async pollForResults(runId, maxAttempts = 20) {
+  async pollForResults(runId, maxAttempts = null) {
     let attempts = 0;
-    const pollInterval = 1000; // 1s intervals (20 attempts * 1s = 20s max)
+    const pollInterval = 2000;
+    // Cover the actor's full server-side budget plus slack for startup/queueing
+    maxAttempts = maxAttempts || Math.ceil(this.timeoutSeconds / 2) + 15;
 
     while (attempts < maxAttempts) {
       try {

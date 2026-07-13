@@ -52,6 +52,19 @@ class MultiModalExtractor {
   }
 
   /**
+   * Race a promise against a deadline. The Gemini SDK has no request timeout,
+   * and a hung generateContent call would strand the whole import job in
+   * 'processing' forever — a timeout here lets the caller's catch/fallback run.
+   */
+  withTimeout(promise, ms, label) {
+    let timer;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+    });
+    return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+  }
+
+  /**
    * Aggregate duplicate ingredients in a recipe's ingredient list
    * @param {Array} ingredients - Array of ingredient objects
    * @returns {Array} Deduplicated ingredients
@@ -787,7 +800,11 @@ Return this JSON:
     try {
       // Use Gemini for text-only extraction (faster and no video processing needed)
       if (this.geminiModel) {
-        const result = await this.geminiModel.generateContent(prompt);
+        const result = await this.withTimeout(
+          this.geminiModel.generateContent(prompt),
+          60000,
+          'Gemini caption extraction'
+        );
         const response = await result.response;
         const text = response.text();
 
@@ -914,15 +931,19 @@ Return this JSON:
 
       // Send to Gemini
       console.log('[MultiModal] Step 6: Sending to Gemini API...');
-      const result = await this.geminiModel.generateContent([
-        {
-          inlineData: {
-            mimeType: 'video/mp4',
-            data: videoBase64
-          }
-        },
-        prompt
-      ]);
+      const result = await this.withTimeout(
+        this.geminiModel.generateContent([
+          {
+            inlineData: {
+              mimeType: 'video/mp4',
+              data: videoBase64
+            }
+          },
+          prompt
+        ]),
+        90000,
+        'Gemini video analysis'
+      );
 
       console.log('[MultiModal] Step 7: Gemini response received');
 

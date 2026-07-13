@@ -10,7 +10,9 @@ class ApifyYouTubeService {
     this.actorId = process.env.APIFY_YOUTUBE_ACTOR || 'streamers/youtube-scraper';
     this.transcriptActorId = process.env.APIFY_YOUTUBE_TRANSCRIPT_ACTOR || 'topaz_sharingan/youtube-transcript-scraper';
     this.freeLimit = parseInt(process.env.APIFY_FREE_TIER_LIMIT) || 50; // SHARED with Instagram/Facebook
-    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 45; // Longer timeout for YouTube
+    // Async background import — real scrape budget (was 45s to fit Railway's
+    // 30s-ish synchronous request window, which no longer applies)
+    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 120;
     this.maxDurationSeconds = 1800; // 30 minutes maximum
 
     this.supabase = createClient(
@@ -529,9 +531,11 @@ class ApifyYouTubeService {
    * @param {number} maxAttempts - Maximum polling attempts
    * @returns {Promise<object>} - Results or error
    */
-  async pollForResults(runId, maxAttempts = 30) {
+  async pollForResults(runId, maxAttempts = null) {
     let attempts = 0;
     const pollInterval = 2000; // 2 seconds
+    // Cover the actor's full server-side budget plus slack for startup/queueing
+    maxAttempts = maxAttempts || Math.ceil(this.timeoutSeconds / 2) + 15;
 
     while (attempts < maxAttempts) {
       try {

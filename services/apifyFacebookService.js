@@ -11,7 +11,9 @@ class ApifyFacebookService {
     // SHARED limit with Instagram
     this.freeLimit = parseInt(process.env.APIFY_FREE_TIER_LIMIT) || 50;
     // Reduced from 30s to 20s to fit within Railway's 30s timeout (with room for DB queries)
-    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 20;
+    // Async background import — real scrape budget (was 20s to fit Railway's
+    // 30s synchronous request window, which no longer applies)
+    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 120;
 
     this.supabase = createClient(
       process.env.SUPABASE_URL,
@@ -379,10 +381,11 @@ class ApifyFacebookService {
     }
   }
 
-  async pollForResults(actorId, runId, maxAttempts = 20) {
+  async pollForResults(actorId, runId, maxAttempts = null) {
     let attempts = 0;
-    // Reduced from 2s to 1s for faster detection (20 attempts * 1s = 20s max)
-    const pollInterval = 1000;
+    const pollInterval = 2000;
+    // Cover the actor's full server-side budget plus slack for startup/queueing
+    maxAttempts = maxAttempts || Math.ceil(this.timeoutSeconds / 2) + 15;
 
     while (attempts < maxAttempts) {
       try {

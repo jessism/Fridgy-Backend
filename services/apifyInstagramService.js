@@ -8,7 +8,9 @@ class ApifyInstagramService {
     // Use the correct Instagram scraper from environment or default
     this.actorId = process.env.APIFY_ACTOR_ID || 'apify~instagram-scraper';
     this.freeLimit = parseInt(process.env.APIFY_FREE_TIER_LIMIT) || 50;
-    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 30;
+    // Async background import — real scrape budget (was 30s to fit Railway's
+    // 30s synchronous request window, which no longer applies)
+    this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 120;
 
     this.supabase = createClient(
       process.env.SUPABASE_URL,
@@ -182,9 +184,11 @@ class ApifyInstagramService {
     }
   }
 
-  async pollForResults(runId, maxAttempts = 30) {
+  async pollForResults(runId, maxAttempts = null) {
     let attempts = 0;
     const pollInterval = 2000; // 2 seconds
+    // Cover the actor's full server-side budget plus slack for startup/queueing
+    maxAttempts = maxAttempts || Math.ceil(this.timeoutSeconds / 2) + 15;
 
     while (attempts < maxAttempts) {
       try {

@@ -452,10 +452,9 @@ router.post('/import-async', authMiddleware.authenticateToken, checkImportedReci
     // Return immediately — user is free to leave
     res.json({ success: true, jobId, status: 'processing' });
 
-    // Fire-and-forget: process extraction async
-    processAsyncImport(jobId, userId, url, source_type).catch(err => {
-      console.error(`[AsyncImport] Job ${jobId} unhandled error:`, err);
-    });
+    // Fire-and-forget with a hard deadline: a hang anywhere in the pipeline
+    // must surface as a failed job, never a row stuck in 'processing' forever
+    runImportWithDeadline(jobId, userId, url, source_type);
 
   } catch (error) {
     console.error('[AsyncImport] Error:', error);
@@ -522,6 +521,72 @@ router.get('/import-status/:jobId', authMiddleware.authenticateToken, async (req
  * Background processing function for async recipe imports.
  * Reuses existing extraction pipelines (TikTok, Instagram, YouTube, Facebook).
  */
+// Hard ceiling for one import job. The Apify budget is 120s and AI extraction
+// adds more; anything past this is a hang (e.g. an AI call that never returns).
+const IMPORT_JOB_DEADLINE_MS = 5 * 60 * 1000;
+
+function runImportWithDeadline(jobId, userId, url, sourceType) {
+  let deadlineTimer;
+  const deadline = new Promise(resolve => {
+    deadlineTimer = setTimeout(resolve, IMPORT_JOB_DEADLINE_MS, 'timeout');
+  });
+
+  Promise.race([
+    processAsyncImport(jobId, userId, url, sourceType).then(() => 'done'),
+    deadline,
+  ])
+    .then(outcome => {
+      if (outcome === 'timeout') {
+        console.error(`[AsyncImport] Job ${jobId}: deadline exceeded after ${IMPORT_JOB_DEADLINE_MS / 1000}s`);
+        return markImportJobFailed(jobId, userId, 'Import timed out. Please try again.');
+      }
+    })
+    .catch(err => {
+      console.error(`[AsyncImport] Job ${jobId} unhandled error:`, err);
+    })
+    .finally(() => clearTimeout(deadlineTimer));
+}
+
+/**
+ * Mark a job failed and notify the user — but only if it is still 'processing',
+ * so a job that already completed (or was already failed by the deadline) is
+ * never double-transitioned or double-notified.
+ */
+async function markImportJobFailed(jobId, userId, errorMessage) {
+  const { data, error } = await supabase
+    .from('import_jobs')
+    .update({
+      status: 'failed',
+      error: errorMessage || 'Extraction failed',
+      completed_at: new Date().toISOString(),
+    })
+    .eq('id', jobId)
+    .eq('status', 'processing')
+    .select('id');
+
+  if (error) {
+    console.error(`[AsyncImport] Job ${jobId}: failed to mark as failed:`, error);
+    return;
+  }
+  if (!data || data.length === 0) return; // job already left 'processing'
+
+  try {
+    await pushNotificationService.sendToUser(userId, {
+      title: 'Import failed',
+      body: "We couldn't extract a recipe from that video. Try again.",
+      tag: 'recipe-import',
+      data: {
+        screen: '/(tabs)',
+        type: 'recipe_import_failed',
+        jobId,
+      },
+      requireInteraction: false,
+    });
+  } catch (pushErr) {
+    console.error(`[AsyncImport] Job ${jobId}: failure notification failed:`, pushErr.message);
+  }
+}
+
 async function processAsyncImport(jobId, userId, url, sourceType) {
   const NutritionExtractor = require('../services/nutritionExtractor');
   const NutritionAnalysisService = require('../services/nutritionAnalysisService');
@@ -601,8 +666,9 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
     // Increment usage counter
     await incrementUsageCounter(userId, 'imported_recipes');
 
-    // Update job as completed
-    await supabase
+    // Update job as completed — only if still 'processing'; if the deadline
+    // already failed this job, don't resurrect it or send a success push
+    const { data: completedRows } = await supabase
       .from('import_jobs')
       .update({
         status: 'completed',
@@ -610,7 +676,14 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
         recipe_name: savedRecipe.title,
         completed_at: new Date().toISOString(),
       })
-      .eq('id', jobId);
+      .eq('id', jobId)
+      .eq('status', 'processing')
+      .select('id');
+
+    if (!completedRows || completedRows.length === 0) {
+      console.warn(`[AsyncImport] Job ${jobId}: finished after being marked failed — recipe ${savedRecipe.id} saved, skipping push`);
+      return;
+    }
 
     // Send push notification
     try {
@@ -633,33 +706,7 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
 
   } catch (error) {
     console.error(`[AsyncImport] Job ${jobId}: Failed:`, error.message);
-
-    // Update job as failed
-    await supabase
-      .from('import_jobs')
-      .update({
-        status: 'failed',
-        error: error.message || 'Extraction failed',
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', jobId);
-
-    // Send failure notification
-    try {
-      await pushNotificationService.sendToUser(userId, {
-        title: 'Import failed',
-        body: "We couldn't extract a recipe from that video. Try again.",
-        tag: 'recipe-import',
-        data: {
-          screen: '/(tabs)',
-          type: 'recipe_import_failed',
-          jobId,
-        },
-        requireInteraction: false,
-      });
-    } catch (pushErr) {
-      console.error(`[AsyncImport] Job ${jobId}: Failure notification failed:`, pushErr.message);
-    }
+    await markImportJobFailed(jobId, userId, error.message);
   }
 }
 

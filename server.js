@@ -1575,6 +1575,7 @@ const expiryNotificationScheduler = require('./services/expiryNotificationSchedu
 const trialReminderScheduler = require('./services/trialReminderScheduler');
 const accountDeletionScheduler = require('./services/accountDeletionScheduler');
 const streakScheduler = require('./services/streakScheduler');
+const importJobSweeper = require('./services/importJobSweeper');
 
 // Import PostHog for analytics
 const { getPostHogClient } = require('./config/posthog');
@@ -1627,4 +1628,9 @@ app.listen(PORT, () => {
   console.log('\n🔥 Starting streak scheduler...');
   streakScheduler.start();
   console.log('🔥 Streak scheduler is running (every 30 min + monthly reset)');
+
+  // Start the import job sweeper (fails out orphaned 'processing' import jobs)
+  console.log('\n🧹 Starting import job sweeper...');
+  importJobSweeper.start();
+  console.log('🧹 Import job sweeper is running (on boot + every 5 min)');
 }); 

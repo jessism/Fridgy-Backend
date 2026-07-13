@@ -63,6 +63,7 @@ class ApifyInstagramService {
   }
 
   async extractFromUrl(instagramUrl, userId) {
+    const scrapeStartedAt = Date.now();
     console.log('[ApifyInstagram] Starting extraction for:', instagramUrl);
     console.log('[ApifyInstagram] User ID:', userId);
 
@@ -129,6 +130,7 @@ class ApifyInstagramService {
       await this.cacheResult(instagramUrl, parsedData);
 
       console.log('[ApifyInstagram] Extraction successful:', {
+        scrapeSeconds: Number(((Date.now() - scrapeStartedAt) / 1000).toFixed(1)),
         hasVideo: !!parsedData.videoUrl,
         hasCaption: !!parsedData.caption,
         imageCount: parsedData.images?.length || 0,

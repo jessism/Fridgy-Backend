@@ -597,8 +597,11 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
   const nutritionExtractor = new NutritionExtractor();
   const nutritionAnalysis = new NutritionAnalysisService();
 
+  const jobStartedAt = Date.now();
+  const elapsed = () => `${((Date.now() - jobStartedAt) / 1000).toFixed(1)}s`;
+
   try {
-    console.log(`[AsyncImport] Job ${jobId}: Starting ${sourceType} extraction...`);
+    console.log(`[AsyncImport] Job ${jobId}: Starting ${sourceType} extraction for ${url}`);
 
     let extractedRecipe;
 
@@ -618,7 +621,7 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
       throw new Error('Extraction returned no recipe');
     }
 
-    console.log(`[AsyncImport] Job ${jobId}: Extraction successful — "${extractedRecipe.title}"`);
+    console.log(`[AsyncImport] Job ${jobId}: ${sourceType} extraction successful in ${elapsed()} — "${extractedRecipe.title}"`);
 
     // Save recipe to database
     const recipeToSave = {
@@ -661,7 +664,7 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
       throw new Error('Failed to save recipe to database');
     }
 
-    console.log(`[AsyncImport] Job ${jobId}: Saved as recipe ${savedRecipe.id}`);
+    console.log(`[AsyncImport] Job ${jobId}: ${sourceType} import completed in ${elapsed()} — saved as recipe ${savedRecipe.id}`);
 
     // Increment usage counter
     await incrementUsageCounter(userId, 'imported_recipes');
@@ -705,7 +708,7 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
     }
 
   } catch (error) {
-    console.error(`[AsyncImport] Job ${jobId}: Failed:`, error.message);
+    console.error(`[AsyncImport] Job ${jobId}: ${sourceType} import failed after ${elapsed()}:`, error.message);
     await markImportJobFailed(jobId, userId, error.message);
   }
 }

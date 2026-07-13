@@ -138,6 +138,7 @@ class ApifyTikTokService {
   }
 
   async extractFromUrl(tiktokUrl, userId) {
+    const scrapeStartedAt = Date.now();
     console.log('[ApifyTikTok] Starting extraction for:', tiktokUrl);
     console.log('[ApifyTikTok] User ID:', userId);
 
@@ -197,6 +198,7 @@ class ApifyTikTokService {
       await this.cacheResult(tiktokUrl, parsedData);
 
       console.log('[ApifyTikTok] Extraction successful:', {
+        scrapeSeconds: Number(((Date.now() - scrapeStartedAt) / 1000).toFixed(1)),
         hasVideo: !!parsedData.videoUrl,
         hasCaption: !!parsedData.caption,
         imageCount: parsedData.images?.length || 0

@@ -380,6 +380,7 @@ class ApifyYouTubeService {
    * @returns {Promise<object>} - Extraction result
    */
   async extractFromUrl(youtubeUrl, userId) {
+    const scrapeStartedAt = Date.now();
     console.log('[ApifyYouTube] Starting extraction for:', youtubeUrl);
     console.log('[ApifyYouTube] User ID:', userId);
 
@@ -457,6 +458,7 @@ class ApifyYouTubeService {
       await this.cacheResult(normalizedUrl, parsedData);
 
       console.log('[ApifyYouTube] Extraction successful:', {
+        scrapeSeconds: Number(((Date.now() - scrapeStartedAt) / 1000).toFixed(1)),
         hasDescription: !!parsedData.caption,
         hasTranscript: !!parsedData.transcript,
         imageCount: parsedData.images?.length || 0,

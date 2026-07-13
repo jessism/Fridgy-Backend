@@ -214,6 +214,7 @@ class ApifyFacebookService {
   }
 
   async extractFromUrl(facebookUrl, userId) {
+    const scrapeStartedAt = Date.now();
     console.log('[ApifyFacebook] Starting extraction for:', facebookUrl);
     console.log('[ApifyFacebook] User ID:', userId);
 
@@ -315,6 +316,7 @@ class ApifyFacebookService {
       await this.cacheResult(facebookUrl, parsedData);
 
       console.log('[ApifyFacebook] Extraction successful:', {
+        scrapeSeconds: Number(((Date.now() - scrapeStartedAt) / 1000).toFixed(1)),
         hasVideo: !!parsedData.videoUrl,
         hasCaption: !!parsedData.caption,
         imageCount: parsedData.images?.length || 0

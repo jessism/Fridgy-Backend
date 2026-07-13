@@ -32,90 +32,129 @@ const getUserIdFromToken = (req) => {
   }
 };
 
+/**
+ * Shared meal-photo processing: upload to Storage + AI analysis.
+ * Used by both the synchronous /scan endpoint and the async scan job.
+ */
+async function performMealScan(userId, file, requestId) {
+  // Upload image to Supabase Storage (non-fatal on failure)
+  let imageUrl = null;
+  try {
+    const timestamp = Date.now();
+    const randomId = Math.random().toString(36).substring(7);
+    const fileName = `${userId}/${timestamp}_${randomId}.jpg`;
+
+    console.log(`🍽️ [${requestId}] Uploading image to Storage: ${fileName}`);
+
+    const supabase = getSupabaseClient();
+    const { error: uploadError } = await supabase.storage
+      .from('meal-photos')
+      .upload(fileName, file.buffer, {
+        contentType: file.mimetype || 'image/jpeg',
+        upsert: false
+      });
+
+    if (uploadError) {
+      console.error(`🍽️ [${requestId}] Storage upload error:`, uploadError);
+      // Continue without image URL if upload fails
+    } else {
+      const { data: urlData } = supabase.storage
+        .from('meal-photos')
+        .getPublicUrl(fileName);
+
+      imageUrl = urlData.publicUrl;
+      console.log(`🍽️ [${requestId}] Image uploaded successfully: ${imageUrl}`);
+    }
+  } catch (storageError) {
+    console.error(`🍽️ [${requestId}] Storage error:`, storageError);
+    // Continue without image URL
+  }
+
+  // Analyze the meal image
+  const analysisResult = await mealAnalysisService.analyzeMealImage(file.buffer);
+  const detectedIngredients = analysisResult.ingredients || analysisResult;
+  const mealName = analysisResult.meal_name || 'Home-cooked Meal';
+
+  console.log(`🍽️ [${requestId}] Meal name: ${mealName}`);
+  console.log(`🍽️ [${requestId}] Detected ${detectedIngredients.length} ingredients`);
+
+  return { mealName, ingredients: detectedIngredients, imageUrl };
+}
+
+/**
+ * Background processor for async meal scan jobs.
+ */
+async function processMealScanJob(jobId, userId, file) {
+  const previewJobService = require('../services/previewJobService');
+  try {
+    const { mealName, ingredients, imageUrl } = await performMealScan(userId, file, jobId);
+
+    const result = { meal_name: mealName, ingredients, imageUrl };
+
+    await previewJobService.completePreviewJob(jobId, userId, result, 'meal_scan', {
+      title: 'Meal analysis ready!',
+      body: `"${mealName}" — tap to review your ingredients`,
+      tag: 'meal-scan',
+      data: {
+        screen: `/(main)/meal-capture?jobId=${jobId}`,
+        type: 'meal_scan_complete',
+        jobId,
+      },
+      requireInteraction: false,
+    });
+    console.log(`✅ [${jobId}] Async meal scan complete`);
+  } catch (error) {
+    console.error(`❌ [${jobId}] Async meal scan failed:`, error.message);
+    await previewJobService.failPreviewJob(jobId, userId, 'Failed to analyze meal', 'meal_scan', {
+      title: 'Meal scan failed',
+      body: "We couldn't analyze your meal photo. Please try again.",
+      tag: 'meal-scan',
+      data: {
+        screen: `/(main)/meal-capture?jobId=${jobId}`,
+        type: 'meal_scan_failed',
+        jobId,
+      },
+      requireInteraction: false,
+    });
+  }
+}
+
 const mealController = {
   /**
-   * Scan and analyze a meal photo
+   * Scan and analyze a meal photo (synchronous — kept for older app builds)
    */
   async scanMeal(req, res) {
     const requestId = Math.random().toString(36).substring(7);
-    
+
     try {
       console.log(`\n🍽️ ================== MEAL SCAN START ==================`);
       console.log(`🍽️ REQUEST ID: ${requestId}`);
-      
+
       // Get user ID from token
       const userId = getUserIdFromToken(req);
       console.log(`🍽️ [${requestId}] User ID: ${userId}`);
-      
+
       // Check if image was uploaded
       if (!req.file) {
         throw new Error('No image file provided');
       }
-      
+
       console.log(`🍽️ [${requestId}] Image size: ${req.file.size} bytes`);
-      
-      // Upload image to Supabase Storage
-      let imageUrl = null;
-      try {
-        // Generate unique filename
-        const timestamp = Date.now();
-        const randomId = Math.random().toString(36).substring(7);
-        const fileName = `${userId}/${timestamp}_${randomId}.jpg`;
-        
-        console.log(`🍽️ [${requestId}] Uploading image to Storage: ${fileName}`);
-        
-        // Upload to Supabase Storage
-        const supabase = getSupabaseClient();
-        const { data: uploadData, error: uploadError } = await supabase.storage
-          .from('meal-photos')
-          .upload(fileName, req.file.buffer, {
-            contentType: req.file.mimetype || 'image/jpeg',
-            upsert: false
-          });
-        
-        if (uploadError) {
-          console.error(`🍽️ [${requestId}] Storage upload error:`, uploadError);
-          // Continue without image URL if upload fails
-        } else {
-          // Get public URL
-          const { data: urlData } = supabase.storage
-            .from('meal-photos')
-            .getPublicUrl(fileName);
-          
-          imageUrl = urlData.publicUrl;
-          console.log(`🍽️ [${requestId}] Image uploaded successfully`);
-          console.log(`🍽️ [${requestId}] Image URL: ${imageUrl}`);
-          console.log(`🍽️ [${requestId}] URL type: ${typeof imageUrl}`);
-          console.log(`🍽️ [${requestId}] URL length: ${imageUrl ? imageUrl.length : 0}`);
-        }
-      } catch (storageError) {
-        console.error(`🍽️ [${requestId}] Storage error:`, storageError);
-        // Continue without image URL
-      }
-      
-      // Analyze the meal image
-      const analysisResult = await mealAnalysisService.analyzeMealImage(req.file.buffer);
-      const detectedIngredients = analysisResult.ingredients || analysisResult;
-      const mealName = analysisResult.meal_name || 'Home-cooked Meal';
-      
-      console.log(`🍽️ [${requestId}] Meal name: ${mealName}`);
-      console.log(`🍽️ [${requestId}] Detected ${detectedIngredients.length} ingredients`);
-      
-      // Return the detected ingredients with image URL and meal name
-      console.log(`🍽️ [${requestId}] Preparing response with imageUrl: ${imageUrl}`);
-      
+
+      const { mealName, ingredients, imageUrl } = await performMealScan(userId, req.file, requestId);
+
       res.json({
         success: true,
         meal_name: mealName,  // Include the meal name
-        ingredients: detectedIngredients,
+        ingredients: ingredients,
         imageUrl: imageUrl,  // Include the storage URL
         requestId: requestId,
         timestamp: new Date().toISOString()
       });
-      
+
       console.log(`✅ [${requestId}] Meal scan complete`);
       console.log(`✅ ================== MEAL SCAN END ==================\n`);
-      
+
     } catch (error) {
       console.error(`❌ [${requestId}] Meal scan error:`, error);
       
@@ -126,6 +165,41 @@ const mealController = {
         error: error.message.includes('token') ? 'Authentication required' : 'Failed to analyze meal',
         requestId: requestId,
         timestamp: new Date().toISOString()
+      });
+    }
+  },
+
+  /**
+   * Async meal scan: creates a job, responds immediately, processes in the
+   * background. Poll via GET /api/recipes/import-status/:jobId — the completed
+   * job carries { meal_name, ingredients, imageUrl } for the review screen.
+   * Survives the app being backgrounded mid-analysis.
+   */
+  async scanMealAsync(req, res) {
+    try {
+      const userId = getUserIdFromToken(req);
+
+      if (!req.file) {
+        return res.status(400).json({ success: false, error: 'No image file provided' });
+      }
+
+      const previewJobService = require('../services/previewJobService');
+      const jobId = await previewJobService.createPreviewJob(userId, 'meal_scan');
+
+      console.log(`🍽️ [${jobId}] Async meal scan started (${req.file.size} bytes)`);
+
+      // Return immediately — the phone polls for the result
+      res.json({ success: true, jobId, status: 'processing' });
+
+      processMealScanJob(jobId, userId, req.file).catch(err => {
+        console.error(`[MealScanJob] Job ${jobId} unhandled error:`, err);
+      });
+    } catch (error) {
+      console.error('[MealScanJob] Failed to start:', error);
+      const statusCode = error.message.includes('token') ? 401 : 500;
+      res.status(statusCode).json({
+        success: false,
+        error: error.message.includes('token') ? 'Authentication required' : 'Failed to start meal scan'
       });
     }
   },

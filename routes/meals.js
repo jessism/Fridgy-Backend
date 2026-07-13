@@ -24,6 +24,7 @@ const upload = multer({
 
 // Routes - Meal logs are unlimited, only authentication required
 router.post('/scan', authMiddleware.authenticateToken, upload.single('image'), mealController.scanMeal);
+router.post('/scan-async', authMiddleware.authenticateToken, upload.single('image'), mealController.scanMealAsync);
 router.post('/log', authMiddleware.authenticateToken, mealController.logMeal);
 router.post('/dine-out', authMiddleware.authenticateToken, upload.single('image'), mealController.logDineOutMeal);
 router.get('/history', authMiddleware.authenticateToken, mealController.getMealHistory);

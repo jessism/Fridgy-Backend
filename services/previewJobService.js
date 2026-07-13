@@ -64,12 +64,12 @@ async function createPreviewJob(userId, sourceType) {
  * (result_data is best-effort — tolerated if migration 072 isn't applied yet),
  * and send a push notification.
  */
-async function completePreviewJob(jobId, userId, recipe, sourceLabel) {
+async function completePreviewJob(jobId, userId, recipe, sourceLabel, notification = null) {
   storeResult(jobId, recipe);
 
   const baseUpdate = {
     status: 'completed',
-    recipe_name: recipe.title || null,
+    recipe_name: recipe.title || recipe.meal_name || null,
     completed_at: new Date().toISOString(),
   };
 
@@ -89,7 +89,7 @@ async function completePreviewJob(jobId, userId, recipe, sourceLabel) {
   }
 
   try {
-    await pushNotificationService.sendToUser(userId, {
+    await pushNotificationService.sendToUser(userId, notification || {
       title: 'Recipe ready!',
       body: `"${recipe.title || 'Your recipe'}" is ready to review`,
       tag: 'recipe-import',
@@ -109,7 +109,7 @@ async function completePreviewJob(jobId, userId, recipe, sourceLabel) {
 /**
  * Mark a preview job failed and notify the user.
  */
-async function failPreviewJob(jobId, userId, errorMessage, sourceLabel) {
+async function failPreviewJob(jobId, userId, errorMessage, sourceLabel, notification = null) {
   const { error } = await supabase
     .from('import_jobs')
     .update({
@@ -124,7 +124,7 @@ async function failPreviewJob(jobId, userId, errorMessage, sourceLabel) {
   }
 
   try {
-    await pushNotificationService.sendToUser(userId, {
+    await pushNotificationService.sendToUser(userId, notification || {
       title: sourceLabel === 'scan' ? 'Recipe scan failed' : 'Voice recipe failed',
       body: errorMessage || "We couldn't extract a recipe. Please try again.",
       tag: 'recipe-import',

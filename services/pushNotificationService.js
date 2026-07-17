@@ -462,13 +462,15 @@ class PushNotificationService {
     const emoji = config.emoji || '📱';
     const message = config.message || "Check your Trackabite app!";
 
-    // Determine URL based on reminder type
+    // Determine URL based on reminder type.
+    // Keep in sync with expiryNotificationScheduler.sendDailyReminder — lunch_reminder
+    // asks the user to LOG a meal, so it lands on the meal log rather than recipes.
     let url = '/inventory';
-    if (reminderType === 'meal_planning') {
+    if (reminderType === 'meal_planning' || reminderType === 'lunch_reminder') {
       url = '/mealplans';
     } else if (reminderType === 'shopping_reminder') {
       url = '/shopping-lists';
-    } else if (reminderType === 'dinner_prep' || reminderType === 'breakfast_reminder' || reminderType === 'lunch_reminder') {
+    } else if (reminderType === 'dinner_prep' || reminderType === 'breakfast_reminder') {
       url = '/recipes';
     }
 

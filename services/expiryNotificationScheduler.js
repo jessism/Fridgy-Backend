@@ -346,12 +346,20 @@ class ExpiryNotificationScheduler {
           // Parse the reminder time
           const [hours, minutes] = (config.time || '17:30').split(':').map(Number);
 
-          // Check if current time is within the 30-minute window for this reminder
-          const currentHour = userTime.hour();
-          const currentMinute = userTime.minute();
+          // Fire once the reminder time has passed, within a 30-minute window.
+          // Compared as minutes-since-midnight rather than hour and minute separately:
+          // the sweep only ticks on :00/:30, so an hour-equality check silently never
+          // matched off-tick times (a user picking 12:45 got nothing, ever).
+          const reminderMinutes = hours * 60 + minutes;
+          const nowMinutes = userTime.hour() * 60 + userTime.minute();
+          const minutesSinceDue = nowMinutes - reminderMinutes;
 
-          if (currentHour === hours && currentMinute >= minutes && currentMinute < minutes + 30) {
+          if (minutesSinceDue >= 0 && minutesSinceDue < 30) {
             remindersChecked++;
+
+            // Dedupe on the USER'S local date, not the server's — otherwise users on the
+            // far side of a date boundary get deduped against the wrong day.
+            const localToday = userTime.format('YYYY-MM-DD');
 
             // Check if we haven't already sent this reminder today
             const { data: existingLog } = await supabase
@@ -359,8 +367,8 @@ class ExpiryNotificationScheduler {
               .select('id')
               .eq('user_id', pref.user_id)
               .eq('reminder_type', reminderType)
-              .eq('sent_date', moment().format('YYYY-MM-DD'))
-              .single();
+              .eq('sent_date', localToday)
+              .maybeSingle();
 
             if (!existingLog) {
               // Send the reminder
@@ -379,7 +387,7 @@ class ExpiryNotificationScheduler {
                   .insert({
                     user_id: pref.user_id,
                     reminder_type: reminderType,
-                    sent_date: moment().format('YYYY-MM-DD'),
+                    sent_date: localToday,
                     success: true
                   });
 
@@ -403,12 +411,14 @@ class ExpiryNotificationScheduler {
     try {
       let url = '/inventory';
 
-      // Customize URL based on reminder type
-      if (reminderType === 'meal_planning') {
+      // Customize URL based on reminder type.
+      // lunch_reminder asks the user to LOG a meal, so it lands on the meal log
+      // (/mealplans -> /(tabs)/meals?tab=meallog), not the recipe browser.
+      if (reminderType === 'meal_planning' || reminderType === 'lunch_reminder') {
         url = '/mealplans';
       } else if (reminderType === 'shopping_reminder') {
         url = '/shopping-lists';
-      } else if (reminderType === 'dinner_prep' || reminderType === 'breakfast_reminder' || reminderType === 'lunch_reminder') {
+      } else if (reminderType === 'dinner_prep' || reminderType === 'breakfast_reminder') {
         url = '/recipes';
       }
 

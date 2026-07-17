@@ -6,6 +6,12 @@
  *     20:00–21:00 local  → "streak at risk" notification
  * - Monthly (1st, UTC): freeze refill (free: 1, premium: 3)
  *
+ * The 20:00 at-risk push is tier 3 of the daily engagement system (tiers 1 and 2 are the
+ * 12:30 / 17:30 daily_reminders). It only fires when the user has done none of the six
+ * qualifying actions today, so it self-suppresses whenever the earlier tiers worked. It
+ * covers anyone active within ACTIVE_WINDOW_DAYS — including streak 0, who get a "start a
+ * streak" variant — and warns freeze-holders before a freeze is silently spent.
+ *
  * All notifications dedupe through daily_reminder_logs (UNIQUE user_id, reminder_type,
  * sent_date) — the evening window spans two cron ticks and would double-fire otherwise.
  * sent_date uses the USER'S local date, not the server's.
@@ -24,6 +30,10 @@ const REMINDER_TYPES = {
   LOST: 'streak_lost',
   FREEZE_USED: 'streak_freeze_used'
 };
+
+// How recently a user must have acted to still be worth nudging at 8 PM. Bounds the
+// at-risk push so it can reach streak-0 users without becoming a nightly nag forever.
+const ACTIVE_WINDOW_DAYS = 7;
 
 class StreakScheduler {
   constructor() {
@@ -67,10 +77,16 @@ class StreakScheduler {
   async sendStreakNotifications() {
     const supabase = getServiceClient();
 
+    // Recency cap: users active in the last 7 days are eligible for the at-risk nudge
+    // even at streak 0 — they previously got nothing and so never started a first streak.
+    // Anyone dormant longer than that is deliberately excluded; a nightly "start your
+    // streak" push to a lapsed user is spam, and belongs to a win-back flow instead.
+    const activeCutoff = moment().subtract(ACTIVE_WINDOW_DAYS, 'days').format('YYYY-MM-DD');
+
     const { data: rows, error } = await supabase
       .from('user_streaks')
       .select('*, users!inner(timezone, first_name)')
-      .or('current_streak.gt.0,lost_streak_value.not.is.null');
+      .or(`current_streak.gt.0,lost_streak_value.not.is.null,last_activity_date.gte.${activeCutoff}`);
 
     if (error) {
       console.error('[Streak] Notification query failed:', error.message);
@@ -88,19 +104,32 @@ class StreakScheduler {
 
         if (await this.streakRemindersDisabled(row.user_id)) continue;
 
-        // Evening (8–9 PM local): streak at risk — no activity today and no freeze protection
+        // Evening (8–9 PM local): nothing logged today yet. Three audiences —
+        // an active streak with no freeze, an active streak where a freeze is about to
+        // be spent silently, and a recently-active user with no streak at all.
+        const localCutoff = localNow.clone().subtract(ACTIVE_WINDOW_DAYS, 'days').format('YYYY-MM-DD');
+        const recentlyActive = row.last_activity_date && row.last_activity_date >= localCutoff;
+
         if (hour === 20
-            && row.current_streak > 0
-            && row.last_activity_date < localToday
-            && row.freezes_available === 0) {
+            && recentlyActive
+            && row.last_activity_date < localToday) {
           const isFriday = localNow.day() === 5;
-          const body = isFriday
-            ? `Don't let the weekend break your ${row.current_streak}-day streak! Log something before midnight.`
-            : `Your ${row.current_streak}-day streak is at risk! Open Trackabite to keep it going.`;
-          sent += await this.sendOnce(row.user_id, REMINDER_TYPES.AT_RISK, localToday, {
-            title: '🔥 Streak at risk!',
-            body
-          });
+          let title = '🔥 Streak at risk!';
+          let body;
+
+          if (row.current_streak === 0) {
+            title = '🔥 Start a streak';
+            body = 'Log a meal, add to your fridge, or save a recipe today to start a new streak!';
+          } else if (row.freezes_available > 0) {
+            // Warn before the freeze is consumed overnight, so spending it is a choice
+            body = `No activity today — a Streak Freeze will be spent to save your ${row.current_streak}-day streak. Log something to keep it instead.`;
+          } else if (isFriday) {
+            body = `Don't let the weekend break your ${row.current_streak}-day streak! Log something before midnight.`;
+          } else {
+            body = `Your ${row.current_streak}-day streak is at risk! Open Trackabite to keep it going.`;
+          }
+
+          sent += await this.sendOnce(row.user_id, REMINDER_TYPES.AT_RISK, localToday, { title, body });
         }
 
         // Morning (9:00–9:30 local): streak lost yesterday

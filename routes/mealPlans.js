@@ -461,6 +461,32 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
       });
     }
 
+    // Verify recipe exists if recipe_id is provided (skip for popular recipes using snapshot)
+    if (recipe_id && !recipe_snapshot) {
+      const { data: recipeExists, error: recipeError } = await supabase
+        .from('saved_recipes')
+        .select('id')
+        .eq('id', recipe_id)
+        .eq('user_id', userId)
+        .single();
+
+      if (recipeError || !recipeExists) {
+        console.error('[MealPlans] Recipe not found:', recipe_id);
+        return res.status(404).json({
+          success: false,
+          error: 'Recipe not found. Please save the recipe first before adding it to your meal plan.'
+        });
+      }
+    }
+
+    // Validate that we have either recipe_id or recipe_snapshot
+    if (!recipe_id && !recipe_snapshot) {
+      return res.status(400).json({
+        success: false,
+        error: 'Either recipe_id or recipe_snapshot is required'
+      });
+    }
+
     // Prepare the meal plan data
     const mealPlanData = {
       user_id: userId,
@@ -488,6 +514,7 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
 
     if (error) {
       console.error('[MealPlans] Create error:', error);
+      console.error('[MealPlans] Error details:', JSON.stringify(error, null, 2));
       throw error;
     }
 
@@ -508,7 +535,8 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
     console.error('[MealPlans] Create plan error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create meal plan'
+      error: error.message || 'Failed to create meal plan',
+      details: error.details || error.hint || undefined
     });
   }
 });

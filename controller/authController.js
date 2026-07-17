@@ -365,7 +365,8 @@ const authController = {
           hasSeenWelcomeTour: user.has_seen_welcome_tour || false,
           tourStatus: tourStatus.status || 'not_started',
           tier: user.tier || 'free',
-          isGrandfathered: user.is_grandfathered || false
+          isGrandfathered: user.is_grandfathered || false,
+          isAdmin: user.is_admin || false
         },
         token,
         refreshToken
@@ -418,7 +419,8 @@ const authController = {
           hasSeenWelcomeTour: user.has_seen_welcome_tour || false,
           tourStatus: tourStatus.status || 'not_started',
           tier: user.tier || 'free',
-          isGrandfathered: user.is_grandfathered || false
+          isGrandfathered: user.is_grandfathered || false,
+          isAdmin: user.is_admin || false
         },
         token: newToken,
         refreshToken: newRefreshToken
@@ -479,7 +481,8 @@ const authController = {
           firstName: user.first_name,
           createdAt: user.created_at,
           tier: user.tier || 'free',
-          isGrandfathered: user.is_grandfathered || false
+          isGrandfathered: user.is_grandfathered || false,
+          isAdmin: user.is_admin || false
         }
       });
 

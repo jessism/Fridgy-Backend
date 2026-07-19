@@ -3,6 +3,7 @@ const moment = require('moment-timezone');
 const { createClient } = require('@supabase/supabase-js');
 const pushNotificationService = require('./pushNotificationService');
 const emailService = require('./emailService');
+const { getLunchMessage, getDinnerMessage } = require('./reminderMessages');
 
 // Initialize Supabase
 const supabase = createClient(
@@ -376,7 +377,8 @@ class ExpiryNotificationScheduler {
                 pref.user_id,
                 reminderType,
                 config.message || "Check your Trackabite app!",
-                config.emoji || '📱'
+                config.emoji || '📱',
+                localToday
               );
 
               if (sent) {
@@ -407,29 +409,61 @@ class ExpiryNotificationScheduler {
   }
 
   // Send a daily reminder notification
-  async sendDailyReminder(userId, reminderType, message, emoji = '📱') {
+  async sendDailyReminder(userId, reminderType, message, emoji = '📱', localDate = null) {
     try {
-      let url = '/inventory';
+      const today = localDate || moment().format('YYYY-MM-DD');
 
-      // Customize URL based on reminder type.
-      // lunch_reminder asks the user to LOG a meal, so it lands on the meal log
-      // (/mealplans -> /(tabs)/meals?tab=meallog), not the recipe browser.
-      if (reminderType === 'meal_planning' || reminderType === 'lunch_reminder') {
+      // url is the legacy PWA route; screen is the expo-router path the mobile
+      // tap handler actually navigates on (useNotifications.ts routes data.screen).
+      let url = '/inventory';
+      let screen = '/(tabs)/inventory';
+      let title = `${emoji} Trackabite`;
+      let body = message;
+
+      if (reminderType === 'lunch_reminder') {
+        // Rotating pool, streak-aware — tap lands on Meal history
+        const { data: streakRow } = await supabase
+          .from('user_streaks')
+          .select('current_streak')
+          .eq('user_id', userId)
+          .maybeSingle();
+        const picked = getLunchMessage(userId, today, streakRow?.current_streak || 0);
+        title = picked.title;
+        body = picked.body;
+        url = '/mealplans';
+        screen = '/(tabs)/meals?tab=meallog';
+      } else if (reminderType === 'dinner_prep') {
+        // Rotating pool — tap lands on Meals > Recipes
+        const picked = getDinnerMessage(userId, today);
+        title = picked.title;
+        body = picked.body;
+        url = '/recipes';
+        screen = '/(tabs)/meals?tab=recipes';
+      } else if (reminderType === 'breakfast_reminder') {
+        title = '☀️ Good morning!';
+        screen = '/(tabs)/meals?tab=recipes';
+        url = '/recipes';
+      } else if (reminderType === 'meal_planning') {
+        title = '📅 Meal planning time';
+        screen = '/(tabs)/meals?tab=mealplan';
         url = '/mealplans';
       } else if (reminderType === 'shopping_reminder') {
+        title = '🛒 Shopping day!';
+        screen = '/(tabs)/inventory?tab=shopping';
         url = '/shopping-lists';
-      } else if (reminderType === 'dinner_prep' || reminderType === 'breakfast_reminder') {
-        url = '/recipes';
+      } else if (reminderType === 'inventory_check') {
+        title = '🥗 Fridge check';
       }
 
       const payload = {
-        title: `Trackabite Reminder`,
-        body: message,
+        title,
+        body,
         icon: '/logo192.png',
         badge: '/logo192.png',
         tag: `daily-reminder-${reminderType}`,
         data: {
           url,
+          screen,
           type: 'daily-reminder',
           reminderType
         },

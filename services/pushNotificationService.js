@@ -457,31 +457,62 @@ class PushNotificationService {
     }
   }
 
-  // Send a daily reminder notification
+  // Send a daily reminder notification (used by the test-send routes; keep in
+  // sync with expiryNotificationScheduler.sendDailyReminder, the cron path)
   async sendDailyReminder(userId, reminderType, config) {
+    const { getLunchMessage, getDinnerMessage } = require('./reminderMessages');
     const emoji = config.emoji || '📱';
-    const message = config.message || "Check your Trackabite app!";
+    const today = new Date().toISOString().slice(0, 10);
 
-    // Determine URL based on reminder type.
-    // Keep in sync with expiryNotificationScheduler.sendDailyReminder — lunch_reminder
-    // asks the user to LOG a meal, so it lands on the meal log rather than recipes.
+    // url is the legacy PWA route; screen is the expo-router path the mobile
+    // tap handler navigates on (useNotifications.ts routes data.screen).
     let url = '/inventory';
-    if (reminderType === 'meal_planning' || reminderType === 'lunch_reminder') {
+    let screen = '/(tabs)/inventory';
+    let title = `${emoji} Trackabite`;
+    let body = config.message || "Check your Trackabite app!";
+
+    if (reminderType === 'lunch_reminder') {
+      const { data: streakRow } = await supabase
+        .from('user_streaks')
+        .select('current_streak')
+        .eq('user_id', userId)
+        .maybeSingle();
+      const picked = getLunchMessage(userId, today, streakRow?.current_streak || 0);
+      title = picked.title;
+      body = picked.body;
+      url = '/mealplans';
+      screen = '/(tabs)/meals?tab=meallog';
+    } else if (reminderType === 'dinner_prep') {
+      const picked = getDinnerMessage(userId, today);
+      title = picked.title;
+      body = picked.body;
+      url = '/recipes';
+      screen = '/(tabs)/meals?tab=recipes';
+    } else if (reminderType === 'breakfast_reminder') {
+      title = '☀️ Good morning!';
+      screen = '/(tabs)/meals?tab=recipes';
+      url = '/recipes';
+    } else if (reminderType === 'meal_planning') {
+      title = '📅 Meal planning time';
+      screen = '/(tabs)/meals?tab=mealplan';
       url = '/mealplans';
     } else if (reminderType === 'shopping_reminder') {
+      title = '🛒 Shopping day!';
+      screen = '/(tabs)/inventory?tab=shopping';
       url = '/shopping-lists';
-    } else if (reminderType === 'dinner_prep' || reminderType === 'breakfast_reminder') {
-      url = '/recipes';
+    } else if (reminderType === 'inventory_check') {
+      title = '🥗 Fridge check';
     }
 
     const payload = {
-      title: `Trackabite Reminder`,
-      body: message,
+      title,
+      body,
       icon: '/logo192.png',
       badge: '/logo192.png',
       tag: `daily-reminder-${reminderType}`,
       data: {
         url,
+        screen,
         type: 'daily-reminder',
         reminderType
       },

@@ -10,6 +10,11 @@
 -- Two parts are required: the column DEFAULT only applies to NEW rows, while existing
 -- users each carry their own daily_reminders JSONB seeded by migration 016.
 -- Run in Supabase SQL Editor.
+--
+-- Note: lunch_reminder and dinner_prep carry only enabled + time. Their push copy is
+-- generated per-send from the rotating pools in services/reminderMessages.js, so a
+-- stored message/emoji would be dead data. The other reminder types keep message/emoji
+-- because the scheduler still uses their stored message as the notification body.
 
 -- Step 1: New default for future signups
 ALTER TABLE notification_preferences
@@ -29,9 +34,7 @@ ALTER COLUMN daily_reminders SET DEFAULT '{
   },
   "dinner_prep": {
     "enabled": true,
-    "time": "17:30",
-    "message": "What''s for dinner? See what you can make with what''s in your fridge",
-    "emoji": "👨‍🍳"
+    "time": "17:30"
   },
   "breakfast_reminder": {
     "enabled": false,
@@ -41,9 +44,7 @@ ALTER COLUMN daily_reminders SET DEFAULT '{
   },
   "lunch_reminder": {
     "enabled": true,
-    "time": "12:30",
-    "message": "Did you have lunch? Log your meal",
-    "emoji": "🥙"
+    "time": "12:30"
   },
   "shopping_reminder": {
     "enabled": false,
@@ -58,19 +59,16 @@ ALTER COLUMN daily_reminders SET DEFAULT '{
 -- Top-level || replaces only these three keys; any other reminder keys (and any custom
 -- times the user set on them) are preserved. This DOES deliberately override a user's
 -- own lunch/dinner customizations — accepted tradeoff to roll the new system out.
+-- lunch_reminder / dinner_prep: only enabled + time (copy is dynamic — see note above).
 UPDATE notification_preferences
 SET daily_reminders = COALESCE(daily_reminders, '{}'::jsonb) || jsonb_build_object(
   'lunch_reminder', jsonb_build_object(
     'enabled', true,
-    'time', '12:30',
-    'message', 'Did you have lunch? Log your meal',
-    'emoji', '🥙'
+    'time', '12:30'
   ),
   'dinner_prep', jsonb_build_object(
     'enabled', true,
-    'time', '17:30',
-    'message', 'What''s for dinner? See what you can make with what''s in your fridge',
-    'emoji', '👨‍🍳'
+    'time', '17:30'
   ),
   -- Preserve inventory_check's existing time/message/emoji, just switch it off
   'inventory_check', COALESCE(daily_reminders->'inventory_check', '{}'::jsonb)

@@ -210,6 +210,7 @@ const ingredientAggregationService = {
         ingredientMap.set(normalizedName, {
           original: ing.original,
           name: rawName,
+          nameEn: ing.nameEn || null, // canonical English name for cross-language icon lookup; first occurrence wins on merge
           amount: amount || null,
           unit: unit,
           aggregatedCount: 1

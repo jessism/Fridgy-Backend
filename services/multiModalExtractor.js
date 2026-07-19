@@ -773,6 +773,7 @@ Return this JSON:
     {
       "original": "EXACT text from caption including prep method",
       "name": "ingredient name",
+      "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
       "amount": number,
       "unit": "unit"
     }
@@ -1711,6 +1712,7 @@ Return this JSON structure:
     {
       "original": "Exact text from video audio or on-screen text",
       "name": "ingredient name",
+      "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
       "amount": number,
       "unit": "measurement unit"
     }
@@ -1800,6 +1802,7 @@ Return this JSON structure:
     {
       "original": "COPY EXACT TEXT FROM CAPTION - include all descriptors like 'minced', 'diced', etc.",
       "name": "base ingredient name",
+      "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
       "amount": number,
       "unit": "measurement unit"
     }
@@ -2031,6 +2034,7 @@ Return this JSON:
       {
         "original": "EXACT TEXT from caption with ALL descriptors (minced, diced, etc.)",
         "name": "base ingredient",
+        "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
         "amount": 1.0,
         "unit": "cup"
       }
@@ -2372,6 +2376,7 @@ Use the ${frameCount} keyframes for:
       {
         "original": "Exact text from audio transcript (e.g., '2 tablespoons olive oil')",
         "name": "olive oil",
+        "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
         "amount": 2.0,
         "unit": "tablespoon"
       }

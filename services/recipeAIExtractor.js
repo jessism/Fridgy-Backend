@@ -562,7 +562,7 @@ Extract the recipe and return ONLY valid JSON (no markdown, no explanation) in t
   "summary": "Brief 1-2 sentence description",
   "image": null,
   "extendedIngredients": [
-    {"id": 1, "amount": 2, "unit": "cups", "name": "flour", "original": "2 cups flour"}
+    {"id": 1, "amount": 2, "unit": "cups", "name": "flour", "nameEn": "flour (base ingredient in plain English; if already English, repeat it)", "original": "2 cups flour"}
   ],
   "analyzedInstructions": [
     {"name": "", "steps": [{"number": 1, "step": "First step description"}]}
@@ -598,6 +598,7 @@ RULES:
       amount: ing.amount || 0,
       unit: ing.unit || '',
       name: ing.name || '',
+      nameEn: ing.nameEn || null, // canonical English name for cross-language icon lookup
       original: ing.original || `${ing.amount || ''} ${ing.unit || ''} ${ing.name || ''}`.trim()
     }));
 
@@ -1092,6 +1093,7 @@ RETURN THIS EXACT JSON FORMAT with TIER 1 confidence levels:
         "amount": 2,
         "unit": "pounds",
         "name": "chicken breast",
+        "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
         "original": "2 pounds boneless chicken breast",
         "meta": ["boneless"]
       }
@@ -1236,6 +1238,7 @@ RETURN THIS EXACT JSON FORMAT with TIER 2 enhanced confidence:
         "amount": 2,
         "unit": "pounds",
         "name": "chicken breast",
+        "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
         "original": "2 pounds boneless chicken breast",
         "meta": ["boneless"]
       }
@@ -1345,6 +1348,7 @@ RETURN THIS EXACT JSON FORMAT with ENHANCED CONFIDENCE due to video/premium data
         "amount": 2,
         "unit": "pounds",
         "name": "chicken breast",
+        "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
         "original": "2 pounds boneless chicken breast",
         "meta": ["boneless"]
       }
@@ -1447,6 +1451,7 @@ RETURN THIS EXACT JSON FORMAT:
         "amount": 2,
         "unit": "pounds",
         "name": "chicken breast",
+        "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
         "original": "2 pounds boneless chicken breast",
         "meta": ["boneless"]
       }
@@ -1492,7 +1497,7 @@ RETURN THIS EXACT JSON FORMAT:
 }
 
 IMPORTANT FORMATTING RULES:
-- extendedIngredients MUST have: id, amount (number), unit, name, original (full text), meta (array)
+- extendedIngredients MUST have: id, amount (number), unit, name, nameEn (base ingredient in plain English; repeat name if already English), original (full text), meta (array)
 - analyzedInstructions MUST have: name (empty string), steps array with number and step fields
 - All boolean dietary fields must be included
 - nutrition should always be null (we'll calculate later)
@@ -1771,6 +1776,7 @@ VIDEO ANALYSIS FOCUS POINTS:
         amount: typeof ing.amount === 'number' ? ing.amount : parseFloat(ing.amount) || 1,
         unit: ing.unit || '',
         name: ing.name || 'ingredient',
+        nameEn: ing.nameEn || null, // canonical English name for cross-language icon lookup
         original: ing.original || `${ing.amount || ''} ${ing.unit || ''} ${ing.name || ''}`.trim(),
         meta: ing.meta || []
       }));

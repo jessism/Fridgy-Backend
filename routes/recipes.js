@@ -13,6 +13,7 @@ const NutritionAnalysisService = require('../services/nutritionAnalysisService')
 const NutritionExtractor = require('../services/nutritionExtractor');
 const { getServiceClient } = require('../config/supabase');
 const { validateShortcutImport, sanitizeRecipeData } = require('../middleware/validation');
+const streakService = require('../services/streakService');
 
 const router = express.Router();
 
@@ -665,6 +666,12 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
     }
 
     console.log(`[AsyncImport] Job ${jobId}: ${sourceType} import completed in ${elapsed()} — saved as recipe ${savedRecipe.id}`);
+
+    // Imports save server-side, bypassing routes/savedRecipes.js — record the
+    // streak action here too so imported recipes count toward streaks
+    streakService.recordAction(userId, 'recipe_save').catch(err => {
+      console.error(`[AsyncImport] Job ${jobId}: streak record failed:`, err.message);
+    });
 
     // Increment usage counter
     await incrementUsageCounter(userId, 'imported_recipes');

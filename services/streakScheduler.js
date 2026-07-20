@@ -215,7 +215,7 @@ class StreakScheduler {
       icon: '/logo192.png',
       badge: '/logo192.png',
       tag: reminderType,
-      data: { screen: 'home', type: reminderType }
+      data: { screen: '/(tabs)', type: reminderType }
     });
 
     const anySuccess = Array.isArray(results) && results.some(r => r.success);

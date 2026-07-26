@@ -1,12 +1,9 @@
 const axios = require('axios');
-const { createClient } = require('@supabase/supabase-js');
+const { getServiceClient } = require('../config/supabase');
 
 class InstagramExtractor {
   constructor() {
-    this.supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
-    );
+    this.supabase = getServiceClient();
     this.rapidApiKey = process.env.RAPIDAPI_KEY;
 
     // Multiple API hosts for fallback - Updated to more reliable providers

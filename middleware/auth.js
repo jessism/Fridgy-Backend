@@ -1,17 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { createClient } = require('@supabase/supabase-js');
-
-// Initialize Supabase client function
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -82,7 +70,7 @@ const authenticateToken = async (req, res, next) => {
     }
 
     // Get user data from database
-    const supabase = getSupabaseClient();
+    const supabase = getServiceClient();
     const { data: user, error } = await supabase
       .from('users')
       .select('id, email, first_name')

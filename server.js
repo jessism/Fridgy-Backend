@@ -4,7 +4,6 @@ dotenv.config();
 
 const express = require('express');
 const cors = require('cors');
-const { createClient } = require('@supabase/supabase-js');
 const OpenAI = require('openai');
 const multer = require('multer');
 
@@ -210,10 +209,9 @@ app.get('/api/proxy-image', async (req, res) => {
   }
 });
 
-// Initialize Supabase client
-const supabaseUrl = process.env.SUPABASE_URL || 'your-supabase-url';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key';
-const supabase = createClient(supabaseUrl, supabaseKey);
+// Initialize Supabase client (service role — all backend DB/storage access)
+const { getServiceClient } = require('./config/supabase');
+const supabase = getServiceClient();
 
 // TikTok domain verification — serve verification files at domain root (no slashes in filename)
 app.get(/^\/tiktok[^/]+\.txt$/, async (req, res) => {

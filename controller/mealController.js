@@ -2,19 +2,11 @@ const mealAnalysisService = require('../services/mealAnalysisService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
 const streakService = require('../services/streakService');
 const jwt = require('jsonwebtoken');
-const { createClient } = require('@supabase/supabase-js');
 const moment = require('moment-timezone');
+const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
-
-// Helper function to get Supabase client
-const getSupabaseClient = () => {
-  return createClient(
-    process.env.SUPABASE_URL || 'your-supabase-url',
-    process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key'
-  );
-};
 
 // Helper function to get user ID from token
 const getUserIdFromToken = (req) => {
@@ -41,7 +33,7 @@ async function uploadMealPhoto(userId, file, requestId, filePrefix = '') {
   const timestamp = Date.now();
   const randomId = Math.random().toString(36).substring(7);
   const fileName = `${userId}/${filePrefix}${timestamp}_${randomId}.jpg`;
-  const supabase = getSupabaseClient();
+  const supabase = getServiceClient();
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -325,10 +317,7 @@ const mealController = {
       const { date } = req.query;
       console.log(`📚 [${requestId}] Date filter: ${date || 'none'}`);
       
-      const supabase = createClient(
-        process.env.SUPABASE_URL,
-        process.env.SUPABASE_ANON_KEY
-      );
+      const supabase = getServiceClient();
       
       // Fetch user's timezone
       const { data: userData, error: userError } = await supabase
@@ -422,7 +411,7 @@ const mealController = {
       console.log(`✏️ [${requestId}] User ID: ${userId}`);
       console.log(`✏️ [${requestId}] Meal ID: ${mealId}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // First check if the meal belongs to the user
       const { data: existingMeal, error: fetchError } = await supabase
@@ -496,7 +485,7 @@ const mealController = {
       console.log(`🗑️ [${requestId}] User ID: ${userId}`);
       console.log(`🗑️ [${requestId}] Meal ID: ${mealId}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // First, let's debug by checking if the meal exists at all
       console.log(`🗑️ [${requestId}] Debug: First checking if meal exists...`);
@@ -633,7 +622,7 @@ const mealController = {
       const targetDate = req.body.targetDate ? new Date(req.body.targetDate) : new Date();
 
       // Save dine-out meal log to database
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data: mealLog, error: dbError } = await supabase
         .from('meal_logs')
         .insert({
@@ -702,7 +691,7 @@ const mealController = {
       const userId = getUserIdFromToken(req);
       const year = parseInt(req.query.year) || new Date().getFullYear();
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Fetch user's timezone
       const { data: userData } = await supabase

@@ -1,19 +1,7 @@
-const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
 const NutritionAnalysisService = require('./nutritionAnalysisService');
+const { getServiceClient } = require('../config/supabase');
 const nutritionAnalysisService = new NutritionAnalysisService();
-
-// Helper function to get Supabase client
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-};
 
 // AI Recipe Service using Gemini 2.0 Flash (reusing existing OpenRouter setup)
 class AIRecipeService {
@@ -69,7 +57,7 @@ class AIRecipeService {
     try {
       console.log(`🍽️  [${requestId}] Checking cache for user ${userId}, hash: ${contentHash}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data, error } = await supabase
         .from('ai_generated_recipes')
         .select('*')
@@ -600,7 +588,7 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
     try {
       console.log(`💾 [${requestId}] Caching recipes for user ${userId}... (tourMode: ${tourMode})`);
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const expiresAt = new Date();
       expiresAt.setHours(expiresAt.getHours() + 24); // 24-hour cache
 
@@ -729,7 +717,7 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
   // Log analytics for optimization and cost tracking
   async logAnalytics(userId, generationTime, recipeCount, cacheHit, cost, errorType = null) {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       await supabase
         .from('ai_recipe_analytics')
         .insert({
@@ -748,7 +736,7 @@ Focus on creating restaurant-quality recipes that showcase the available ingredi
   // Utility method to clean up expired caches (can be called periodically)
   async cleanupExpiredCache() {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data, error } = await supabase
         .from('ai_generated_recipes')
         .delete()

@@ -1,17 +1,5 @@
-const { createClient } = require('@supabase/supabase-js');
 
-// Helper function to get Supabase client
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-
-  return createClient(supabaseUrl, supabaseKey);
-};
-
+const { getServiceClient } = require('../config/supabase');
 const cookbooksController = {
 
   // Get all cookbooks for user with recipe counts
@@ -22,7 +10,7 @@ const cookbooksController = {
       console.log(`\n[${requestId}] GET COOKBOOKS START`);
 
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Fetch user's cookbooks
       const { data: cookbooks, error } = await supabase
@@ -89,7 +77,7 @@ const cookbooksController = {
     try {
       const { id } = req.params;
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Get cookbook
       const { data: cookbook, error } = await supabase
@@ -155,7 +143,7 @@ const cookbooksController = {
         return res.status(400).json({ success: false, error: 'Cookbook name is required', requestId });
       }
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       const { data: cookbook, error } = await supabase
         .from('cookbooks')
@@ -188,7 +176,7 @@ const cookbooksController = {
       const { id } = req.params;
       const { name, description } = req.body;
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Verify ownership
       const { data: existing } = await supabase
@@ -230,7 +218,7 @@ const cookbooksController = {
     try {
       const { id } = req.params;
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Verify ownership
       const { data: existing } = await supabase
@@ -269,7 +257,7 @@ const cookbooksController = {
       const { id } = req.params;
       const { recipes } = req.body; // Array of { recipe_id, recipe_source }
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       if (!recipes || !Array.isArray(recipes) || recipes.length === 0) {
         return res.status(400).json({ success: false, error: 'Recipes array is required', requestId });
@@ -337,7 +325,7 @@ const cookbooksController = {
       const { id, recipeId } = req.params;
       const { recipe_source } = req.query;
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Verify cookbook ownership
       const { data: cookbook } = await supabase
@@ -403,7 +391,7 @@ const cookbooksController = {
     try {
       const { id } = req.params;
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Get cookbook and verify ownership
       const { data: cookbook, error } = await supabase
@@ -474,7 +462,7 @@ const cookbooksController = {
     try {
       const { shareCode } = req.params;
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Find cookbook by share code
       const { data: cookbook, error } = await supabase
@@ -571,7 +559,7 @@ const cookbooksController = {
     try {
       const { id } = req.params;
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Check if user has access to this cookbook
       const { data: membership } = await supabase
@@ -637,7 +625,7 @@ const cookbooksController = {
     try {
       const { id, memberId } = req.params;
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Check if requester is owner
       const { data: requesterMembership } = await supabase
@@ -705,7 +693,7 @@ const cookbooksController = {
     try {
       const { id } = req.params;
       const userId = req.user.id;
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Get user's membership
       const { data: membership } = await supabase
@@ -752,7 +740,7 @@ const cookbooksController = {
   // Health check
   async healthCheck(req, res) {
     try {
-      const hasSupabase = !!process.env.SUPABASE_URL && !!process.env.SUPABASE_ANON_KEY;
+      const hasSupabase = !!process.env.SUPABASE_URL && !!process.env.SUPABASE_SERVICE_KEY;
       res.json({
         success: true,
         service: 'Cookbooks Service',

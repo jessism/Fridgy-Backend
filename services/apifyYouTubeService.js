@@ -1,8 +1,8 @@
 const axios = require('axios');
-const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch'); // For downloading images
 // youtubei.js loaded in extractTranscript() for FREE transcript extraction
 const cheerio = require('cheerio'); // For website scraping
+const { getServiceClient } = require('../config/supabase');
 
 class ApifyYouTubeService {
   constructor() {
@@ -15,10 +15,7 @@ class ApifyYouTubeService {
     this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 120;
     this.maxDurationSeconds = 1800; // 30 minutes maximum
 
-    this.supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
-    );
+    this.supabase = getServiceClient();
   }
 
   /**

@@ -1,19 +1,7 @@
-const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
-
-// Initialize Supabase client
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -67,7 +55,7 @@ const ingredientImagesController = {
         });
       }
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Use the match_ingredient_image function to find best match
       const { data, error } = await supabase
@@ -106,7 +94,7 @@ const ingredientImagesController = {
       const { page = 1, limit = 50, category, search } = req.query;
       const offset = (page - 1) * limit;
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       let query = supabase
         .from('ingredient_images')
@@ -175,7 +163,7 @@ const ingredientImagesController = {
         });
       }
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Generate unique filename
       const fileExt = path.extname(req.file.originalname);
@@ -267,7 +255,7 @@ const ingredientImagesController = {
       // Verify user authentication
       const userId = getUserIdFromToken(req);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       const updateData = {};
       if (ingredient_name !== undefined) updateData.ingredient_name = ingredient_name;
@@ -313,7 +301,7 @@ const ingredientImagesController = {
       // Verify user authentication
       const userId = getUserIdFromToken(req);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // First get the image details
       const { data: imageData, error: fetchError } = await supabase
@@ -379,7 +367,7 @@ const ingredientImagesController = {
         });
       }
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const results = [];
       
       // Process each ingredient

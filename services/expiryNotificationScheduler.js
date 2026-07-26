@@ -1,15 +1,12 @@
 const cron = require('node-cron');
 const moment = require('moment-timezone');
-const { createClient } = require('@supabase/supabase-js');
 const pushNotificationService = require('./pushNotificationService');
 const emailService = require('./emailService');
 const { getLunchMessage, getDinnerMessage } = require('./reminderMessages');
+const { getServiceClient } = require('../config/supabase');
 
 // Initialize Supabase
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY
-);
+const supabase = getServiceClient();
 
 class ExpiryNotificationScheduler {
   constructor() {

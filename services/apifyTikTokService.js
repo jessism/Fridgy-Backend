@@ -1,6 +1,6 @@
 const axios = require('axios');
-const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch');
+const { getServiceClient } = require('../config/supabase');
 
 class ApifyTikTokService {
   constructor() {
@@ -15,10 +15,7 @@ class ApifyTikTokService {
     // killed any scrape that took longer, failing the import.
     this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 120;
 
-    this.supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
-    );
+    this.supabase = getServiceClient();
   }
 
   /**

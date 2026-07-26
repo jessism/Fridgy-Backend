@@ -1,16 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/auth');
 const { checkShoppingListLimit, checkJoinedListLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 const categoryService = require('../services/categoryService');
 const streakService = require('../services/streakService');
+const { getServiceClient } = require('../config/supabase');
 
 // Initialize Supabase
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
-);
+const supabase = getServiceClient();
 
 // Helper: Generate share code
 const generateShareCode = () => {

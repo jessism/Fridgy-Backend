@@ -1,28 +1,12 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { createClient } = require('@supabase/supabase-js');
 const moment = require('moment-timezone');
 const authService = require('../services/authService');
 // const { createDefaultRecipe } = require('../services/defaultRecipe'); // DISABLED: Not adding default recipe to new users
 const emailService = require('../services/emailService');
+const { getServiceClient } = require('../config/supabase');
 
-// Helper function to get Supabase client with service role for backend operations
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-
-  return createClient(supabaseUrl, supabaseKey);
-};
-
-// Also keep anon client for read operations that don't need elevated privileges
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
-);
+const supabase = getServiceClient();
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -135,9 +119,8 @@ const authController = {
       // Link onboarding payment session if provided
       if (onboardingSessionId) {
         try {
-          const { createClient } = require('@supabase/supabase-js');
           // Use service key for backend operations to bypass RLS
-          const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+          const supabase = getServiceClient();
 
           // Get the onboarding session
           const { data: session, error: sessionError } = await supabase
@@ -833,7 +816,7 @@ const authController = {
       }
 
       // Update user in database (use service key for write operations)
-      const serviceClient = getSupabaseClient();
+      const serviceClient = getServiceClient();
       const { data: updatedUser, error } = await serviceClient
         .from('users')
         .update(updates)
@@ -884,7 +867,7 @@ const authController = {
       const userId = req.user.id;
 
       // Check if user already has a pending deletion request
-      const serviceClient = getSupabaseClient();
+      const serviceClient = getServiceClient();
       const { data: existingUser, error: fetchError } = await serviceClient
         .from('users')
         .select('deletion_status, deletion_scheduled_for, email, first_name')
@@ -947,7 +930,7 @@ const authController = {
       const userId = req.user.id;
 
       // Check if user has a pending deletion
-      const serviceClient = getSupabaseClient();
+      const serviceClient = getServiceClient();
       const { data: existingUser, error: fetchError } = await serviceClient
         .from('users')
         .select('deletion_status, email')
@@ -1002,7 +985,7 @@ const authController = {
     try {
       const userId = req.user.id;
 
-      const serviceClient = getSupabaseClient();
+      const serviceClient = getServiceClient();
       const { data: user, error } = await serviceClient
         .from('users')
         .select('deletion_status, deletion_requested_at, deletion_scheduled_for')

@@ -1,6 +1,6 @@
 const axios = require('axios');
-const { createClient } = require('@supabase/supabase-js');
 const fetch = require('node-fetch'); // For downloading images
+const { getServiceClient } = require('../config/supabase');
 
 class ApifyInstagramService {
   constructor() {
@@ -12,10 +12,7 @@ class ApifyInstagramService {
     // 30s synchronous request window, which no longer applies)
     this.timeoutSeconds = parseInt(process.env.APIFY_TIMEOUT_SECONDS) || 120;
 
-    this.supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
-    );
+    this.supabase = getServiceClient();
   }
 
   // Helper method to validate image URLs

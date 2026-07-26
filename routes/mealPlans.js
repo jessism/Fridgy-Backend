@@ -2,15 +2,12 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const { checkAggregatedListLimit, incrementUsageCounter } = require('../middleware/checkLimits');
-const { createClient } = require('@supabase/supabase-js');
 const googleCalendarService = require('../services/googleCalendarService');
 const ingredientAggregationService = require('../services/ingredientAggregationService');
 const streakService = require('../services/streakService');
+const { getServiceClient } = require('../config/supabase');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
-);
+const supabase = getServiceClient();
 
 /**
  * Helper: Get user's calendar connection and tokens for deletion

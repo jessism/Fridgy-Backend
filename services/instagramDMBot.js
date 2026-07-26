@@ -6,12 +6,12 @@
 
 const fetch = require('node-fetch');
 const crypto = require('crypto');
-const { createClient } = require('@supabase/supabase-js');
 const ApifyInstagramService = require('./apifyInstagramService');
 const MultiModalExtractor = require('./multiModalExtractor');
 const NutritionExtractor = require('./nutritionExtractor');
 const NutritionAnalysisService = require('./nutritionAnalysisService');
 const { sanitizeRecipeData } = require('../middleware/validation');
+const { getServiceClient } = require('../config/supabase');
 
 // Friendly extraction messages - randomly selected for personality
 const EXTRACTING_MESSAGES = [
@@ -28,10 +28,7 @@ const EXTRACTING_MESSAGES = [
 
 class InstagramDMBot {
   constructor() {
-    this.supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY
-    );
+    this.supabase = getServiceClient();
 
     // ISOLATED: Instagram bot uses its OWN token - NO fallback to Messenger
     // This ensures Messenger bot is never affected by Instagram bot changes

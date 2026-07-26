@@ -1,15 +1,4 @@
-const { createClient } = require('@supabase/supabase-js');
-
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 /**
  * Middleware that checks if the authenticated user is an admin.
@@ -24,7 +13,7 @@ const requireAdmin = async (req, res, next) => {
       });
     }
 
-    const supabase = getSupabaseClient();
+    const supabase = getServiceClient();
     const { data: user, error } = await supabase
       .from('users')
       .select('is_admin')

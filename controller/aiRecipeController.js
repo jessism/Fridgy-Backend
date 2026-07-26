@@ -1,20 +1,8 @@
 const aiRecipeService = require('../services/aiRecipeService');
 const imageGenerationService = require('../services/imageGenerationService');
-const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const { incrementUsageCounter } = require('../middleware/checkLimits');
-
-// Helper function to get Supabase client
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -58,7 +46,7 @@ const aiRecipeController = {
 
       // Step 1: Get user's current inventory
       console.log(`📦 [${requestId}] Step 1: Fetching user inventory...`);
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       let inventory;
 
@@ -180,7 +168,7 @@ const aiRecipeController = {
         if (finalImageUrls.length > 0 && recipeResult.cacheId) {
           console.log(`💾 [${requestId}] Updating cache with generated images...`);
           try {
-            const supabase = getSupabaseClient();
+            const supabase = getServiceClient();
             const { error: updateError } = await supabase
               .from('ai_generated_recipes')
               .update({ image_urls: finalImageUrls })
@@ -289,7 +277,7 @@ const aiRecipeController = {
       const userId = getUserIdFromToken(req);
       console.log(`👤 [${requestId}] User ID: ${userId}`);
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Get user's latest cached recipes
       const { data: cachedRecipes, error } = await supabase
@@ -392,7 +380,7 @@ const aiRecipeController = {
       const userId = getUserIdFromToken(req);
       console.log(`👤 [${requestId}] User ID: ${userId}`);
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       const { error } = await supabase
         .from('ai_generated_recipes')
@@ -442,7 +430,7 @@ const aiRecipeController = {
       const limit = parseInt(req.query.limit) || 10;
       console.log(`📊 [${requestId}] Limit: ${limit}`);
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Fetch all past AI recipe generations for this user
       const { data: pastGenerations, error } = await supabase
@@ -518,7 +506,7 @@ const aiRecipeController = {
       console.log(`👤 [${requestId}] User ID: ${userId}`);
       console.log(`📋 [${requestId}] Generation ID: ${generationId}`);
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Delete the generation (only if it belongs to this user)
       const { error } = await supabase
@@ -565,7 +553,7 @@ const aiRecipeController = {
       // Get user ID from JWT token
       const userId = getUserIdFromToken(req);
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Get user's generation analytics
       const { data: analytics, error } = await supabase
@@ -631,7 +619,7 @@ const aiRecipeController = {
     try {
       const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
       const hasFireworks = !!process.env.FIREWORKS_API_KEY;
-      const hasSupabase = !!process.env.SUPABASE_URL && !!process.env.SUPABASE_ANON_KEY;
+      const hasSupabase = !!process.env.SUPABASE_URL && !!process.env.SUPABASE_SERVICE_KEY;
       
       const allHealthy = hasOpenRouter && hasFireworks && hasSupabase;
       

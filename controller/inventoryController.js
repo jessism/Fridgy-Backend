@@ -1,19 +1,7 @@
-const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const { incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 const streakService = require('../services/streakService');
-
-// Initialize Supabase client function
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -76,7 +64,7 @@ const inventoryController = {
       
       console.log(`📦 [${requestId}] Items data:`, items);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Prepare items for database insertion, ensuring user_id matches JWT token
       const itemsToInsert = items.map((item, index) => {
@@ -166,7 +154,7 @@ const inventoryController = {
       const userId = getUserIdFromToken(req);
       console.log(`📦 [${requestId}] User ID: ${userId}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Fetch all non-deleted items for the user with ingredient images
       const { data: items, error } = await supabase
@@ -266,7 +254,7 @@ const inventoryController = {
       const userId = getUserIdFromToken(req);
       console.log(`📝 [${requestId}] User ID: ${userId}, Item ID: ${id}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Update the item (only if it belongs to the user)
       const { data: updatedItem, error } = await supabase
@@ -341,7 +329,7 @@ const inventoryController = {
         throw new Error(`Invalid delete reason. Must be one of: ${validReasons.join(', ')}`);
       }
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Soft delete: Update the item with deleted_at and delete_reason (only if it belongs to the user)
       const { data: deletedItem, error } = await supabase
@@ -416,7 +404,7 @@ const inventoryController = {
       const userId = getUserIdFromToken(req);
       console.log(`🔍 [${requestId}] User ID: ${userId}, Requested Servings: ${requestedServings}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Get user's current inventory
       const { data: inventory, error: inventoryError } = await supabase

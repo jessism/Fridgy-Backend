@@ -1,18 +1,6 @@
-const { createClient } = require('@supabase/supabase-js');
 const { GoogleGenAI } = require('@google/genai');
 const crypto = require('crypto');
-
-// Helper function to get Supabase client
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 // Image Generation Service — Gemini (primary) with OpenRouter fallback
 class ImageGenerationService {
@@ -152,7 +140,7 @@ CRITICAL REMINDER: Generate a PHOTOGRAPH ONLY. Do NOT render ANY text, labels, t
       console.log(`📝 [${requestId}] Uploading to: recipe-images/${fileName}`);
 
       // Upload to Supabase storage (same bucket as imported recipes)
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('recipe-images')
         .upload(fileName, imageBuffer, {
@@ -214,7 +202,7 @@ DO NOT include: any text, labels, watermarks, human hands, wooden utensils, mult
     try {
       console.log(`🖼️  [${requestId}] Checking image cache for recipe hash: ${recipeHash}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data, error } = await supabase
         .from('ai_recipe_images')
         .select('*')
@@ -342,7 +330,7 @@ DO NOT include: any text, labels, watermarks, human hands, wooden utensils, mult
     try {
       console.log(`💾 [${requestId}] Caching image for hash: ${recipeHash}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       const { data, error } = await supabase
         .from('ai_recipe_images')
@@ -478,7 +466,7 @@ DO NOT include: any text, labels, watermarks, human hands, wooden utensils, mult
     try {
       console.log(`🔄 [${requestId}] Updating recipe cache ${cacheId} with ${imageUrls.length} images...`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       const { data, error } = await supabase
         .from('ai_generated_recipes')
@@ -507,7 +495,7 @@ DO NOT include: any text, labels, watermarks, human hands, wooden utensils, mult
   // Get image generation statistics for analytics
   async getImageStats() {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       const { data, error } = await supabase
         .from('ai_recipe_images')

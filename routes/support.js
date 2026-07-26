@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
-const { getAnonClient, getServiceClient } = require('../config/supabase');
+const { getServiceClient } = require('../config/supabase');
 
 /**
  * @route   POST /api/support/feedback

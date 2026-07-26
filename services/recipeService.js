@@ -1,17 +1,5 @@
 const https = require('https');
-const { createClient } = require('@supabase/supabase-js');
-
-// Helper function to get Supabase client (matches the pattern used in other files)
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 // Recipe Service for Spoonacular API integration
 class RecipeService {
@@ -79,7 +67,7 @@ class RecipeService {
     try {
       console.log(`📦 [${requestId}] Fetching inventory for userId: ${userId}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       const { data: items, error } = await supabase
         .from('fridge_items')

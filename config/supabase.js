@@ -2,38 +2,23 @@ const { createClient } = require('@supabase/supabase-js');
 
 // Validate environment variables
 const validateEnvironment = () => {
-  const required = ['SUPABASE_URL', 'SUPABASE_ANON_KEY'];
+  const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
   const missing = required.filter(key => !process.env[key]);
-  
+
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
 };
 
-// Create client with anon key (respects RLS)
-const createAnonClient = () => {
-  validateEnvironment();
-  return createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-  );
-};
-
-// Create client with service key (bypasses RLS) - for admin operations only
+// Create client with service key (bypasses RLS). All backend DB access goes
+// through this client; the anon key is intentionally unsupported here — a
+// silent fallback to anon would break every query once RLS is enforced.
 const createServiceClient = () => {
   validateEnvironment();
-  
-  // Use service key if available, otherwise fall back to anon key
-  // In production, service key should always be present
-  const serviceKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
-  
-  if (!process.env.SUPABASE_SERVICE_KEY) {
-    console.warn('⚠️ SUPABASE_SERVICE_KEY not found - using ANON_KEY. This may cause RLS issues.');
-  }
-  
+
   return createClient(
     process.env.SUPABASE_URL,
-    serviceKey,
+    process.env.SUPABASE_SERVICE_KEY,
     {
       auth: {
         autoRefreshToken: false,
@@ -43,16 +28,8 @@ const createServiceClient = () => {
   );
 };
 
-// Export singleton instances
-let anonClient = null;
+// Export singleton instance
 let serviceClient = null;
-
-const getAnonClient = () => {
-  if (!anonClient) {
-    anonClient = createAnonClient();
-  }
-  return anonClient;
-};
 
 const getServiceClient = () => {
   if (!serviceClient) {
@@ -62,8 +39,5 @@ const getServiceClient = () => {
 };
 
 module.exports = {
-  getAnonClient,
-  getServiceClient,
-  // For backward compatibility
-  getSupabaseClient: getAnonClient
+  getServiceClient
 };

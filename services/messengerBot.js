@@ -5,12 +5,12 @@
 
 const fetch = require('node-fetch');
 const crypto = require('crypto');
-const { createClient } = require('@supabase/supabase-js');
 const facebookService = require('./apifyFacebookService');
 const MultiModalExtractor = require('./multiModalExtractor');
 const NutritionExtractor = require('./nutritionExtractor');
 const NutritionAnalysisService = require('./nutritionAnalysisService');
 const { sanitizeRecipeData } = require('../middleware/validation');
+const { getServiceClient } = require('../config/supabase');
 
 // Friendly extraction messages - randomly selected for personality
 // Each returns personalized message if name provided, generic otherwise
@@ -28,10 +28,7 @@ const EXTRACTING_MESSAGES = [
 
 class MessengerBot {
   constructor() {
-    this.supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY
-    );
+    this.supabase = getServiceClient();
 
     this.pageAccessToken = process.env.MESSENGER_PAGE_ACCESS_TOKEN;
     this.appSecret = process.env.MESSENGER_APP_SECRET;

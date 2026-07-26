@@ -1,12 +1,9 @@
 const cron = require('node-cron');
 const pushNotificationService = require('./pushNotificationService');
-const { createClient } = require('@supabase/supabase-js');
+const { getServiceClient } = require('../config/supabase');
 
 // Initialize Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
-);
+const supabase = getServiceClient();
 
 class TestNotificationScheduler {
   constructor() {

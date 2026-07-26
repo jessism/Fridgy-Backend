@@ -1,5 +1,5 @@
-const { createClient } = require('@supabase/supabase-js');
 
+const { getServiceClient } = require('../config/supabase');
 // Ingredient mapping for smart matching
 const INGREDIENT_MAPPINGS = {
   // Proteins
@@ -26,18 +26,6 @@ const INGREDIENT_MAPPINGS = {
   'milk': ['whole milk', '2% milk', 'skim milk', 'almond milk', 'soy milk'],
 };
 
-// Initialize Supabase client
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-};
-
 const inventoryDeductionService = {
   /**
    * Deduct ingredients from inventory after meal consumption
@@ -50,7 +38,7 @@ const inventoryDeductionService = {
    * @returns {Promise<Object>} Deduction results
    */
   async deductFromInventory(userId, consumedIngredients, imageUrl = null, mealType = null, logDate = null, mealName = null) {
-    const supabase = getSupabaseClient();
+    const supabase = getServiceClient();
     const deductionResults = [];
     const errors = [];
 
@@ -365,7 +353,7 @@ const inventoryDeductionService = {
    */
   async getUserPreferredMatch(userId, scannedName, inventory) {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data, error } = await supabase
         .from('user_ingredient_matches')
         .select('matched_item_name, confidence_score')

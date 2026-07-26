@@ -1,18 +1,9 @@
 const jwt = require('jsonwebtoken');
 const recipeService = require('../services/recipeService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
-const { createClient } = require('@supabase/supabase-js');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
-
-// Helper function to get Supabase client
-const getSupabaseClient = () => {
-  return createClient(
-    process.env.SUPABASE_URL || 'your-supabase-url',
-    process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key'
-  );
-};
 
 // Helper function to get user ID from token
 const getUserIdFromToken = (req) => {

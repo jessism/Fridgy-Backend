@@ -1,17 +1,5 @@
-const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
-
-// Helper function to get Supabase client
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -50,7 +38,7 @@ const userPreferencesController = {
       const userId = getUserIdFromToken(req);
       console.log(`🍽️  [${requestId}] User ID: ${userId}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Fetch user preferences
       const { data: preferences, error } = await supabase
@@ -141,7 +129,7 @@ const userPreferencesController = {
         cooking_time_preference
       });
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Use upsert to insert or update
       const { data: savedPreferences, error } = await supabase
@@ -209,7 +197,7 @@ const userPreferencesController = {
       const userId = getUserIdFromToken(req);
       console.log(`🗑️  [${requestId}] User ID: ${userId}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Delete user preferences
       const { error } = await supabase
@@ -255,7 +243,7 @@ const userPreferencesController = {
     const requestId = Math.random().toString(36).substring(7);
     
     try {
-      const hasSupabase = !!process.env.SUPABASE_URL && !!process.env.SUPABASE_ANON_KEY;
+      const hasSupabase = !!process.env.SUPABASE_URL && !!process.env.SUPABASE_SERVICE_KEY;
       
       res.json({
         success: true,

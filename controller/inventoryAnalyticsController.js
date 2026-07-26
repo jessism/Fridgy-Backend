@@ -1,17 +1,5 @@
-const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
-
-// Initialize Supabase client function
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -59,7 +47,7 @@ const inventoryAnalyticsController = {
         });
       }
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Step 2: Check for ANY fridge_items for this user
       console.log(`🔍 [${requestId}] Checking for ANY fridge_items for user...`);
@@ -187,7 +175,7 @@ const inventoryAnalyticsController = {
       
       console.log(`📊 [${requestId}] User ID: ${userId}, Days: ${days}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Calculate date ranges
       const now = new Date();

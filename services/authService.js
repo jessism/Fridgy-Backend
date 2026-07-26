@@ -1,17 +1,5 @@
-const { createClient } = require('@supabase/supabase-js');
 
-// Initialize Supabase client function
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-  
-  return createClient(supabaseUrl, supabaseKey);
-};
-
+const { getServiceClient } = require('../config/supabase');
 // Auth Service - handles all database operations for authentication
 const authService = {
   /**
@@ -21,7 +9,7 @@ const authService = {
    */
   async findUserByEmail(email) {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data: user, error} = await supabase
         .from('users')
         .select('id, email, first_name, password_hash, created_at, has_seen_welcome_tour, tier, is_grandfathered, is_admin')
@@ -46,7 +34,7 @@ const authService = {
    */
   async findUserById(userId) {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data: user, error } = await supabase
         .from('users')
         .select('id, email, first_name, created_at, has_seen_welcome_tour, tier, is_grandfathered, is_admin')
@@ -80,7 +68,7 @@ const authService = {
       const PREMIUM_EMAILS = ['mich.cabral@gmail.com'];
       const isPremiumEmail = PREMIUM_EMAILS.includes(email.toLowerCase());
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data: newUser, error: insertError } = await supabase
         .from('users')
         .insert({
@@ -111,7 +99,7 @@ const authService = {
    */
   async userExistsByEmail(email) {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data: existingUser, error: checkError } = await supabase
         .from('users')
         .select('id, email')
@@ -136,7 +124,7 @@ const authService = {
    */
   async updateLastLogin(userId) {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data: user, error } = await supabase
         .from('users')
         .update({
@@ -163,7 +151,7 @@ const authService = {
    */
   async getUserStats() {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { count, error } = await supabase
         .from('users')
         .select('*', { count: 'exact', head: true });
@@ -190,7 +178,7 @@ const authService = {
    */
   async getUserTourStatus(userId, tourType = 'welcome') {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       const { data: tour, error } = await supabase
         .from('user_tours')
         .select('*')

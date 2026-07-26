@@ -2,14 +2,11 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const { checkSavedRecipeLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
-const { createClient } = require('@supabase/supabase-js');
 const { generateRecipeTags } = require('../services/recipeTagService');
 const streakService = require('../services/streakService');
+const { getServiceClient } = require('../config/supabase');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY
-);
+const supabase = getServiceClient();
 
 // POST /api/saved-recipes - Create a new saved recipe
 router.post('/', authMiddleware.authenticateToken, checkSavedRecipeLimit, async (req, res) => {

@@ -1,20 +1,8 @@
-const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { trackEvent } = require('../config/posthog');
-
-// Helper function to get Supabase client
-const getSupabaseClient = () => {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_KEY; // Use service role for backend operations
-
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Supabase configuration missing');
-  }
-
-  return createClient(supabaseUrl, supabaseKey);
-};
+const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -127,7 +115,7 @@ const onboardingController = {
         onboarding_version: onboarding_version || '1.0'
       };
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
       
       // Check if onboarding data already exists
       const { data: existingData, error: checkError } = await supabase
@@ -219,7 +207,7 @@ const onboardingController = {
       const userId = getUserIdFromToken(req);
       console.log('User ID:', userId);
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Fetch onboarding data for the user
       const { data: onboardingData, error } = await supabase
@@ -274,7 +262,7 @@ const onboardingController = {
       }
 
       if (userId) {
-        const supabase = getSupabaseClient();
+        const supabase = getServiceClient();
 
         // Save minimal onboarding data
         await supabase
@@ -313,7 +301,7 @@ const onboardingController = {
       const expiresAt = new Date();
       expiresAt.setHours(expiresAt.getHours() + 24); // Session expires in 24 hours
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Create onboarding session
       const { data: session, error } = await supabase
@@ -373,7 +361,7 @@ const onboardingController = {
         });
       }
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Verify session exists and is valid
       const { data: session, error: sessionError } = await supabase
@@ -668,7 +656,7 @@ const onboardingController = {
         });
       }
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Step 1: Query session by session_id ONLY (remove strict filter)
       console.log('[ConfirmPayment] Querying session:', sessionId);
@@ -861,7 +849,7 @@ const onboardingController = {
       console.log('[Onboarding] Validating promo code:', code.toUpperCase());
 
       // Query database for promo code
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       const { data: promoCodes, error: queryError } = await supabase
         .from('promo_codes')
@@ -935,7 +923,7 @@ const onboardingController = {
         });
       }
 
-      const supabase = getSupabaseClient();
+      const supabase = getServiceClient();
 
       // Verify session exists
       const { data: session, error: sessionError } = await supabase

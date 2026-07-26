@@ -33,42 +33,56 @@ const getUserIdFromToken = (req) => {
 };
 
 /**
+ * Upload a meal photo to Supabase Storage, retrying once on transient
+ * failure. Non-fatal: returns the public URL, or null if both attempts
+ * fail (logged as MEAL_PHOTO_UPLOAD_FAILED so it's greppable in Railway).
+ */
+async function uploadMealPhoto(userId, file, requestId, filePrefix = '') {
+  const timestamp = Date.now();
+  const randomId = Math.random().toString(36).substring(7);
+  const fileName = `${userId}/${filePrefix}${timestamp}_${randomId}.jpg`;
+  const supabase = getSupabaseClient();
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      console.log(`🍽️ [${requestId}] Uploading image to Storage (attempt ${attempt}): ${fileName}`);
+
+      const { error: uploadError } = await supabase.storage
+        .from('meal-photos')
+        .upload(fileName, file.buffer, {
+          contentType: file.mimetype || 'image/jpeg',
+          upsert: attempt > 1
+        });
+
+      if (uploadError) {
+        throw new Error(uploadError.message || JSON.stringify(uploadError));
+      }
+
+      const { data: urlData } = supabase.storage
+        .from('meal-photos')
+        .getPublicUrl(fileName);
+
+      console.log(`🍽️ [${requestId}] Image uploaded successfully: ${urlData.publicUrl}`);
+      return urlData.publicUrl;
+    } catch (storageError) {
+      if (attempt < 2) {
+        console.warn(`🍽️ [${requestId}] Storage upload attempt ${attempt} failed, retrying:`, storageError.message);
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } else {
+        console.error(`❌ [${requestId}] MEAL_PHOTO_UPLOAD_FAILED user=${userId} file=${fileName}:`, storageError.message);
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Shared meal-photo processing: upload to Storage + AI analysis.
  * Used by both the synchronous /scan endpoint and the async scan job.
  */
 async function performMealScan(userId, file, requestId) {
   // Upload image to Supabase Storage (non-fatal on failure)
-  let imageUrl = null;
-  try {
-    const timestamp = Date.now();
-    const randomId = Math.random().toString(36).substring(7);
-    const fileName = `${userId}/${timestamp}_${randomId}.jpg`;
-
-    console.log(`🍽️ [${requestId}] Uploading image to Storage: ${fileName}`);
-
-    const supabase = getSupabaseClient();
-    const { error: uploadError } = await supabase.storage
-      .from('meal-photos')
-      .upload(fileName, file.buffer, {
-        contentType: file.mimetype || 'image/jpeg',
-        upsert: false
-      });
-
-    if (uploadError) {
-      console.error(`🍽️ [${requestId}] Storage upload error:`, uploadError);
-      // Continue without image URL if upload fails
-    } else {
-      const { data: urlData } = supabase.storage
-        .from('meal-photos')
-        .getPublicUrl(fileName);
-
-      imageUrl = urlData.publicUrl;
-      console.log(`🍽️ [${requestId}] Image uploaded successfully: ${imageUrl}`);
-    }
-  } catch (storageError) {
-    console.error(`🍽️ [${requestId}] Storage error:`, storageError);
-    // Continue without image URL
-  }
+  const imageUrl = await uploadMealPhoto(userId, file, requestId);
 
   // Analyze the meal image
   const analysisResult = await mealAnalysisService.analyzeMealImage(file.buffer);
@@ -609,41 +623,10 @@ const mealController = {
         }
       }
 
-      // Upload image to Supabase Storage if provided
+      // Upload image to Supabase Storage if provided (retries once, non-fatal)
       let imageUrl = null;
       if (req.file) {
-        try {
-          // Generate unique filename
-          const timestamp = Date.now();
-          const randomId = Math.random().toString(36).substring(7);
-          const fileName = `${userId}/dine-out_${timestamp}_${randomId}.jpg`;
-
-          console.log(`🍴 [${requestId}] Uploading dine-out image: ${fileName}`);
-
-          // Upload to Supabase Storage
-          const supabase = getSupabaseClient();
-          const { data: uploadData, error: uploadError } = await supabase.storage
-            .from('meal-photos')
-            .upload(fileName, req.file.buffer, {
-              contentType: req.file.mimetype || 'image/jpeg',
-              upsert: false
-            });
-
-          if (uploadError) {
-            console.error(`🍴 [${requestId}] Storage upload error:`, uploadError);
-          } else {
-            // Get public URL
-            const { data: urlData } = supabase.storage
-              .from('meal-photos')
-              .getPublicUrl(fileName);
-
-            imageUrl = urlData.publicUrl;
-            console.log(`🍴 [${requestId}] Image uploaded successfully`);
-          }
-        } catch (storageError) {
-          console.error(`🍴 [${requestId}] Storage error:`, storageError);
-          // Continue without image URL
-        }
+        imageUrl = await uploadMealPhoto(userId, req.file, requestId, 'dine-out_');
       }
 
       // Get current date or use provided target date

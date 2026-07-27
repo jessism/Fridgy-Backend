@@ -45,17 +45,29 @@ The backend follows a **controller → service → database** pattern:
 
 ### Key Architectural Patterns
 
-#### Supabase Client Pattern
-The codebase uses **two types of Supabase clients** with different permission levels:
+#### Supabase Client Pattern — service_role ONLY
 
-- **Anon Client** (`getAnonClient()`) - Respects Row Level Security (RLS), used for user-scoped operations
-- **Service Client** (`getServiceClient()`) - Bypasses RLS, used for admin operations and cross-user queries
+**There is exactly one Supabase client, and it uses the service key.**
 
-Import from: `const { getServiceClient, getAnonClient } = require('../config/supabase')`
+```js
+const { getServiceClient } = require('../config/supabase');
+const supabase = getServiceClient();
+```
 
-**When to use which:**
-- Use `getServiceClient()` for: admin operations, cross-user analytics, scheduled jobs, webhook handlers
-- Use `getAnonClient()` for: user-specific data access respecting RLS policies
+Never create a client with `createClient()` directly, and never use `SUPABASE_ANON_KEY` in runtime code. There is no anon client — `getAnonClient()` was deleted in July 2026.
+
+**Why (this is a hard security constraint, not a style preference):** the project's anon key leaked into a public GitHub repo, and because auth here is a custom JWT rather than Supabase Auth, RLS policies based on `auth.uid()` can never match our queries. The fix was to enable RLS everywhere and revoke *all* anon/authenticated access to tables, functions, sequences, and storage writes. `service_role` bypasses RLS, so the backend is unaffected — but **any code that creates an anon client will fail with "permission denied" at runtime.** See `MD_files/SECURITY_SUPABASE_RLS.md` in the trackabite-mobile repo and migrations `073`/`074`.
+
+Authorization is enforced in application code (verify the JWT, then filter by `user_id`). RLS is the backstop that stops anyone bypassing the backend — it is not what separates users from each other, so **always keep the explicit `.eq('user_id', userId)` filters.**
+
+**Rules for new code:**
+- New tables: the migration MUST include `ALTER TABLE public.<t> ENABLE ROW LEVEL SECURITY;`. New tables are created unlocked and need no anon grants or policies.
+- New storage buckets: add SELECT (read) policies only. Never add anon/public/authenticated INSERT, UPDATE, or DELETE policies — backend uploads use service_role and bypass RLS.
+- Completeness check after touching DB access — both must come back empty outside one-off scripts in `scripts/`:
+  ```bash
+  grep -rln --include='*.js' SUPABASE_ANON_KEY . | grep -v node_modules
+  grep -rn --include='*.js' 'getAnonClient\|getSupabaseClient' . | grep -v node_modules
+  ```
 
 #### AI Service Architecture
 The backend integrates multiple AI providers with **tiered fallback strategies**:
@@ -203,8 +215,10 @@ Recipes are stored in Spoonacular-compatible format:
 ```bash
 # Supabase (required for all database operations)
 SUPABASE_URL=your_supabase_url
-SUPABASE_ANON_KEY=your_supabase_anon_key
-SUPABASE_SERVICE_KEY=your_supabase_service_role_key  # For admin operations
+SUPABASE_SERVICE_KEY=your_supabase_service_role_key  # ALL database + storage access
+# NOTE: SUPABASE_ANON_KEY is deliberately NOT used. The anon role has no
+# permissions on this project (see the Supabase Client Pattern section).
+# The server refuses to boot without SUPABASE_SERVICE_KEY — by design.
 
 # Authentication
 JWT_SECRET=your_jwt_secret_key
@@ -333,7 +347,7 @@ const { data: urlData } = supabase.storage
 
 ### Production Checklist
 - [ ] Set `NODE_ENV=production`
-- [ ] Configure `SUPABASE_SERVICE_KEY` (not just anon key)
+- [ ] Configure `SUPABASE_SERVICE_KEY` (required — the app has no anon fallback and will not boot without it)
 - [ ] Set strong `JWT_SECRET` (not default value)
 - [ ] Configure `FRONTEND_URL` for CORS
 - [ ] Set up Stripe webhook URL in Stripe dashboard
@@ -395,10 +409,10 @@ const { data: urlData } = supabase.storage
 - Check `STRIPE_WEBHOOK_SECRET` matches Stripe dashboard
 - Test webhook locally with Stripe CLI: `stripe listen --forward-to localhost:5000/api/webhooks`
 
-**Supabase RLS errors:**
-- Ensure using `getServiceClient()` for admin operations
-- Check if `SUPABASE_SERVICE_KEY` is configured (not just anon key)
-- Review RLS policies in Supabase dashboard
+**Supabase "permission denied" / RLS errors:**
+- Almost always means that code path is not using `getServiceClient()`. RLS is enabled on every table and `anon`/`authenticated` have zero permissions, so any other client fails. Fix the client, do NOT add an anon policy or re-grant to anon — that reopens the security hole closed in July 2026.
+- Confirm `SUPABASE_SERVICE_KEY` is set (the server refuses to boot without it).
+- Newly created table? It needs `ENABLE ROW LEVEL SECURITY`, and its queries must run through the service client.
 
 **Instagram/Facebook import failures:**
 - Check `APIFY_API_TOKEN` is valid

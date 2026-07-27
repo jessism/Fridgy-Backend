@@ -30,9 +30,19 @@ After running the SQL, you should see:
 Your `.env` file should contain:
 ```
 SUPABASE_URL=https://aimvjpndmipmtavpmjnn.supabase.co
-SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_KEY=your-service-role-key
 JWT_SECRET=your-super-secret-jwt-key-change-in-production
 ```
+
+> ⚠️ **Do not use `SUPABASE_ANON_KEY`.** As of July 2026 the `anon` role has no
+> permissions on this project — RLS is enabled everywhere and all anon grants
+> were revoked after the anon key leaked publicly. The backend talks to the
+> database exclusively as `service_role` via `getServiceClient()`. Any anon
+> client will get "permission denied". See the Supabase Client Pattern section
+> in `CLAUDE.md`.
+
+> ⚠️ **The RLS policies described below are historical.** The `users` table no
+> longer has anon-facing policies; access is by `service_role` only.
 
 ### 2. Start the Backend
 

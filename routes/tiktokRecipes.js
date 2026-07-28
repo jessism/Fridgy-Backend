@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
-const { checkImportedRecipeLimit } = require('../middleware/checkLimits');
 const tiktokService = require('../services/apifyTikTokService');
 const MultiModalExtractor = require('../services/multiModalExtractor');
 const NutritionExtractor = require('../services/nutritionExtractor');
@@ -25,7 +24,7 @@ const isTikTokUrl = (url) => {
  * POST /api/tiktok-recipes/multi-modal-extract
  * Extract recipe from TikTok URL using multi-modal AI analysis
  */
-router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const { url } = req.body;
     const userId = req.user?.userId || req.user?.id;

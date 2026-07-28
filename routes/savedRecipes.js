@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
-const { checkSavedRecipeLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
+const { checkSavedRecipeLimit, incrementUsageCounter } = require('../middleware/checkLimits');
 const { generateRecipeTags } = require('../services/recipeTagService');
 const streakService = require('../services/streakService');
 const { getServiceClient } = require('../config/supabase');
@@ -390,14 +390,6 @@ router.delete('/:id', authMiddleware.authenticateToken, async (req, res) => {
 
     console.log(`[SavedRecipes] Deleting recipe ${id} for user ${userId}`);
 
-    // Get recipe first to know its source_type for usage decrement
-    const { data: recipe } = await supabase
-      .from('saved_recipes')
-      .select('source_type')
-      .eq('id', id)
-      .eq('user_id', userId)
-      .single();
-
     const { error } = await supabase
       .from('saved_recipes')
       .delete()
@@ -406,13 +398,8 @@ router.delete('/:id', authMiddleware.authenticateToken, async (req, res) => {
 
     if (error) throw error;
 
-    // Decrement appropriate counter based on source_type
-    if (recipe?.source_type === 'instagram') {
-      await decrementUsageCounter(userId, 'imported_recipes');
-    } else {
-      await decrementUsageCounter(userId, 'uploaded_recipes');
-    }
-    console.log(`[SavedRecipes] Usage counter decremented`);
+    // Intentionally no usage decrement: saved_recipes_count is a weekly RATE
+    // limit, not a stock cap, so deleting a recipe does not earn quota back.
 
     res.json({ success: true, message: 'Recipe deleted successfully' });
     

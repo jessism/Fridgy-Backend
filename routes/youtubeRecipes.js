@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
-const { checkImportedRecipeLimit } = require('../middleware/checkLimits');
 const youtubeService = require('../services/apifyYouTubeService');
 const MultiModalExtractor = require('../services/multiModalExtractor');
 const NutritionExtractor = require('../services/nutritionExtractor');
@@ -34,7 +33,7 @@ const isYouTubeUrl = (url) => {
  *   - confidence: AI confidence score
  *   - sourcesUsed: Array of data sources used (description, transcript, thumbnails)
  */
-router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const { url } = req.body;
     const userId = req.user?.userId || req.user?.id;

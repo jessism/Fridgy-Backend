@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
-const { checkImportedRecipeLimit } = require('../middleware/checkLimits');
 const facebookService = require('../services/apifyFacebookService');
 const MultiModalExtractor = require('../services/multiModalExtractor');
 const NutritionExtractor = require('../services/nutritionExtractor');
@@ -25,7 +24,7 @@ const isFacebookUrl = (url) => {
  * POST /api/facebook-recipes/multi-modal-extract
  * Extract recipe from Facebook URL using multi-modal AI analysis
  */
-router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const { url } = req.body;
     const userId = req.user?.userId || req.user?.id;

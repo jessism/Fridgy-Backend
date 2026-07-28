@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const recipeController = require('../controller/recipeController');
 const authMiddleware = require('../middleware/auth');
-const { checkImportedRecipeLimit, incrementUsageCounter } = require('../middleware/checkLimits');
+const { checkSavedRecipeLimit, incrementUsageCounter } = require('../middleware/checkLimits');
 const recipeService = require('../services/recipeService');
 const InstagramExtractor = require('../services/instagramExtractor');
 const RecipeAIExtractor = require('../services/recipeAIExtractor');
@@ -70,7 +70,7 @@ router.get('/health/keys', (req, res) => {
 
 // Import recipe from Instagram URL (Web flow for authenticated users)
 // POST /api/recipes/import-instagram
-router.post('/import-instagram', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+router.post('/import-instagram', authMiddleware.authenticateToken, checkSavedRecipeLimit, async (req, res) => {
   try {
     const { url, manualCaption } = req.body;
     const userId = req.user?.userId || req.user?.id;
@@ -386,8 +386,8 @@ router.post('/import-instagram', authMiddleware.authenticateToken, checkImported
       downloadedImageUrl: standardDownloadedImageUrl?.substring(0, 100) + '...'
     });
 
-    // Increment usage counter
-    await incrementUsageCounter(userId, 'imported_recipes');
+    // Charge the weekly quota — this route persists the recipe itself
+    await incrementUsageCounter(userId, 'saved_recipes');
     console.log('[RecipeImport] Usage counter incremented for user:', userId);
 
     res.json({
@@ -419,7 +419,7 @@ const { parseAIJson } = require('../services/aiJsonParser');
  * Start an async recipe import. Returns immediately with a jobId.
  * Backend processes extraction in the background and sends push notification when done.
  */
-router.post('/import-async', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+router.post('/import-async', authMiddleware.authenticateToken, checkSavedRecipeLimit, async (req, res) => {
   const { url, source_type } = req.body;
   const userId = req.user?.userId || req.user?.id;
 
@@ -673,8 +673,8 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
       console.error(`[AsyncImport] Job ${jobId}: streak record failed:`, err.message);
     });
 
-    // Increment usage counter
-    await incrementUsageCounter(userId, 'imported_recipes');
+    // Charge the weekly quota — this worker persists the recipe itself
+    await incrementUsageCounter(userId, 'saved_recipes');
 
     // Update job as completed — only if still 'processing'; if the deadline
     // already failed this job, don't resurrect it or send a success push
@@ -919,7 +919,7 @@ async function extractFacebookRecipe(url, userId, multiModalExtractor, nutrition
 // ============================================================
 
 // POST /api/recipes/import-web
-router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+router.post('/import-web', authMiddleware.authenticateToken, checkSavedRecipeLimit, async (req, res) => {
   try {
     const { url } = req.body;
     const userId = req.user?.userId || req.user?.id;
@@ -997,7 +997,7 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
         throw saveError;
       }
 
-      await incrementUsageCounter(userId, 'imported_recipes');
+      await incrementUsageCounter(userId, 'saved_recipes');
       console.log('[WebImport] TikTok recipe saved successfully:', savedRecipe.id, savedRecipe.title);
 
       return res.json({
@@ -1148,8 +1148,8 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
       throw saveError;
     }
 
-    // Increment usage counter
-    await incrementUsageCounter(userId, 'imported_recipes');
+    // Charge the weekly quota — this route persists the recipe itself
+    await incrementUsageCounter(userId, 'saved_recipes');
     console.log('[WebImport] Recipe saved successfully:', savedRecipe.id, savedRecipe.title);
 
     res.json({
@@ -1174,7 +1174,9 @@ router.post('/import-web', authMiddleware.authenticateToken, checkImportedRecipe
 
 // NEW: Multi-modal extraction endpoint (unified caption + video + audio analysis)
 // POST /api/recipes/multi-modal-extract
-router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+// Ungated on purpose: extraction is free. The user gets the full preview and
+// only hits the paywall when they try to save (POST /api/saved-recipes).
+router.post('/multi-modal-extract', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const { url } = req.body;
     const userId = req.user?.userId || req.user?.id;
@@ -1386,7 +1388,7 @@ router.post('/multi-modal-extract', authMiddleware.authenticateToken, checkImpor
 
 // Import recipe from Instagram URL using Apify (Premium flow with video analysis)
 // POST /api/recipes/import-instagram-apify
-router.post('/import-instagram-apify', authMiddleware.authenticateToken, checkImportedRecipeLimit, async (req, res) => {
+router.post('/import-instagram-apify', authMiddleware.authenticateToken, checkSavedRecipeLimit, async (req, res) => {
   try {
     const { url } = req.body;
     const userId = req.user?.userId || req.user?.id;
@@ -1892,8 +1894,8 @@ router.post('/import-instagram-apify', authMiddleware.authenticateToken, checkIm
       method: aiResult.extractionMethod
     });
 
-    // Increment usage counter
-    await incrementUsageCounter(userId, 'imported_recipes');
+    // Charge the weekly quota — this route persists the recipe itself
+    await incrementUsageCounter(userId, 'saved_recipes');
     console.log('[ApifyImport] Usage counter incremented for user:', userId);
 
     res.json({
@@ -1981,7 +1983,7 @@ router.get('/curated', async (req, res) => {
 
 // Save extracted recipe (from multi-modal or other extraction methods)
 // POST /api/recipes/save
-router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/save', authMiddleware.authenticateToken, checkSavedRecipeLimit, async (req, res) => {
   try {
     const { recipe, source_url, import_method, confidence } = req.body;
     const userId = req.user?.userId || req.user?.id;
@@ -2105,8 +2107,8 @@ router.post('/save', authMiddleware.authenticateToken, async (req, res) => {
     console.log('[RecipeSave] Recipe saved successfully:', savedRecipe.id);
     console.log('[RecipeSave] Saved recipe image URL:', savedRecipe.image || 'NO IMAGE IN SAVED RECIPE');
 
-    // Increment usage counter
-    await incrementUsageCounter(userId, 'imported_recipes');
+    // Charge the weekly quota — this route persists the recipe itself
+    await incrementUsageCounter(userId, 'saved_recipes');
     console.log('[RecipeSave] Usage counter incremented for user:', userId);
 
     res.json({
@@ -2419,7 +2421,9 @@ OTHER RULES:
     return structuredRecipe;
 }
 
-router.post('/create-from-voice', authMiddleware.authenticateToken, checkImportedRecipeLimit, voiceUpload.single('audio'), async (req, res) => {
+// Ungated on purpose: recording + transcription are free. The paywall fires
+// when the user saves the resulting draft (POST /api/saved-recipes).
+router.post('/create-from-voice', authMiddleware.authenticateToken, voiceUpload.single('audio'), async (req, res) => {
   const requestId = Math.random().toString(36).substring(7);
   const userId = req.user?.userId || req.user?.id;
 
@@ -2432,8 +2436,8 @@ router.post('/create-from-voice', authMiddleware.authenticateToken, checkImporte
 
     const structuredRecipe = await voiceAudioToRecipe(req.file, requestId);
 
-    // Increment usage counter
-    await incrementUsageCounter(userId, 'imported_recipes');
+    // No usage charged here — this only returns a draft. Quota is consumed when
+    // the client persists it via POST /api/saved-recipes.
 
     res.json({
       success: true,
@@ -2472,7 +2476,7 @@ router.post('/create-from-voice', authMiddleware.authenticateToken, checkImporte
  * long recordings. Poll via GET /api/recipes/import-status/:jobId; the
  * completed job carries the extracted recipe for preview.
  */
-router.post('/create-from-voice-async', authMiddleware.authenticateToken, checkImportedRecipeLimit, voiceUpload.single('audio'), async (req, res) => {
+router.post('/create-from-voice-async', authMiddleware.authenticateToken, voiceUpload.single('audio'), async (req, res) => {
   const userId = req.user?.userId || req.user?.id;
 
   if (!req.file) {
@@ -2503,7 +2507,8 @@ async function processVoiceJob(jobId, userId, file) {
   try {
     const structuredRecipe = await voiceAudioToRecipe(file, jobId);
 
-    await incrementUsageCounter(userId, 'imported_recipes');
+    // No usage charged here — this only produces a draft. Quota is consumed
+    // when the client persists it via POST /api/saved-recipes.
 
     console.log(`[VoiceJob] Job ${jobId}: completed — "${structuredRecipe.title}"`);
     await previewJobService.completePreviewJob(jobId, userId, structuredRecipe, 'voice');

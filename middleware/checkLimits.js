@@ -7,6 +7,22 @@ const usageService = require('../services/usageService');
 const subscriptionService = require('../services/subscriptionService');
 
 /**
+ * User-facing messages for a 402. Clients surface `message` verbatim, so these
+ * should read like product copy rather than a feature key.
+ * @param {string} feature - Feature name
+ * @param {Object} result - Result from usageService.checkLimit
+ * @returns {string} Message to show the user
+ */
+function limitMessage(feature, result) {
+  switch (feature) {
+    case 'saved_recipes':
+      return `You've saved ${result.limit} recipes this week — that's your free limit. Upgrade for unlimited saves.`;
+    default:
+      return `You've reached your ${result.tier} tier limit for ${feature.replace(/_/g, ' ')}`;
+  }
+}
+
+/**
  * Generic limit checker factory
  * @param {string} feature - Feature name to check (e.g., 'grocery_items', 'imported_recipes')
  * @returns {Function} Express middleware function
@@ -34,7 +50,7 @@ function checkLimit(feature) {
       if (!result.allowed) {
         return res.status(402).json({
           error: 'LIMIT_EXCEEDED',
-          message: `You've reached your ${result.tier} tier limit for ${feature.replace(/_/g, ' ')}`,
+          message: limitMessage(feature, result),
           current: result.current,
           limit: result.limit,
           tier: result.tier,
@@ -69,14 +85,12 @@ console.log('[checkLimits] MODULE LOADING - Creating middleware instances...');
 const checkInventoryLimit = checkLimit('grocery_items');
 console.log('[checkLimits] checkInventoryLimit created:', typeof checkInventoryLimit);
 
-// Saved recipes limit (5 per week for free tier - ALL recipe sources)
+// Saved recipes limit (3 per week for free tier - ALL recipe sources).
+// This is the ONLY recipe gate: extraction endpoints check it without consuming
+// it, and quota is charged once when a recipe is successfully persisted.
+// The old checkImportedRecipeLimit / checkUploadedRecipeLimit are gone on
+// purpose so nothing can regress to the deprecated counters.
 const checkSavedRecipeLimit = checkLimit('saved_recipes');
-
-// Imported recipes limit (10 for free tier) - DEPRECATED, use checkSavedRecipeLimit
-const checkImportedRecipeLimit = checkLimit('imported_recipes');
-
-// Uploaded/manual recipes limit (10 for free tier) - DEPRECATED, use checkSavedRecipeLimit
-const checkUploadedRecipeLimit = checkLimit('uploaded_recipes');
 
 // Meal logs limit (10 for free tier)
 const checkMealLogLimit = checkLimit('meal_logs');
@@ -196,9 +210,7 @@ async function decrementUsageCounter(userId, feature) {
 module.exports = {
   // Specific limit checkers
   checkInventoryLimit,
-  checkSavedRecipeLimit, // NEW: Combined limit for all recipe saves (5/week)
-  checkImportedRecipeLimit, // DEPRECATED
-  checkUploadedRecipeLimit, // DEPRECATED
+  checkSavedRecipeLimit, // Combined limit for all recipe saves (3/week)
   checkMealLogLimit,
   checkShoppingListLimit,
   checkAggregatedListLimit, // NEW: Aggregated shopping lists from meal plan (1/week)

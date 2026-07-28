@@ -9,7 +9,6 @@ const multer = require('multer');
 
 // Import middleware
 const authMiddleware = require('./middleware/auth');
-const { checkImportedRecipeLimit, incrementUsageCounter } = require('./middleware/checkLimits');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -1143,7 +1142,9 @@ app.post('/api/process-images', upload.array('images', 10), async (req, res) => 
 });
 
 // Recipe Scanning Endpoint - Supports multiple images for multi-page recipes
-app.post('/api/scan-recipe', authMiddleware.authenticateToken, checkImportedRecipeLimit, upload.array('images', 10), async (req, res) => {
+// Ungated on purpose: scanning is free. The user gets the full preview and only
+// hits the paywall when they try to save (POST /api/saved-recipes).
+app.post('/api/scan-recipe', authMiddleware.authenticateToken, upload.array('images', 10), async (req, res) => {
   const requestId = Math.random().toString(36).substring(7);
 
   console.log(`\n🍳 ================== RECIPE SCAN REQUEST START ==================`);
@@ -1297,11 +1298,8 @@ app.post('/api/scan-recipe', authMiddleware.authenticateToken, checkImportedReci
       recipeData.imageStoragePath = imageStoragePath;
     }
 
-    // Increment usage counter
-    const userId = req.user?.userId || req.user?.id;
-    if (userId) {
-      await incrementUsageCounter(userId, 'imported_recipes');
-    }
+    // No usage charged here — the scan only returns a draft. Quota is consumed
+    // when the client persists it via POST /api/saved-recipes.
 
     // Send successful response
     res.json({
@@ -1374,7 +1372,7 @@ const { parseAIJson } = require('./services/aiJsonParser');
  * GET /api/recipes/import-status/:jobId — the completed job carries the
  * extracted recipe for preview.
  */
-app.post('/api/scan-recipe-async', authMiddleware.authenticateToken, checkImportedRecipeLimit, upload.array('images', 10), async (req, res) => {
+app.post('/api/scan-recipe-async', authMiddleware.authenticateToken, upload.array('images', 10), async (req, res) => {
   const userId = req.user?.userId || req.user?.id;
 
   if (!req.files || req.files.length === 0) {
@@ -1455,9 +1453,8 @@ async function processScanJob(jobId, userId, files) {
       console.error(`[ScanJob] Job ${jobId}: storage error:`, storageError.message || storageError);
     }
 
-    if (userId) {
-      await incrementUsageCounter(userId, 'imported_recipes');
-    }
+    // No usage charged here — the scan only produces a draft. Quota is consumed
+    // when the client persists it via POST /api/saved-recipes.
 
     console.log(`[ScanJob] Job ${jobId}: completed — "${recipeData.title}"`);
     await previewJobService.completePreviewJob(jobId, userId, recipeData, 'scan');

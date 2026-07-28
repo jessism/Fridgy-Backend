@@ -16,6 +16,22 @@ const limitCache = new NodeCache({
 
 console.log('[UsageService] Limit cache initialized with 5 minute TTL');
 
+// NOTE: this cache is per-process. On a single Railway instance that is exact;
+// if we ever scale to N replicas each keeps its own copy and a limit could be
+// exceeded by up to N-1 before the counters converge.
+
+/**
+ * Drop every cached limit check for a user (all features)
+ * @param {string} userId - User ID
+ */
+function invalidateUserCache(userId) {
+  const keys = limitCache.keys().filter(key => key.startsWith(`limit_${userId}_`));
+  if (keys.length > 0) {
+    limitCache.del(keys);
+    console.log(`[UsageService] Invalidated ${keys.length} cached limit(s) for user ${userId}`);
+  }
+}
+
 /**
  * Get feature limits for a given tier
  * @param {string} tier - User tier ('free', 'premium', or 'grandfathered')
@@ -25,9 +41,12 @@ function getLimitsForTier(tier) {
   const limits = {
     free: {
       grocery_items: 10,
-      saved_recipes: 5, // 5 total recipes per week (all sources: imported, uploaded, manual)
-      imported_recipes: 10, // DEPRECATED - keeping for backwards compatibility
-      uploaded_recipes: 10, // DEPRECATED - keeping for backwards compatibility
+      saved_recipes: 3, // 3 total recipes per week (all sources: imported, scanned, voice, manual)
+      // DEPRECATED - no longer written or enforced. Kept because
+      // subscriptionController serializes this whole object to clients, and
+      // already-installed builds would render `undefined` if the keys vanished.
+      imported_recipes: 10,
+      uploaded_recipes: 10,
       meal_logs: Infinity, // Unlimited - historical tracking shouldn't be limited
       owned_shopping_lists: Infinity, // Unlimited lists for free tier (just can't share)
       aggregated_shopping_lists: 1, // 1 aggregated list from meal plan per week
@@ -285,6 +304,9 @@ async function checkLimit(userId, feature) {
         } else {
           console.log('[UsageService] ✅ Usage counters reset successfully');
           current = 0; // Update current count after reset
+          // Clear stale cached denials for the user's other features too -
+          // their counters just went to zero as well.
+          invalidateUserCache(userId);
         }
       }
     }
@@ -484,6 +506,10 @@ async function syncUsageCounts(userId) {
     const joinedListsCount = memberListIds.filter(id => !ownedListIds.includes(id)).length;
 
     // Update or create usage_limits record
+    // NOTE: saved_recipes_count and aggregated_shopping_lists_count are
+    // deliberately omitted. They are weekly RATE counters, not stocks - the
+    // queries above count lifetime rows, so writing them here would instantly
+    // lock out every existing user.
     const updateData = {
       user_id: userId,
       grocery_items_count: groceryCount || 0,
@@ -532,6 +558,8 @@ async function resetUsage(userId) {
       .from('usage_limits')
       .update({
         grocery_items_count: 0,
+        saved_recipes_count: 0, // Weekly recipe counter
+        aggregated_shopping_lists_count: 0, // Weekly aggregated list counter
         imported_recipes_count: 0,
         uploaded_recipes_count: 0,
         meal_logs_count: 0,
@@ -546,6 +574,10 @@ async function resetUsage(userId) {
       console.error('[UsageService] Error resetting usage:', error);
       throw error;
     }
+
+    // Drop every cached limit check for this user so the reset takes effect
+    // immediately instead of after the 5 minute TTL expires.
+    invalidateUserCache(userId);
 
     console.log('[UsageService] Reset usage for user:', userId);
   } catch (error) {
@@ -562,4 +594,5 @@ module.exports = {
   decrementUsage,
   syncUsageCounts,
   resetUsage,
+  invalidateUserCache,
 };

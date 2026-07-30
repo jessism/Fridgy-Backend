@@ -18,7 +18,20 @@ try {
     '/usr/local/bin/ffmpeg',
   ].filter(Boolean);
   resolvedFfmpegPath = candidates.find(p => fsSync.existsSync(p)) || null;
-  // If none found, fluent-ffmpeg searches PATH for `ffmpeg` on its own
+  if (!resolvedFfmpegPath) {
+    // Railway nixpacks installs ffmpeg on PATH (not /usr/bin) — resolve it
+    try {
+      const { execSync } = require('child_process');
+      resolvedFfmpegPath = execSync('which ffmpeg', { encoding: 'utf8' }).trim() || null;
+    } catch (whichError) {
+      resolvedFfmpegPath = null;
+    }
+  }
+  // Last resort: bare 'ffmpeg' makes spawn do its own PATH lookup — and it
+  // must always be set per-command, otherwise the module-global
+  // /usr/bin/ffmpeg (set by videoProcessor/audioProcessor at load) wins
+  if (!resolvedFfmpegPath) resolvedFfmpegPath = 'ffmpeg';
+  console.log('[StepFrames] Using ffmpeg at:', resolvedFfmpegPath);
 } catch (error) {
   console.warn('[StepFrames] FFmpeg not available - step frame extraction disabled');
 }

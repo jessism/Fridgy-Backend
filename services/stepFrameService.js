@@ -3,12 +3,22 @@ const path = require('path');
 const os = require('os');
 const { getServiceClient } = require('../config/supabase');
 
-// Optional ffmpeg (same pattern as videoProcessor.js) — without it the
-// background pass silently no-ops and recipes stay text-only
+// Optional ffmpeg — without it the background pass silently no-ops and
+// recipes stay text-only. Resolve the binary from FFMPEG_PATH, well-known
+// locations (Railway nixpacks, Homebrew), or PATH as a last resort.
 let ffmpeg = null;
+let resolvedFfmpegPath = null;
 try {
   ffmpeg = require('fluent-ffmpeg');
-  ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH || '/usr/bin/ffmpeg');
+  const fsSync = require('fs');
+  const candidates = [
+    process.env.FFMPEG_PATH,
+    '/usr/bin/ffmpeg',
+    '/opt/homebrew/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+  ].filter(Boolean);
+  resolvedFfmpegPath = candidates.find(p => fsSync.existsSync(p)) || null;
+  // If none found, fluent-ffmpeg searches PATH for `ffmpeg` on its own
 } catch (error) {
   console.warn('[StepFrames] FFmpeg not available - step frame extraction disabled');
 }
@@ -63,7 +73,11 @@ async function annotateStepFramesInBackground({ recipeId, userId, steps, localVi
         const framePath = path.join(tempFrameDir, `f_${String(ts).replace('.', '_')}.jpg`);
         try {
           await new Promise((resolve, reject) => {
-            ffmpeg(localVideoPath)
+            const cmd = ffmpeg(localVideoPath);
+            // Per-command path: other services set the module-global ffmpeg
+            // path to /usr/bin/ffmpeg, which doesn't exist on dev machines
+            if (resolvedFfmpegPath) cmd.setFfmpegPath(resolvedFfmpegPath);
+            cmd
               .seekInput(ts)
               .frames(1)
               .outputOptions(['-vf', 'scale=480:-2', '-q:v', '5'])

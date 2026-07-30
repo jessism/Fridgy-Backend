@@ -667,6 +667,21 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
 
     console.log(`[AsyncImport] Job ${jobId}: ${sourceType} import completed in ${elapsed()} — saved as recipe ${savedRecipe.id}`);
 
+    // Attach video screenshots to steps in the background — fire-and-forget so
+    // the import completes at full speed. The service owns the temp mp4.
+    if (multiModalExtractor.tempVideoPath) {
+      const { annotateStepFramesInBackground } = require('../services/stepFrameService');
+      annotateStepFramesInBackground({
+        recipeId: savedRecipe.id,
+        userId,
+        steps: savedRecipe.analyzedInstructions?.[0]?.steps,
+        localVideoPath: multiModalExtractor.tempVideoPath,
+        videoDuration: multiModalExtractor.videoDurationForFrames,
+        callAI: multiModalExtractor.callAI.bind(multiModalExtractor),
+      }).catch(err => console.warn(`[StepFrames] Job ${jobId}: background pass error:`, err.message));
+      multiModalExtractor.tempVideoPath = null;
+    }
+
     // Imports save server-side, bypassing routes/savedRecipes.js — record the
     // streak action here too so imported recipes count toward streaks
     streakService.recordAction(userId, 'recipe_save').catch(err => {
@@ -716,6 +731,12 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
 
   } catch (error) {
     console.error(`[AsyncImport] Job ${jobId}: ${sourceType} import failed after ${elapsed()}:`, error.message);
+    // If extraction kept the mp4 for step frames but we failed before the
+    // background pass took ownership, delete it here
+    if (multiModalExtractor.tempVideoPath) {
+      require('fs').promises.unlink(multiModalExtractor.tempVideoPath).catch(() => {});
+      multiModalExtractor.tempVideoPath = null;
+    }
     await markImportJobFailed(jobId, userId, error.message);
   }
 }
@@ -731,7 +752,7 @@ async function extractTikTokRecipe(url, userId, multiModalExtractor, nutritionEx
     throw new Error(apifyData.error || 'Failed to extract TikTok content');
   }
 
-  const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+  const result = await multiModalExtractor.extractWithAllModalities(apifyData, { keepVideoForFrames: true });
   if (!result.success || !result.recipe) {
     throw new Error(result.error || 'Could not extract recipe from TikTok video');
   }
@@ -784,7 +805,7 @@ async function extractInstagramRecipe(url, userId, multiModalExtractor, nutritio
     throw new Error(apifyData.error || 'Failed to extract Instagram content');
   }
 
-  const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+  const result = await multiModalExtractor.extractWithAllModalities(apifyData, { keepVideoForFrames: true });
   if (!result.success || !result.recipe) {
     throw new Error(result.error || 'Could not extract recipe from Instagram post');
   }
@@ -836,7 +857,7 @@ async function extractYouTubeRecipe(url, userId, multiModalExtractor, nutritionE
     throw new Error(apifyData.error || 'Failed to extract YouTube content');
   }
 
-  const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+  const result = await multiModalExtractor.extractWithAllModalities(apifyData, { keepVideoForFrames: true });
   if (!result.success || !result.recipe) {
     throw new Error(result.error || 'Could not extract recipe from YouTube video');
   }
@@ -873,7 +894,7 @@ async function extractFacebookRecipe(url, userId, multiModalExtractor, nutrition
     throw new Error(apifyData.error || 'Failed to extract Facebook content');
   }
 
-  const result = await multiModalExtractor.extractWithAllModalities(apifyData);
+  const result = await multiModalExtractor.extractWithAllModalities(apifyData, { keepVideoForFrames: true });
   if (!result.success || !result.recipe) {
     throw new Error(result.error || 'Could not extract recipe from Facebook post');
   }

@@ -124,8 +124,15 @@ class MultiModalExtractor {
    * @param {object} apifyData - Instagram post data from Apify
    * @returns {object} - Unified extraction result
    */
-  async extractWithAllModalities(apifyData) {
+  async extractWithAllModalities(apifyData, options = {}) {
+    const { keepVideoForFrames = false } = options;
     const startTime = Date.now();
+
+    // Downloaded mp4 lifecycle: tracked on the instance (instances are created
+    // per import job). By default this method deletes the file before
+    // returning; with keepVideoForFrames the caller takes ownership via
+    // result.tempVideoPath (used for the background step-frame pass).
+    this.tempVideoPath = null;
 
     console.log('[MultiModal] Starting unified extraction:', {
       hasCaption: !!apifyData.caption,
@@ -164,9 +171,10 @@ class MultiModalExtractor {
         console.log('[MultiModal] Video duration:', apifyData.videoDuration);
 
         const videoPath = await this.downloadVideoToTemp(apifyData.videoUrl);
+        this.tempVideoPath = videoPath;
         const result = await this.extractRecipeFromAudioVisual(videoPath, apifyData);
         result.processingTime = Date.now() - startTime;
-        return result;
+        return await this.finalizeVideoForFrames(result, apifyData, keepVideoForFrames);
       }
 
       // PRIMARY PATH: Use Google Gemini for direct video analysis if available
@@ -181,7 +189,7 @@ class MultiModalExtractor {
           if (result.success) {
             result.extractionMethod = 'gemini-video';
             result.processingTime = Date.now() - startTime;
-            return result;
+            return await this.finalizeVideoForFrames(result, apifyData, keepVideoForFrames);
           }
         } catch (geminiError) {
           console.error('[MultiModal] Gemini video analysis failed, falling back:', geminiError.message);
@@ -245,7 +253,7 @@ class MultiModalExtractor {
         sourcesUsed: result.sourcesUsed
       });
 
-      return result;
+      return await this.finalizeVideoForFrames(result, apifyData, keepVideoForFrames);
 
     } catch (error) {
       console.error('[MultiModal] Extraction failed:', {
@@ -253,6 +261,11 @@ class MultiModalExtractor {
         stack: error.stack,
         name: error.name
       });
+      // Failed extraction never keeps the mp4 around
+      if (this.tempVideoPath) {
+        await fs.unlink(this.tempVideoPath).catch(() => {});
+        this.tempVideoPath = null;
+      }
       return {
         success: false,
         error: error.message,
@@ -261,6 +274,43 @@ class MultiModalExtractor {
         processingTime: Date.now() - startTime
       };
     }
+  }
+
+  /**
+   * Decide the downloaded mp4's fate on a successful extraction.
+   *
+   * keepVideoForFrames && success: hand ownership to the caller via
+   * result.tempVideoPath (downloading now if no path analyzed the video yet
+   * and the CDN URL is still fresh — TikTok URLs expire ~3 min after scrape).
+   * Otherwise: delete the file here, preserving pre-existing behavior for
+   * callers that never opted in (platform routes, shortcuts, DM bots).
+   */
+  async finalizeVideoForFrames(result, apifyData, keepVideoForFrames) {
+    if (keepVideoForFrames && result?.success) {
+      const urlExpired = apifyData.videoUrlExpiry && Date.now() > apifyData.videoUrlExpiry;
+      if (!this.tempVideoPath && apifyData.videoUrl && !urlExpired) {
+        try {
+          this.tempVideoPath = await this.downloadVideoToTemp(apifyData.videoUrl);
+          console.log('[MultiModal] Downloaded video for step frames (extraction did not need it)');
+        } catch (downloadError) {
+          console.log('[MultiModal] Step-frame video download failed (recipe stays text-only):', downloadError.message);
+        }
+      }
+      if (this.tempVideoPath) {
+        result.tempVideoPath = this.tempVideoPath;
+        result.videoDuration = apifyData.videoDuration || null;
+        // Also on the instance: the async-import helpers flatten the result,
+        // so the route reads these off its per-job extractor instance
+        this.videoDurationForFrames = apifyData.videoDuration || null;
+      }
+      return result;
+    }
+
+    if (this.tempVideoPath) {
+      await fs.unlink(this.tempVideoPath).catch(() => {});
+      this.tempVideoPath = null;
+    }
+    return result;
   }
 
   /**
@@ -910,6 +960,7 @@ Return this JSON:
       // Download video to temp file
       console.log('[MultiModal] Step 3: Downloading video from:', apifyData.videoUrl?.substring(0, 100) + '...');
       videoPath = await this.downloadVideoToTemp(apifyData.videoUrl);
+      this.tempVideoPath = videoPath;
       console.log('[MultiModal] Step 3: Video downloaded to:', videoPath);
 
       // Get file stats
@@ -962,13 +1013,8 @@ Return this JSON:
       recipe.image = selectedImageUrl;
       console.log('[MultiModal] Step 10: Selected image URL:', selectedImageUrl?.substring(0, 100) + '...');
 
-      // Clean up temp file
-      try {
-        await fs.unlink(videoPath);
-        console.log('[MultiModal] Step 11: Temp file cleaned up');
-      } catch (cleanupError) {
-        console.warn('[MultiModal] Failed to clean up temp file:', cleanupError.message);
-      }
+      // Temp file cleanup is owned by extractWithAllModalities
+      // (finalizeVideoForFrames), which may keep it for the step-frame pass
 
       // Determine extraction mode for logging
       const captionIsMinimal = !apifyData.caption || apifyData.caption.length < 200;
@@ -1023,7 +1069,6 @@ Return this JSON:
         // OPTION 1: Text-based fallback (if caption has recipe content)
         if (apifyData.transcript || apifyData.caption?.length > 100) {
           console.log('[MultiModal] Using text-based fallback');
-          await fs.unlink(videoPath).catch(e => {});
           return await this.synthesizeWithOpenRouter({
             caption: apifyData.caption || '',
             images: apifyData.images || [],
@@ -1042,14 +1087,13 @@ Return this JSON:
             { maxFrames: 10, smartSampling: true }
           );
           const result = await this.extractRecipeFromKeyframesOnly(videoPath, apifyData, framesData, modelOverride);
-          await fs.unlink(videoPath).catch(e => {});
           if (result.success) return result;
         } catch (frameError) {
           console.error('[MultiModal] Keyframe extraction failed:', frameError.message);
         }
 
         // OPTION 3: All fallbacks exhausted
-        await fs.unlink(videoPath).catch(e => {});
+        // (mp4 cleanup owned by extractWithAllModalities)
         return {
           success: false,
           error: 'Could not extract recipe from this video. Please try a video with a more detailed caption.',

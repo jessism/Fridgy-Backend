@@ -9,7 +9,7 @@ let ffmpegPath = null;
 
 try {
   ffmpeg = require('fluent-ffmpeg');
-  ffmpegPath = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
+  ffmpegPath = require('./ffmpegResolver').ffmpegPath;
   ffmpeg.setFfmpegPath(ffmpegPath);
   console.log('[VideoProcessor] FFmpeg loaded successfully');
 } catch (error) {

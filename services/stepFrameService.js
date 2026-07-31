@@ -4,34 +4,13 @@ const os = require('os');
 const { getServiceClient } = require('../config/supabase');
 
 // Optional ffmpeg — without it the background pass silently no-ops and
-// recipes stay text-only. Resolve the binary from FFMPEG_PATH, well-known
-// locations (Railway nixpacks, Homebrew), or PATH as a last resort.
+// recipes stay text-only. Binary location comes from the shared resolver;
+// applied per-command so the module-global path can never override it.
 let ffmpeg = null;
 let resolvedFfmpegPath = null;
 try {
   ffmpeg = require('fluent-ffmpeg');
-  const fsSync = require('fs');
-  const candidates = [
-    process.env.FFMPEG_PATH,
-    '/usr/bin/ffmpeg',
-    '/opt/homebrew/bin/ffmpeg',
-    '/usr/local/bin/ffmpeg',
-  ].filter(Boolean);
-  resolvedFfmpegPath = candidates.find(p => fsSync.existsSync(p)) || null;
-  if (!resolvedFfmpegPath) {
-    // Railway nixpacks installs ffmpeg on PATH (not /usr/bin) — resolve it
-    try {
-      const { execSync } = require('child_process');
-      resolvedFfmpegPath = execSync('which ffmpeg', { encoding: 'utf8' }).trim() || null;
-    } catch (whichError) {
-      resolvedFfmpegPath = null;
-    }
-  }
-  // Last resort: bare 'ffmpeg' makes spawn do its own PATH lookup — and it
-  // must always be set per-command, otherwise the module-global
-  // /usr/bin/ffmpeg (set by videoProcessor/audioProcessor at load) wins
-  if (!resolvedFfmpegPath) resolvedFfmpegPath = 'ffmpeg';
-  console.log('[StepFrames] Using ffmpeg at:', resolvedFfmpegPath);
+  resolvedFfmpegPath = require('./ffmpegResolver').ffmpegPath;
 } catch (error) {
   console.warn('[StepFrames] FFmpeg not available - step frame extraction disabled');
 }

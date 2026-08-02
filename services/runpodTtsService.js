@@ -23,12 +23,12 @@ const VOICES_DIR = path.join(__dirname, '../assets/voices');
 
 const VOICE_META = {
   marigold: {
-    name: 'Marigold',
+    name: 'Rosie',
     gender: 'female',
     description: 'Warm mellow alto, mid-30s — patient cooking-teacher energy',
   },
   clementine: {
-    name: 'Clementine',
+    name: 'Sunny',
     gender: 'female',
     description: 'Bright, light, gently cheerful, mid-20s — crisp and encouraging',
   },

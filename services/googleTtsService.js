@@ -10,7 +10,7 @@ const DAILY_CHAR_CAP = parseInt(process.env.GOOGLE_TTS_DAILY_CHAR_CAP || '30000'
 const TTS_API_URL = 'https://texttospeech.googleapis.com/v1/text:synthesize';
 
 const PREVIEW_LINE =
-  "Hi, I'm Fern. First, bring a large pot of salted water to a boil, and let's make something delicious.";
+  "Hi, I'm Nova. First, bring a large pot of salted water to a boil, and let's make something delicious.";
 
 // In-memory accounting - fine for the single Railway instance
 let dailyCharCount = 0;

@@ -9,9 +9,9 @@ const googleTts = require('../services/googleTtsService');
 const GOOGLE_VOICES = {
   fern: {
     id: 'fern',
-    name: 'Fern',
+    name: 'Nova',
     gender: 'female',
-    description: 'Clear and natural — works instantly',
+    description: 'Crisp and clear, ready in a snap',
   },
 };
 

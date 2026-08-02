@@ -39,6 +39,7 @@ const instagramDMRoutes = require('./routes/instagramDM');
 const ttsRoutes = require('./routes/tts');
 const aiChefRoutes = require('./routes/aiChef');
 const streakRoutes = require('./routes/streaks');
+const voiceTtsRoutes = require('./routes/voiceTts');
 // const blogRoutes = require('./routes/blogRoutes');
 
 const app = express();
@@ -131,6 +132,7 @@ app.use('/api/instagram-dm', instagramDMRoutes);
 app.use('/api/tts', ttsRoutes);
 app.use('/api/ai-chef', aiChefRoutes);
 app.use('/api/streaks', streakRoutes);
+app.use('/api/voice-tts', voiceTtsRoutes);
 // app.use('/api/blog', blogRoutes);
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)

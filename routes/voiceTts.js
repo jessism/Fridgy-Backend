@@ -4,6 +4,7 @@ const authMiddleware = require('../middleware/auth');
 const { voiceTtsSpeakLimiter, voiceTtsPrewarmLimiter } = require('../middleware/rateLimiter');
 const runpodTts = require('../services/runpodTtsService');
 const googleTts = require('../services/googleTtsService');
+const voiceAccess = require('../services/voiceAccessService');
 
 // Google-backed voices - warm managed API, no prewarm, MP3 output
 const GOOGLE_VOICES = {
@@ -49,6 +50,9 @@ router.post('/speak', authMiddleware.authenticateToken, voiceTtsSpeakLimiter, as
   req.on('close', () => controller.abort());
 
   try {
+    // All named voices are premium; free users get a one-time trial window
+    await voiceAccess.ensurePremiumVoiceAccess(req.user.id, requestId);
+
     if (isGoogleVoice(voiceId)) {
       const mp3 = await googleTts.synthesize({ text: text.trim(), requestId });
       return res.json({ success: true, audioBase64: mp3.toString('base64'), format: 'mp3' });
@@ -84,10 +88,14 @@ router.post('/prewarm', authMiddleware.authenticateToken, voiceTtsPrewarmLimiter
   res.json({ success: true, ...result });
 });
 
-router.get('/voices', authMiddleware.authenticateToken, (req, res) => {
+router.get('/voices', authMiddleware.authenticateToken, async (req, res) => {
+  const access = await voiceAccess
+    .getAccess(req.user.id)
+    .catch(() => ({ isPremium: false, trialAvailable: false, trialActive: false, trialUsed: true, trialActiveUntil: null }));
   res.json({
     success: true,
     voices: [...Object.values(GOOGLE_VOICES), ...runpodTts.listVoices()],
+    access,
   });
 });
 

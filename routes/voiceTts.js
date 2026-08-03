@@ -78,10 +78,17 @@ router.post('/speak', authMiddleware.authenticateToken, voiceTtsSpeakLimiter, as
   }
 });
 
-router.post('/prewarm', authMiddleware.authenticateToken, voiceTtsPrewarmLimiter, (req, res) => {
+router.post('/prewarm', authMiddleware.authenticateToken, voiceTtsPrewarmLimiter, async (req, res) => {
   // Google voices are always warm - never burn a RunPod job for them
   if (isGoogleVoice(req.body?.voiceId)) {
     return res.json({ success: true, warmed: true, reason: 'always-warm' });
+  }
+  // Only users who could actually speak with a GPU voice may warm it.
+  // getAccess (not ensurePremiumVoiceAccess) on purpose: prewarm must
+  // never start a user's one-time trial.
+  const access = await voiceAccess.getAccess(req.user.id).catch(() => null);
+  if (!access || (!access.isPremium && !access.trialActive)) {
+    return res.json({ success: true, warmed: false, reason: 'not-entitled' });
   }
   const requestId = Math.random().toString(36).substring(7);
   const result = runpodTts.prewarm(requestId);

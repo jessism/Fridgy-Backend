@@ -4,10 +4,10 @@ const { TtsError } = require('./runpodTtsService');
 
 // Who may use the premium cooking voices:
 // - premium subscribers, always
-// - free users, once: a 2-hour trial window starting the first time they
+// - free users, once: a 1-hour trial window starting the first time they
 //   request premium-voice audio (tracked in users.voice_trial_started_at,
 //   so it survives reinstalls)
-const TRIAL_DURATION_MS = 2 * 60 * 60 * 1000;
+const TRIAL_DURATION_MS = 1 * 60 * 60 * 1000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 // userId -> { at, isPremium, trialStartedAt } - sentence pipelining is

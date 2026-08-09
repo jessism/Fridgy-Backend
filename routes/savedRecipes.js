@@ -292,6 +292,10 @@ router.put('/:id', authMiddleware.authenticateToken, async (req, res) => {
     // Mark as user edited
     updates.user_edited = true;
     updates.updated_at = new Date().toISOString();
+    // Server-side stamp so the notes card can show when the note was written
+    if (updates.user_notes !== undefined) {
+      updates.user_notes_updated_at = updates.updated_at;
+    }
 
     const { data, error } = await supabase
       .from('saved_recipes')
@@ -349,6 +353,10 @@ router.patch('/:id', authMiddleware.authenticateToken, async (req, res) => {
 
     // Only set updated_at (don't mark as user_edited for simple toggles like favorite)
     updates.updated_at = new Date().toISOString();
+    // Server-side stamp so the notes card can show when the note was written
+    if (updates.user_notes !== undefined) {
+      updates.user_notes_updated_at = updates.updated_at;
+    }
 
     // If no valid fields provided, return error
     if (Object.keys(updates).length === 1) { // Only updated_at

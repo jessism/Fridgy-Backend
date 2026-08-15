@@ -40,6 +40,7 @@ const ttsRoutes = require('./routes/tts');
 const aiChefRoutes = require('./routes/aiChef');
 const streakRoutes = require('./routes/streaks');
 const voiceTtsRoutes = require('./routes/voiceTts');
+const appVersionRoutes = require('./routes/appVersion');
 // const blogRoutes = require('./routes/blogRoutes');
 
 const app = express();
@@ -133,6 +134,7 @@ app.use('/api/tts', ttsRoutes);
 app.use('/api/ai-chef', aiChefRoutes);
 app.use('/api/streaks', streakRoutes);
 app.use('/api/voice-tts', voiceTtsRoutes);
+app.use('/api/app-version', appVersionRoutes); // public — mobile version gate, must work logged out
 // app.use('/api/blog', blogRoutes);
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)

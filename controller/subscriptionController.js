@@ -35,16 +35,39 @@ async function getStatus(req, res) {
       revenueCatService.checkRevenueCatSubscription(userEmail), // Use email, matches mobile
     ]);
 
-    // Get usage stats
-    const usage = await usageService.getUserUsage(userId);
-
     // Determine if user has premium from either source
     const hasStripeActive = stripeSubscription &&
       (stripeSubscription.status === 'active' || stripeSubscription.status === 'trialing');
     const hasRevenueCatActive = revenueCatSubscription?.active || false;
 
     // CRITICAL: Check database tier (source of truth - updated by webhooks)
-    const hasDatabasePremium = user && (user.tier === 'premium' || user.tier === 'grandfathered');
+    let hasDatabasePremium = user && (user.tier === 'premium' || user.tier === 'grandfathered');
+
+    // SELF-HEAL: Apple IAP purchases made on the onboarding upsell happen before the
+    // account exists, so their INITIAL_PURCHASE webhook carries an anonymous
+    // app_user_id and can't update users.tier. This is the first authenticated
+    // request that can see the entitlement by email — sync the tier here.
+    // Upgrade-only: downgrades stay with the EXPIRATION webhook, since Stripe and
+    // grandfathered users pass through here too.
+    if (hasRevenueCatActive && !hasDatabasePremium && user) {
+      console.warn(`[SubscriptionController] TIER MISMATCH for ${userEmail}: active RevenueCat entitlement but users.tier='${user.tier}' — syncing to premium`);
+      const { error: healError } = await supabase
+        .from('users')
+        .update({ tier: 'premium' })
+        .eq('id', userId);
+
+      if (healError) {
+        console.error('[SubscriptionController] Failed to sync tier from RevenueCat:', healError);
+      } else {
+        user.tier = 'premium';
+        hasDatabasePremium = true;
+        usageService.invalidateUserCache(userId);
+        console.log(`[SubscriptionController] ✅ Synced ${userEmail} to premium from RevenueCat`);
+      }
+    }
+
+    // Get usage stats (after the self-heal so limits reflect the corrected tier)
+    const usage = await usageService.getUserUsage(userId);
 
     const isPremium = hasStripeActive || hasRevenueCatActive || hasDatabasePremium;
     const subscriptionSource = hasStripeActive ? 'stripe' :
@@ -119,7 +142,11 @@ async function getStatus(req, res) {
     }
 
     // Construct unified response - use database tier as source of truth
-    const tier = user?.tier || (isPremium ? 'premium' : 'free');
+    // 'free' is a truthy string, so a plain `||` would never fall through to the
+    // live-source result. Treat 'free' as unset when another source says premium.
+    const tier = (user?.tier && user.tier !== 'free')
+      ? user.tier
+      : (isPremium ? 'premium' : 'free');
 
     res.json({
       success: true,

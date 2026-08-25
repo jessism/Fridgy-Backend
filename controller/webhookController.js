@@ -116,12 +116,44 @@ async function handleRevenueCatWebhook(req, res) {
   const rawAppUserId = event.event.app_user_id || '';
   const appUserId = rawAppUserId.toLowerCase().trim();
 
-  // Validate email format
-  if (!appUserId || !appUserId.includes('@')) {
-    console.error('[WebhookController] Invalid app_user_id:', rawAppUserId);
+  if (!appUserId) {
+    console.error('[WebhookController] Missing app_user_id');
     return res.status(400).json({
       error: 'Invalid payload',
-      message: 'app_user_id must be a valid email'
+      message: 'app_user_id is required'
+    });
+  }
+
+  // Purchases made on the onboarding upsell happen BEFORE the account exists, so
+  // they arrive as app_user_id = "$RCAnonymousID:..." with no email in `aliases`.
+  // There is no user to update here; users.tier is synced instead by the self-heal
+  // in subscriptionController.getStatus on the user's first authenticated request.
+  // Store the event for auditing and return 200 so RevenueCat stops retrying.
+  if (!appUserId.includes('@')) {
+    console.warn('[WebhookController] Anonymous app_user_id — storing without processing:', rawAppUserId);
+    try {
+      const { getServiceClient } = require('../config/supabase');
+      const supabase = getServiceClient();
+      await supabase
+        .from('revenuecat_webhook_events')
+        .upsert({
+          event_id: eventId,
+          event_type: eventType,
+          app_user_id: rawAppUserId,
+          product_id: productId,
+          payload: event,
+          processed: false,
+          error_message: 'anonymous_app_user_id',
+          processing_attempts: 1
+        }, { onConflict: 'event_id', ignoreDuplicates: true });
+    } catch (logError) {
+      console.error('[WebhookController] Failed to store anonymous event:', logError);
+    }
+    return res.json({
+      received: true,
+      event_id: eventId,
+      event_type: eventType,
+      status: 'anonymous_app_user_id'
     });
   }
 
@@ -214,8 +246,21 @@ async function handleRevenueCatWebhook(req, res) {
         break;
 
       case 'CANCELLATION':
+      case 'BILLING_ISSUE': {
+        // CANCELLATION = auto-renew turned off (or a refund); BILLING_ISSUE = Apple
+        // grace period. Access continues until expiration_at_ms in both cases, and
+        // RevenueCat sends EXPIRATION when it actually ends. Only downgrade now if
+        // the expiry is already in the past (refunds move it to the refund time).
+        const expirationMs = event.event.expiration_at_ms;
+        if (!expirationMs || expirationMs > Date.now()) {
+          console.log(`[WebhookController] ${eventType} for ${appUserId} — access continues until ${expirationMs ? new Date(expirationMs).toISOString() : 'unknown'}, keeping tier`);
+          processingResult = { status: 'cancel_pending_expiry' };
+          break;
+        }
+        console.log(`[WebhookController] ${eventType} for ${appUserId} with past expiry — treating as expiration`);
+      }
+      // falls through
       case 'EXPIRATION':
-      case 'BILLING_ISSUE':
         // User may lose premium access - check conflicts first
         console.log(`[WebhookController] Processing downgrade for ${appUserId}`);
 

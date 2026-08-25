@@ -75,7 +75,12 @@ async function getUserSubscription(userId) {
     // Return subscription data
     return {
       ...subscription,
-      tier: subscription.tier || userData.tier || 'free',
+      // A Stripe row can exist with tier='free' (getOrCreateCustomer inserts one
+      // without a tier when checkout opens). Don't let it override a premium
+      // users.tier set by the RevenueCat webhook / self-heal.
+      tier: (subscription.tier && subscription.tier !== 'free')
+        ? subscription.tier
+        : (userData.tier || 'free'),
       is_grandfathered: userData.is_grandfathered || false,
     };
   } catch (error) {

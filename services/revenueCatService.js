@@ -40,10 +40,12 @@ async function checkRevenueCatSubscription(userId) {
     const url = `${REVENUECAT_API_BASE}/subscribers/${encodeURIComponent(userId)}`;
 
     const response = await fetch(url, {
+      // NOTE: no X-Platform header. RevenueCat treats it as a client-app request and
+      // rejects secret keys with 403 code 7243 ("Secret API keys should not be used
+      // in your app"), which made this lookup return null for every user.
       headers: {
         'Authorization': `Bearer ${REVENUECAT_SECRET_KEY}`,
         'Content-Type': 'application/json',
-        'X-Platform': 'ios',
       },
     });
 

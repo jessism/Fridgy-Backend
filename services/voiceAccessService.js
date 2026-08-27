@@ -87,7 +87,7 @@ async function ensurePremiumVoiceAccess(userId, requestId) {
       console.warn(`[VoiceAccess:${requestId}] Failed to start trial:`, error.message);
       throw new TtsError('PREMIUM_REQUIRED', 'Premium voices require a subscription', 403);
     }
-    cache.delete(userId);
+    invalidate(userId);
     console.log(`[VoiceAccess:${requestId}] Voice trial started for user ${userId}`);
     return;
   }
@@ -98,7 +98,13 @@ async function ensurePremiumVoiceAccess(userId, requestId) {
   throw new TtsError('PREMIUM_REQUIRED', 'Premium voices require a subscription', 403);
 }
 
+/** Forget a user's cached access, e.g. after users.tier changes. */
+function invalidate(userId) {
+  cache.delete(userId);
+}
+
 module.exports = {
   getAccess,
   ensurePremiumVoiceAccess,
+  invalidate,
 };

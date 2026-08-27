@@ -5,6 +5,7 @@
 
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const webhookService = require('../services/webhookService');
+const tierSyncService = require('../services/tierSyncService');
 
 /**
  * Handle Stripe webhook events
@@ -79,6 +80,16 @@ function healthCheck(req, res) {
  * Updates users.tier based on subscription events from App Store purchases
  * Includes idempotency, Stripe conflict detection, and comprehensive error handling
  */
+// RevenueCat ids are emails for signed-in users and "$RCAnonymousID:..." before signup
+function normalizeIds(ids) {
+  const list = Array.isArray(ids) ? ids : [];
+  return [...new Set(list.map(v => String(v || '').trim().toLowerCase()).filter(Boolean))];
+}
+
+function isEmailId(id) {
+  return id.includes('@') && !id.startsWith('$rcanonymousid:');
+}
+
 async function handleRevenueCatWebhook(req, res) {
   // ============================================
   // STEP 1: VERIFY WEBHOOK SIGNATURE
@@ -116,7 +127,16 @@ async function handleRevenueCatWebhook(req, res) {
   const rawAppUserId = event.event.app_user_id || '';
   const appUserId = rawAppUserId.toLowerCase().trim();
 
-  if (!appUserId) {
+  // TRANSFER has no app_user_id by design: RevenueCat moves a store subscription
+  // between customers when the same Apple ID restores on another account, and the
+  // payload carries transferred_from / transferred_to instead.
+  const isTransfer = eventType === 'TRANSFER';
+  const transferredFrom = isTransfer ? normalizeIds(event.event.transferred_from) : [];
+  const transferredTo = isTransfer ? normalizeIds(event.event.transferred_to) : [];
+  // Store the row under the destination, which is who RevenueCat sends it for
+  const eventAppUserId = isTransfer ? (transferredTo.find(isEmailId) || null) : appUserId;
+
+  if (!appUserId && !isTransfer) {
     console.error('[WebhookController] Missing app_user_id');
     return res.status(400).json({
       error: 'Invalid payload',
@@ -129,7 +149,7 @@ async function handleRevenueCatWebhook(req, res) {
   // There is no user to update here; users.tier is synced instead by the self-heal
   // in subscriptionController.getStatus on the user's first authenticated request.
   // Store the event for auditing and return 200 so RevenueCat stops retrying.
-  if (!appUserId.includes('@')) {
+  if (!isTransfer && !appUserId.includes('@')) {
     console.warn('[WebhookController] Anonymous app_user_id — storing without processing:', rawAppUserId);
     try {
       const { getServiceClient } = require('../config/supabase');
@@ -159,7 +179,7 @@ async function handleRevenueCatWebhook(req, res) {
 
   console.log('[WebhookController] RevenueCat event received:', {
     type: eventType,
-    user: appUserId,
+    user: isTransfer ? `${transferredFrom.join(',')} -> ${transferredTo.join(',')}` : appUserId,
     product: productId,
     id: eventId
   });
@@ -199,7 +219,7 @@ async function handleRevenueCatWebhook(req, res) {
         .insert({
           event_id: eventId,
           event_type: eventType,
-          app_user_id: appUserId,
+          app_user_id: eventAppUserId,
           product_id: productId,
           payload: event,
           processed: false,
@@ -240,6 +260,7 @@ async function handleRevenueCatWebhook(req, res) {
           console.warn(`[WebhookController] User not found: ${appUserId}`);
           processingResult = { status: 'user_not_found' };
         } else {
+          upgradedUser.forEach(u => tierSyncService.invalidateTierCaches(u.id));
           console.log(`[WebhookController] ✅ User ${appUserId} upgraded to premium`);
           processingResult = { status: 'upgraded' };
         }
@@ -260,61 +281,15 @@ async function handleRevenueCatWebhook(req, res) {
         console.log(`[WebhookController] ${eventType} for ${appUserId} with past expiry — treating as expiration`);
       }
       // falls through
-      case 'EXPIRATION':
-        // User may lose premium access - check conflicts first
-        console.log(`[WebhookController] Processing downgrade for ${appUserId}`);
-
-        // Get user data
-        const { data: userData, error: userError } = await supabase
-          .from('users')
-          .select('id, is_grandfathered')
-          .eq('email', appUserId)
-          .single();
-
-        if (userError || !userData) {
-          console.warn(`[WebhookController] User not found for downgrade: ${appUserId}`);
-          processingResult = { status: 'user_not_found' };
-          break;
-        }
-
-        // CRITICAL: Check if user is grandfathered
-        if (userData.is_grandfathered) {
-          console.log(`[WebhookController] User ${appUserId} is grandfathered - keeping premium`);
-          processingResult = { status: 'grandfathered_skip' };
-          break;
-        }
-
-        // CRITICAL: Check if user has active Stripe subscription
-        const { data: stripeSub, error: stripeError } = await supabase
-          .from('subscriptions')
-          .select('status')
-          .eq('user_id', userData.id)
-          .single();
-
-        if (!stripeError && stripeSub && (stripeSub.status === 'active' || stripeSub.status === 'trialing')) {
-          console.log(`[WebhookController] User ${appUserId} has active Stripe subscription - keeping premium`);
-          processingResult = { status: 'stripe_active_skip' };
-          break;
-        }
-
-        // Safe to downgrade - no conflicts
-        const { data: downgradedUser, error: downgradeError } = await supabase
-          .from('users')
-          .update({ tier: 'free' })
-          .eq('email', appUserId)
-          .select('id, email, tier');
-
-        if (downgradeError) {
-          console.error('[WebhookController] Error downgrading user:', downgradeError);
-          processingResult = { status: 'error', error: downgradeError.message };
-        } else if (!downgradedUser || downgradedUser.length === 0) {
-          console.warn(`[WebhookController] User not found for downgrade: ${appUserId}`);
-          processingResult = { status: 'user_not_found' };
-        } else {
-          console.log(`[WebhookController] ✅ User ${appUserId} downgraded to free`);
-          processingResult = { status: 'downgraded' };
-        }
+      case 'EXPIRATION': {
+        // User may lose premium access - the helper skips grandfathered / active-Stripe users
+        console.log(`[WebhookController] Processing downgrade for ${appUserId} (${eventType})`);
+        const result = await tierSyncService.downgradeUserIfEligible(appUserId, { reason: eventType });
+        processingResult = result.status === 'error'
+          ? { status: 'error', error: result.error }
+          : { status: result.status };
         break;
+      }
 
       case 'PRODUCT_CHANGE':
         // User switched products (e.g., monthly to annual) - keep premium
@@ -322,11 +297,48 @@ async function handleRevenueCatWebhook(req, res) {
         processingResult = { status: 'product_change_ignored' };
         break;
 
-      case 'TRANSFER':
-        // Subscription transferred between users - handle if needed in future
-        console.log(`[WebhookController] Transfer event for ${appUserId}`);
-        processingResult = { status: 'transfer_ignored' };
+      case 'TRANSFER': {
+        // The source accounts lose the entitlement - RevenueCat revokes it on transfer
+        // and sends all later events (RENEWAL, EXPIRATION) to the destination only.
+        // The destination is NOT upgraded here: TRANSFER carries no expiry, so a
+        // restore of an already-expired subscription would create a stale premium.
+        // Their own RENEWAL and the self-heal in subscriptionController.getStatus
+        // (which verifies with RevenueCat) cover the legitimate case.
+        const toEmails = transferredTo.filter(isEmailId);
+        const fromEmails = transferredFrom.filter(isEmailId).filter(e => !toEmails.includes(e));
+        const fromAnonymous = transferredFrom.filter(id => !isEmailId(id));
+
+        if (fromAnonymous.length) {
+          console.warn('[WebhookController] TRANSFER: unresolvable source ids skipped:', fromAnonymous);
+        }
+        if (toEmails.length) {
+          console.log(`[WebhookController] TRANSFER: destination ${toEmails.join(',')} not upgraded here; self-heal/RENEWAL will sync`);
+        }
+
+        const results = [];
+        for (const email of fromEmails) {
+          const r = await tierSyncService.downgradeUserIfEligible(email, { reason: 'TRANSFER' });
+          console.log(`[WebhookController] TRANSFER source ${email}: ${r.status}`);
+          results.push({ email, ...r });
+        }
+
+        const errors = results.filter(r => r.status === 'error');
+        let status;
+        if (!fromEmails.length) {
+          status = 'transfer_no_resolvable_source';
+        } else if (results.some(r => r.status === 'downgraded')) {
+          status = 'transfer_downgraded';
+        } else if (errors.length === results.length) {
+          status = 'error';
+        } else {
+          status = 'transfer_skipped'; // all grandfathered / Stripe-active / not found / already free
+        }
+        processingResult = { status };
+        if (errors.length) {
+          processingResult.error = errors.map(e => `${e.email}: ${e.error}`).join('; ');
+        }
         break;
+      }
 
       default:
         console.log(`[WebhookController] Unhandled event type: ${eventType}`);

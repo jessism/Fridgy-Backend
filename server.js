@@ -1575,6 +1575,7 @@ const trialReminderScheduler = require('./services/trialReminderScheduler');
 const accountDeletionScheduler = require('./services/accountDeletionScheduler');
 const streakScheduler = require('./services/streakScheduler');
 const importJobSweeper = require('./services/importJobSweeper');
+const iapReconcileScheduler = require('./services/iapReconcileScheduler');
 
 // Import PostHog for analytics
 const { getPostHogClient } = require('./config/posthog');
@@ -1603,6 +1604,7 @@ app.listen(PORT, () => {
   console.log(`   VAPID_PUBLIC_KEY: ${process.env.VAPID_PUBLIC_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   VAPID_PRIVATE_KEY: ${process.env.VAPID_PRIVATE_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   POSTHOG_API_KEY: ${process.env.POSTHOG_API_KEY ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   IAP_RECONCILE_MODE: ${process.env.IAP_RECONCILE_MODE || 'dry-run (default)'}`);
 
   // Initialize PostHog analytics
   console.log('\n📊 Initializing PostHog analytics...');
@@ -1622,6 +1624,11 @@ app.listen(PORT, () => {
   console.log('\n🗑️  Starting account deletion scheduler...');
   accountDeletionScheduler.startScheduler();
   console.log('🗑️  Account deletion scheduler is running (runs daily at 2:00 AM)');
+
+  // Start the IAP reconcile sweep (downgrades lapsed Apple subscribers the webhook missed)
+  console.log('\n🧾 Starting IAP reconcile scheduler...');
+  iapReconcileScheduler.startScheduler();
+  console.log(`🧾 IAP reconcile scheduler is running (daily at 3:15 AM, mode=${process.env.IAP_RECONCILE_MODE || 'dry-run'})`);
 
   // Start the streak scheduler (overnight processing, monthly freeze reset, streak notifications)
   console.log('\n🔥 Starting streak scheduler...');

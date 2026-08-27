@@ -146,8 +146,114 @@ async function hasActiveEntitlement(userId, entitlementId = 'premium') {
   return subscription?.active || false;
 }
 
+/**
+ * Raw subscriber fetch. One place for the HTTP call so callers can tell an API
+ * failure apart from "no subscription".
+ * @returns {Promise<{ok: boolean, httpStatus: number, subscriber?: Object, error?: string}>}
+ */
+async function fetchSubscriberRaw(appUserId) {
+  if (!REVENUECAT_SECRET_KEY) {
+    return { ok: false, httpStatus: 0, error: 'not_configured' };
+  }
+  try {
+    const response = await fetch(`${REVENUECAT_API_BASE}/subscribers/${encodeURIComponent(appUserId)}`, {
+      headers: {
+        'Authorization': `Bearer ${REVENUECAT_SECRET_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 10000,
+    });
+    if (response.status === 404) {
+      return { ok: false, httpStatus: 404 };
+    }
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      return { ok: false, httpStatus: response.status, error: body.slice(0, 300) };
+    }
+    // 200, or 201 when RevenueCat creates a subscriber it has never seen
+    const data = await response.json();
+    return { ok: true, httpStatus: response.status, subscriber: data.subscriber || {} };
+  } catch (error) {
+    return { ok: false, httpStatus: 0, error: error.message };
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isTransientFailure(raw) {
+  if (raw.error === 'not_configured') return false;
+  return raw.httpStatus === 0 || raw.httpStatus === 429 || raw.httpStatus >= 500;
+}
+
+/**
+ * Entitlement state that distinguishes "expired" from "the API call failed".
+ * Unlike checkRevenueCatSubscription this never collapses errors to null — a sweep
+ * that downgrades users must not act on an outage.
+ *
+ * @param {string} appUserId - email (matches the mobile app's app_user_id)
+ * @param {Object} [options]
+ * @param {string} [options.entitlementId='premium']
+ * @param {number} [options.retries=1] - retries for transient failures (429/5xx/network)
+ * @returns {Promise<{state: 'active'|'expired'|'none'|'error', httpStatus: number, expiresAt?: string, graceExpiresAt?: string, isSandbox?: boolean, productId?: string, billingIssue?: boolean, error?: string}>}
+ */
+async function getEntitlementState(appUserId, { entitlementId = 'premium', retries = 1 } = {}) {
+  let raw = await fetchSubscriberRaw(appUserId);
+  for (let attempt = 0; attempt < retries && !raw.ok && isTransientFailure(raw); attempt++) {
+    await sleep(2000);
+    raw = await fetchSubscriberRaw(appUserId);
+  }
+
+  if (raw.httpStatus === 404) return { state: 'none', httpStatus: 404 };
+  if (!raw.ok) return { state: 'error', httpStatus: raw.httpStatus, error: raw.error };
+
+  const subscriber = raw.subscriber;
+  const now = Date.now();
+  const parse = (d) => (d ? Date.parse(d) : null);
+  const entitlement = subscriber.entitlements?.[entitlementId];
+
+  if (!entitlement) {
+    // Defensive: a live store subscription with no entitlement mapping still counts as paid
+    const liveSub = Object.values(subscriber.subscriptions || {}).find((sub) => {
+      const expires = parse(sub.expires_date);
+      const grace = parse(sub.grace_period_expires_date);
+      return expires === null || expires > now || (grace !== null && grace > now);
+    });
+    if (liveSub) {
+      return {
+        state: 'active',
+        httpStatus: raw.httpStatus,
+        expiresAt: liveSub.expires_date,
+        isSandbox: !!liveSub.is_sandbox,
+        note: 'subscription_without_entitlement',
+      };
+    }
+    return { state: 'none', httpStatus: raw.httpStatus };
+  }
+
+  const productId = entitlement.product_identifier;
+  const sub = subscriber.subscriptions?.[productId] || {};
+  const expires = parse(entitlement.expires_date);
+  const grace = Math.max(
+    parse(entitlement.grace_period_expires_date) || 0,
+    parse(sub.grace_period_expires_date) || 0
+  ) || null;
+  // null expires_date = non-expiring entitlement
+  const effective = expires === null ? Infinity : Math.max(expires, grace || 0);
+
+  return {
+    state: effective > now ? 'active' : 'expired',
+    httpStatus: raw.httpStatus,
+    expiresAt: entitlement.expires_date,
+    graceExpiresAt: grace ? new Date(grace).toISOString() : undefined,
+    isSandbox: !!sub.is_sandbox,
+    productId,
+    billingIssue: !!sub.billing_issues_detected_at,
+  };
+}
+
 module.exports = {
   checkRevenueCatSubscription,
   getSubscriberInfo,
   hasActiveEntitlement,
+  getEntitlementState,
 };

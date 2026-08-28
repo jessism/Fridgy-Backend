@@ -719,10 +719,30 @@ class ApifyFacebookService {
       author: author.username
     });
 
+    // Recipe website link from caption entities — the posts scraper returns
+    // message.ranges with resolved ExternalUrl entities (already unwrapped
+    // from the l.facebook.com redirect). Used by the blog backfill when
+    // extraction comes back empty (PLAN_EXTRACTBLOG_AUG24).
+    let recipeUrl = null;
+    const messageRanges = (typeof data.message === 'object' && Array.isArray(data.message?.ranges))
+      ? data.message.ranges
+      : [];
+    for (const range of messageRanges) {
+      const entity = range?.entity;
+      if (entity?.__typename === 'ExternalUrl' && entity.external_url) {
+        recipeUrl = entity.external_url;
+        break;
+      }
+    }
+    if (recipeUrl) {
+      console.log('[ApifyFacebook] Found external URL in caption entities:', recipeUrl);
+    }
+
     return {
       success: true,
       caption: caption,
       images: images,
+      recipeUrl: recipeUrl,
       videoUrl: videoUrl,
       videoDuration: videoDuration,
       videoUrlExpiry: videoUrlExpiry,

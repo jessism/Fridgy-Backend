@@ -174,7 +174,7 @@ class MultiModalExtractor {
         this.tempVideoPath = videoPath;
         const result = await this.extractRecipeFromAudioVisual(videoPath, apifyData);
         result.processingTime = Date.now() - startTime;
-        return await this.finalizeVideoForFrames(result, apifyData, keepVideoForFrames);
+        return await this.finalizeVideoForFrames(await this.backfillFromRecipeUrl(result, apifyData), apifyData, keepVideoForFrames);
       }
 
       // PRIMARY PATH: Use Google Gemini for direct video analysis if available
@@ -189,7 +189,7 @@ class MultiModalExtractor {
           if (result.success) {
             result.extractionMethod = 'gemini-video';
             result.processingTime = Date.now() - startTime;
-            return await this.finalizeVideoForFrames(result, apifyData, keepVideoForFrames);
+            return await this.finalizeVideoForFrames(await this.backfillFromRecipeUrl(result, apifyData), apifyData, keepVideoForFrames);
           }
         } catch (geminiError) {
           console.error('[MultiModal] Gemini video analysis failed, falling back:', geminiError.message);
@@ -253,7 +253,7 @@ class MultiModalExtractor {
         sourcesUsed: result.sourcesUsed
       });
 
-      return await this.finalizeVideoForFrames(result, apifyData, keepVideoForFrames);
+      return await this.finalizeVideoForFrames(await this.backfillFromRecipeUrl(result, apifyData), apifyData, keepVideoForFrames);
 
     } catch (error) {
       console.error('[MultiModal] Extraction failed:', {
@@ -266,13 +266,25 @@ class MultiModalExtractor {
         await fs.unlink(this.tempVideoPath).catch(() => {});
         this.tempVideoPath = null;
       }
-      return {
+      const failureResult = {
         success: false,
         error: error.message,
         errorDetails: error.stack,
         extractionMethod: 'multi-modal',
         processingTime: Date.now() - startTime
       };
+      // Last-chance rescue: if the caption links a recipe website, try it even
+      // though extraction itself failed (PLAN_EXTRACTBLOG_AUG24)
+      try {
+        const rescued = await this.backfillFromRecipeUrl(failureResult, apifyData);
+        if (rescued && rescued.success) {
+          rescued.processingTime = Date.now() - startTime;
+          return rescued;
+        }
+      } catch (rescueError) {
+        // Never let the rescue mask the original failure
+      }
+      return failureResult;
     }
   }
 
@@ -2549,6 +2561,242 @@ Analyze the ${frameCount} keyframes to extract:
 
 Return recipe in standard JSON format with extendedIngredients and analyzedInstructions.
 Set confidence lower (0.60-0.80) since audio narration not available.`;
+  }
+
+  // ==========================================================================
+  // Blog-link backfill (PLAN_EXTRACTBLOG_AUG24)
+  // When extraction produces no ingredients/steps but the caption links a
+  // recipe website, follow the link (one hop max), gate on a title match,
+  // and backfill the missing pieces. Any failure returns the original result.
+  // ==========================================================================
+
+  getRecipeAI() {
+    if (!this._recipeAI) {
+      const RecipeAIExtractor = require('./recipeAIExtractor');
+      this._recipeAI = new RecipeAIExtractor();
+    }
+    return this._recipeAI;
+  }
+
+  /**
+   * Find a recipe-website URL for this post. Prefers the structured link Apify
+   * parsed out of the Facebook caption entities (apifyData.recipeUrl);
+   * otherwise scans the caption text. Returns a normalized https URL or null.
+   */
+  findRecipeUrl(apifyData) {
+    const candidates = [];
+    if (apifyData?.recipeUrl) candidates.push(String(apifyData.recipeUrl));
+
+    const caption = String(apifyData?.caption || '');
+    // http(s) URLs, www.-prefixed hosts, or bare domains on a short TLD
+    // allowlist. Deliberately NOT arbitrary x.y — captions with a missing
+    // space after a period ("so creamy.Definitely") must not match.
+    const urlPattern = /https?:\/\/[^\s"'<>()]+|www\.[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:\/[^\s"'<>()]*)?|\b[a-z0-9][a-z0-9-]{1,62}(?:\.[a-z0-9-]+)*\.(?:com|net|org|co|io|ca|us|uk|au|nz)\b(?:\/[^\s"'<>()]*)?/gi;
+    let match;
+    while ((match = urlPattern.exec(caption)) !== null) {
+      // Skip hashtags — "#steak.pasta" is not a link
+      if (match.index > 0 && caption[match.index - 1] === '#') continue;
+      candidates.push(match[0]);
+    }
+
+    for (let raw of candidates) {
+      // Strip trailing punctuation/emoji glued to the URL
+      raw = raw.replace(/(?:[.,!?;:)\]'"\u2026]|[^\x00-\x7F])+$/g, '');
+      if (!raw) continue;
+      if (!/^https?:\/\//i.test(raw)) raw = 'https://' + raw;
+      let parsed;
+      try { parsed = new URL(raw); } catch { continue; }
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') continue;
+      if (this.isBlockedRecipeHost(parsed.hostname.toLowerCase())) continue;
+      return parsed.href;
+    }
+    return null;
+  }
+
+  /**
+   * Hosts we never treat as recipe websites: social platforms (that's where
+   * the post came from), link aggregators, shorteners (skipped rather than
+   * resolved), and private/loopback targets (caption URLs are
+   * third-party-controlled).
+   */
+  isBlockedRecipeHost(host) {
+    const SKIP_HOSTS = [
+      'facebook.com', 'fb.watch', 'fb.com', 'instagram.com', 'threads.net',
+      'tiktok.com', 'youtube.com', 'youtu.be', 'twitter.com', 'x.com',
+      'linktr.ee', 'beacons.ai', 'linkin.bio', 'stan.store',
+      'bit.ly', 't.co', 'tinyurl.com', 'goo.gl', 'amzn.to', 'shorturl.at'
+    ];
+    if (SKIP_HOSTS.some(h => host === h || host.endsWith('.' + h))) return true;
+    if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.lan')) return true;
+    if (host.includes(':')) return true; // IPv6 literals — skip outright
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+      const [a, b] = host.split('.').map(Number);
+      if (a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) ||
+          (a === 192 && b === 168) || (a === 169 && b === 254)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Fuzzy title match: >= 60% of the social title's tokens (len >= 3) must
+   * prefix-match the candidate's tokens ("parm" matches "parmesan").
+   * Returns 0..1.
+   */
+  titleMatchScore(socialTitle, candidate) {
+    const norm = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9\s-]/g, ' ');
+    const tokens = norm(socialTitle).split(/[\s-]+/).filter(w => w.length >= 3);
+    if (!tokens.length) return 0;
+    const candTokens = norm(candidate).split(/[\s-]+/).filter(Boolean);
+    const hits = tokens.filter(t =>
+      candTokens.some(c => c.startsWith(t) || (c.length >= 4 && t.startsWith(c.substring(0, 4))))
+    );
+    return hits.length / tokens.length;
+  }
+
+  /**
+   * Title to match the website recipe against: the extracted title when we
+   * have one, else the caption's first line cut at the first char that isn't
+   * part of a plain dish name (emoji, parens, "- see below", etc.).
+   */
+  deriveSocialTitle(result, apifyData) {
+    const extracted = result?.recipe?.title;
+    if (extracted && extracted !== 'Untitled Recipe') return extracted;
+    const firstLine = String(apifyData?.caption || '').split('\n')[0] || '';
+    const m = firstLine.match(/^[A-Za-z0-9\s,'&-]+/);
+    return (m ? m[0] : firstLine).trim();
+  }
+
+  async fetchRecipePage(url) {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9'
+      },
+      timeout: 20000,
+      redirect: 'follow'
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${url}`);
+    return { html: await response.text(), finalUrl: response.url || url };
+  }
+
+  /**
+   * Resolve a caption URL to the actual recipe page. Creators usually link
+   * their blog HOMEPAGE, which has no Recipe JSON-LD — in that case scan the
+   * page's same-host links for the slug that best matches the post title.
+   * One hop maximum. Returns a URL or null (null => backfill bails; we never
+   * run AI extraction on an unmatched index page).
+   */
+  async resolveRecipePageUrl(url, socialTitle) {
+    const { html, finalUrl } = await this.fetchRecipePage(url);
+    const recipeAI = this.getRecipeAI();
+    const jsonld = recipeAI.extractJSONLD(html);
+    if (jsonld) {
+      // The landing page IS the recipe page — transform from the HTML we
+      // already have instead of fetching it a second time
+      return { url: finalUrl, recipe: recipeAI.transformJSONLDToSpoonacularFormat(jsonld, finalUrl) };
+    }
+
+    const cheerio = require('cheerio');
+    const $ = cheerio.load(html);
+    let base;
+    try { base = new URL(finalUrl); } catch { return null; }
+
+    let bestUrl = null;
+    let bestScore = 0;
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href');
+      let target;
+      try { target = new URL(href, base); } catch { return; }
+      if (target.host !== base.host) return;
+      const segments = target.pathname.split('/').filter(Boolean);
+      if (!segments.length) return;
+      const slug = segments[segments.length - 1];
+      if (slug.length < 8) return; // nav links ("about", "recipes") can't win
+      const score = this.titleMatchScore(socialTitle, slug);
+      if (score > bestScore) {
+        bestScore = score;
+        bestUrl = target.origin + target.pathname;
+      }
+    });
+
+    if (bestUrl && bestScore >= 0.6) {
+      console.log(`[MultiModal] Resolved recipe page (${Math.round(bestScore * 100)}% title match): ${bestUrl}`);
+      return { url: bestUrl, recipe: null };
+    }
+    console.log('[MultiModal] No recipe page resolved from landing page links');
+    return null;
+  }
+
+  /**
+   * If the extraction result has no ingredients or no steps and the caption
+   * links a recipe website, extract from the website and backfill. Fails
+   * soft: any error returns the original result unchanged.
+   */
+  async backfillFromRecipeUrl(result, apifyData) {
+    try {
+      const recipe = result?.recipe;
+      const hasIngredients = !!recipe?.extendedIngredients?.length;
+      const hasSteps = !!recipe?.analyzedInstructions?.[0]?.steps?.length;
+      if (hasIngredients && hasSteps) return result;
+
+      const url = this.findRecipeUrl(apifyData);
+      if (!url) return result;
+
+      const socialTitle = this.deriveSocialTitle(result, apifyData);
+      console.log(`[MultiModal] Extraction empty, trying recipe URL from caption: ${url} (title: "${socialTitle}")`);
+
+      const resolved = await this.resolveRecipePageUrl(url, socialTitle);
+      if (!resolved) return result;
+      const resolvedUrl = resolved.url;
+
+      const webRecipe = resolved.recipe
+        || await this.getRecipeAI().extractFromWebUrl(resolvedUrl, { skipWayback: true });
+      const webIngredients = webRecipe?.extendedIngredients?.length || 0;
+      const webSteps = webRecipe?.analyzedInstructions?.[0]?.steps?.length || 0;
+      if (!webIngredients || !webSteps) {
+        console.log('[MultiModal] Website extraction incomplete, keeping original result');
+        return result;
+      }
+
+      // Wrong-recipe gate: never merge a dish that doesn't match the post
+      const gateScore = this.titleMatchScore(socialTitle, webRecipe.title || '');
+      if (gateScore < 0.6) {
+        console.log(`[MultiModal] ❌ Title gate REJECTED website recipe "${webRecipe.title}" vs "${socialTitle}" (${Math.round(gateScore * 100)}% match)`);
+        return result;
+      }
+
+      console.log(`[MultiModal] ✅ Website backfill: "${webRecipe.title}" — ${webIngredients} ingredients, ${webSteps} steps (${Math.round(gateScore * 100)}% title match)`);
+
+      if (!recipe || result.success === false) {
+        // Total extraction failure — the website recipe becomes the result.
+        // image stays unset so the route keeps the social post's own photo.
+        return {
+          success: true,
+          recipe: { ...webRecipe, image: recipe?.image || null },
+          confidence: 0.85,
+          extractionMethod: `${result?.extractionMethod || 'failed'}+website`,
+          sourcesUsed: { ...(result?.sourcesUsed || {}), website: true },
+          websiteSource: resolvedUrl
+        };
+      }
+
+      // Partial result — fill only what the social extraction left empty
+      if (!hasIngredients) recipe.extendedIngredients = webRecipe.extendedIngredients;
+      if (!hasSteps) recipe.analyzedInstructions = webRecipe.analyzedInstructions;
+      if (!recipe.readyInMinutes && webRecipe.readyInMinutes) recipe.readyInMinutes = webRecipe.readyInMinutes;
+      if (!recipe.servings && webRecipe.servings) recipe.servings = webRecipe.servings;
+      if (!recipe.nutrition && webRecipe.nutrition) recipe.nutrition = webRecipe.nutrition;
+      if ((!recipe.summary || !String(recipe.summary).trim()) && webRecipe.summary) recipe.summary = webRecipe.summary;
+      if ((!recipe.title || recipe.title === 'Untitled Recipe') && webRecipe.title) recipe.title = webRecipe.title;
+      result.extractionMethod = `${result.extractionMethod || 'unknown'}+website`;
+      result.sourcesUsed = { ...(result.sourcesUsed || {}), website: true };
+      result.websiteSource = resolvedUrl;
+      return result;
+    } catch (error) {
+      console.log(`[MultiModal] Website backfill failed (keeping original result): ${error.message}`);
+      return result;
+    }
   }
 }
 

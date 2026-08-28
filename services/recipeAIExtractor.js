@@ -473,19 +473,27 @@ class RecipeAIExtractor {
       unit: ''
     }));
 
-    // Extract instructions
+    // Extract instructions — flatten HowToSection wrappers (WP Recipe Maker,
+    // Tasty Recipes, etc.) into a single flat step list. The app only renders
+    // analyzedInstructions[0].steps, so everything must live in one group.
     let steps = [];
     if (Array.isArray(jsonld.recipeInstructions)) {
-      steps = jsonld.recipeInstructions.map((inst, idx) => {
+      const flatTexts = [];
+      const collectSteps = (inst) => {
+        if (!inst) return;
         if (typeof inst === 'string') {
-          return { number: idx + 1, step: inst };
+          if (inst.trim()) flatTexts.push(inst.trim());
+        } else if (Array.isArray(inst.itemListElement)) {
+          // HowToSection (or nested list) — recurse into its steps
+          inst.itemListElement.forEach(collectSteps);
         } else if (inst.text) {
-          return { number: idx + 1, step: inst.text };
-        } else if (inst['@type'] === 'HowToStep' && inst.text) {
-          return { number: idx + 1, step: inst.text };
+          flatTexts.push(String(inst.text).trim());
+        } else if (inst.name) {
+          flatTexts.push(String(inst.name).trim());
         }
-        return { number: idx + 1, step: String(inst) };
-      });
+      };
+      jsonld.recipeInstructions.forEach(collectSteps);
+      steps = flatTexts.map((text, idx) => ({ number: idx + 1, step: text }));
     } else if (typeof jsonld.recipeInstructions === 'string') {
       // Split by newlines or periods
       const instructionText = jsonld.recipeInstructions;
@@ -519,6 +527,23 @@ class RecipeAIExtractor {
       }
     }
 
+    // Map JSON-LD nutrition ("776 kcal", "42.7 g") to numeric macros
+    let nutrition = null;
+    if (jsonld.nutrition) {
+      const toNum = (v) => {
+        if (v == null) return null;
+        const n = parseFloat(String(v).replace(/[^\d.]/g, ''));
+        return Number.isFinite(n) ? n : null;
+      };
+      nutrition = {
+        calories: toNum(jsonld.nutrition.calories),
+        protein: toNum(jsonld.nutrition.proteinContent),
+        carbohydrates: toNum(jsonld.nutrition.carbohydrateContent),
+        fat: toNum(jsonld.nutrition.fatContent)
+      };
+      if (Object.values(nutrition).every(v => v == null)) nutrition = null;
+    }
+
     return {
       title: jsonld.name || 'Recipe from Web',
       summary: jsonld.description || '',
@@ -538,6 +563,7 @@ class RecipeAIExtractor {
       cuisines: jsonld.recipeCuisine ? [jsonld.recipeCuisine] : [],
       dishTypes: jsonld.recipeCategory ? [jsonld.recipeCategory] : [],
       diets: [],
+      nutrition: nutrition,
       sourceName: jsonld.author?.name || new URL(url).hostname,
       sourceUrl: url,
       _extractedVia: 'JSON-LD'

@@ -84,7 +84,11 @@ async function checkRevenueCatSubscription(userId) {
           source: subscription?.is_sandbox ? 'test_store' : 'apple',
           expiresAt: premiumEntitlement.expires_date,
           productId: productId,
-          willRenew: !subscriber.unsubscribe_detected_at,
+          // unsubscribe_detected_at lives on the per-product subscription, never on
+          // `subscriber` — reading it off the top level was always undefined, so
+          // willRenew could never be false. No subscription at all (a promotional
+          // entitlement granted in the dashboard) does not auto-renew either.
+          willRenew: !!subscription && !subscription.unsubscribe_detected_at,
           isSandbox: subscription?.is_sandbox || false,
           purchaseDate: premiumEntitlement.purchase_date,
           periodType: subscription?.period_type || 'normal',

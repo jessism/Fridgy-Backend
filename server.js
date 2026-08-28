@@ -40,6 +40,7 @@ const ttsRoutes = require('./routes/tts');
 const aiChefRoutes = require('./routes/aiChef');
 const streakRoutes = require('./routes/streaks');
 const voiceTtsRoutes = require('./routes/voiceTts');
+const tiktokUploadRoutes = require('./routes/tiktokUpload');
 const appVersionRoutes = require('./routes/appVersion');
 // const blogRoutes = require('./routes/blogRoutes');
 
@@ -134,6 +135,7 @@ app.use('/api/tts', ttsRoutes);
 app.use('/api/ai-chef', aiChefRoutes);
 app.use('/api/streaks', streakRoutes);
 app.use('/api/voice-tts', voiceTtsRoutes);
+app.use('/api/tiktok-upload', tiktokUploadRoutes);
 app.use('/api/app-version', appVersionRoutes); // public — mobile version gate, must work logged out
 // app.use('/api/blog', blogRoutes);
 
@@ -1604,6 +1606,7 @@ app.listen(PORT, () => {
   console.log(`   VAPID_PUBLIC_KEY: ${process.env.VAPID_PUBLIC_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   VAPID_PRIVATE_KEY: ${process.env.VAPID_PRIVATE_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`   POSTHOG_API_KEY: ${process.env.POSTHOG_API_KEY ? '✅ Present' : '❌ Missing'}`);
+  console.log(`   GITHUB_TOKEN: ${process.env.GITHUB_TOKEN ? '✅ Present (TikTok upload dispatch)' : '❌ Missing (TikTok upload dispatch)'}`);
   console.log(`   IAP_RECONCILE_MODE: ${process.env.IAP_RECONCILE_MODE || 'dry-run (default)'}`);
 
   // Initialize PostHog analytics

@@ -1970,6 +1970,10 @@ router.get('/apify-usage', authMiddleware.authenticateToken, async (req, res) =>
 router.get('/suggestions', authMiddleware.authenticateToken, recipeController.getSuggestions);
 router.post('/suggestions', authMiddleware.authenticateToken, recipeController.getSuggestions);
 
+// Community recipe pool for the Home suggestion card (see controller). Must
+// stay above the '/:id' route or Express reads "community-pool" as an id.
+router.get('/community-pool', authMiddleware.authenticateToken, recipeController.getCommunityPool);
+
 // Get curated/popular recipes
 // GET /api/recipes/curated
 router.get('/curated', async (req, res) => {

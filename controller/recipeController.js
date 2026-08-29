@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const recipeService = require('../services/recipeService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
+const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -20,6 +21,12 @@ const getUserIdFromToken = (req) => {
     throw new Error('Invalid token');
   }
 };
+
+// Community pool cache — the response is identical for every user, so one
+// query per TTL serves everyone.
+const COMMUNITY_POOL_TTL_MS = 6 * 60 * 60 * 1000;
+const COMMUNITY_POOL_SIZE = 50;
+let communityPoolCache = { recipes: null, expiresAt: 0 };
 
 // Recipe Controller Functions
 const recipeController = {
@@ -347,6 +354,90 @@ const recipeController = {
         error: error.message.includes('token') ? 'Authentication required' : error.message,
         requestId: requestId
       });
+    }
+  },
+
+  /**
+   * Community recipe pool for the Home "Suggested Meal" card, used only when
+   * the user has no saved recipes of their own.
+   * GET /api/recipes/community-pool
+   *
+   * saved_recipes has no sharing flag, so the scope here is deliberate:
+   * - public-source imports only — never manual/scanned/voice, which are the
+   *   user's own content and were never meant to be seen by anyone else
+   * - an explicit column list: no user_id, user_notes, rating, user_edited
+   * - one row per source_url, so a viral recipe saved by 40 people is one entry
+   * - Supabase-hosted images only; a failed Instagram re-host can leave an
+   *   expiring CDN URL behind, and a dead hero image is worse than no card
+   * - at least one ingredient and one instruction step — imports can succeed
+   *   with neither
+   * The client ranks the pool against the user's own inventory.
+   */
+  async getCommunityPool(req, res) {
+    const requestId = Math.random().toString(36).substring(7);
+
+    try {
+      getUserIdFromToken(req);
+
+      if (communityPoolCache.recipes && communityPoolCache.expiresAt > Date.now()) {
+        return res.json({
+          success: true,
+          recipes: communityPoolCache.recipes,
+          count: communityPoolCache.recipes.length,
+          cached: true,
+          requestId
+        });
+      }
+
+      const supabase = getServiceClient();
+      const { data, error } = await supabase
+        .from('saved_recipes')
+        .select(
+          'id, title, summary, image, extendedIngredients, analyzedInstructions, ' +
+          'readyInMinutes, servings, source_author, source_type, source_url, ' +
+          'cuisines, dishTypes, vegetarian, vegan, glutenFree, dairyFree, times_cooked, created_at'
+        )
+        .in('source_type', ['instagram', 'web', 'popular'])
+        .like('image', '%supabase.co/storage/%')
+        .order('times_cooked', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(400);
+
+      if (error) throw error;
+
+      const seen = new Set();
+      const recipes = [];
+      for (const row of data || []) {
+        const ingredients = Array.isArray(row.extendedIngredients) ? row.extendedIngredients : [];
+        const steps = Array.isArray(row.analyzedInstructions)
+          ? row.analyzedInstructions.reduce((n, block) => n + (block?.steps?.length || 0), 0)
+          : 0;
+        if (ingredients.length === 0 || steps === 0) continue;
+
+        const key = row.source_url
+          ? row.source_url.trim().toLowerCase()
+          : `${(row.title || '').trim().toLowerCase()}|${(row.source_author || '').trim().toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        // The card only needs the summary fields; the detail screen fetches
+        // the full recipe through /saved-recipes/:id/public on tap.
+        const { analyzedInstructions, ...summary } = row;
+        recipes.push(summary);
+        if (recipes.length >= COMMUNITY_POOL_SIZE) break;
+      }
+
+      communityPoolCache = { recipes, expiresAt: Date.now() + COMMUNITY_POOL_TTL_MS };
+      console.log(`🍲 [${requestId}] Community pool rebuilt: ${recipes.length} recipes from ${(data || []).length} rows`);
+
+      res.json({ success: true, recipes, count: recipes.length, cached: false, requestId });
+
+    } catch (error) {
+      console.error(`❌ [${requestId}] Community pool error:`, error.message);
+      if (error.message === 'No token provided' || error.message === 'Invalid token') {
+        return res.status(401).json({ success: false, error: 'Authentication required', requestId });
+      }
+      res.status(500).json({ success: false, error: 'Failed to load community recipes', requestId });
     }
   },
 

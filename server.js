@@ -9,6 +9,7 @@ const multer = require('multer');
 
 // Import middleware
 const authMiddleware = require('./middleware/auth');
+const { featureTracking } = require('./middleware/featureTracking');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -42,6 +43,7 @@ const streakRoutes = require('./routes/streaks');
 const voiceTtsRoutes = require('./routes/voiceTts');
 const tiktokUploadRoutes = require('./routes/tiktokUpload');
 const appVersionRoutes = require('./routes/appVersion');
+const adminAnalyticsRoutes = require('./routes/adminAnalytics');
 // const blogRoutes = require('./routes/blogRoutes');
 
 const app = express();
@@ -106,6 +108,10 @@ app.use('/api/webhooks', webhookRoutes);
 app.use(express.json({ limit: '10mb' }));  // Increased limit for larger payloads
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));  // Increased limit for form data
 
+// Feature-usage analytics (PostHog feature_used + users.last_active_at).
+// Runs on response finish, after route-level auth has set req.user.
+app.use(featureTracking);
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
@@ -137,6 +143,7 @@ app.use('/api/streaks', streakRoutes);
 app.use('/api/voice-tts', voiceTtsRoutes);
 app.use('/api/tiktok-upload', tiktokUploadRoutes);
 app.use('/api/app-version', appVersionRoutes); // public — mobile version gate, must work logged out
+app.use('/api/admin/analytics', adminAnalyticsRoutes); // admin only — backs trackabite.app/admin/analytics
 // app.use('/api/blog', blogRoutes);
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)

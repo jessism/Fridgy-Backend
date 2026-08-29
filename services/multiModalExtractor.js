@@ -149,6 +149,35 @@ class MultiModalExtractor {
         apifyData.videoUrl = null;
       }
 
+      // WEBSITE-FIRST: when the creator links their recipe, their written
+      // recipe outranks any AI interpretation of the video. Priority:
+      // caption-complete (author's verbatim caption) > linked website (recipe
+      // card via JSON-LD, verbatim) > AI video analysis (PLAN_EXTRACTBLOG Rev 4).
+      const linkedRecipeUrl = this.findRecipeUrl(apifyData);
+      if (linkedRecipeUrl) {
+        const captionResult = await this.extractFromCaptionOnly(apifyData.caption, apifyData);
+        apifyData._cachedCaptionResult = captionResult; // reused by analyzeVideoWithGemini
+        const captionIsMinimal = !apifyData.caption || apifyData.caption.length < 200;
+        if (captionResult.success && captionResult.hasCompleteRecipe
+            && !captionIsMinimal && !this.captionIndicatesVideoRecipe(apifyData.caption)) {
+          // Same early return the Gemini path would take — caption wins, unchanged behavior
+          console.log('[MultiModal] ✅ Caption-only extraction successful - using caption data');
+          return {
+            success: true,
+            recipe: captionResult.recipe,
+            confidence: captionResult.confidence,
+            sourcesUsed: { video: false, caption: true, images: false },
+            extractionMethod: 'caption-only',
+            processingTime: Date.now() - startTime
+          };
+        }
+        const websiteResult = await this.tryWebsitePrimary(apifyData, captionResult);
+        if (websiteResult) {
+          websiteResult.processingTime = Date.now() - startTime;
+          return websiteResult; // creator's written recipe — video AI skipped entirely
+        }
+      }
+
       // PREDICTIVE ROUTING: Analyze data sources upfront to route directly to optimal path
       const dataProfile = this.analyzeDataSources(apifyData);
 
@@ -926,7 +955,8 @@ Return this JSON:
 
     // STEP 1: First try caption-only extraction (more reliable for detailed ingredients)
     console.log('[MultiModal] Step 2: Trying caption-only extraction first...');
-    const captionResult = await this.extractFromCaptionOnly(apifyData.caption, apifyData);
+    const captionResult = apifyData._cachedCaptionResult
+      || await this.extractFromCaptionOnly(apifyData.caption, apifyData);
 
     if (captionResult.success && captionResult.hasCompleteRecipe) {
       console.log('[MultiModal] Caption extraction found recipe');
@@ -936,7 +966,7 @@ Return this JSON:
       // NEW: Check if we should force video analysis despite caption having "content"
       // This handles cases where caption is minimal but AI extracted generic/incomplete data
       const captionIsMinimal = !apifyData.caption || apifyData.caption.length < 200;
-      const captionIndicatesVideoRecipe = /recipe.*(in|on).*(video|watch)|full.*recipe.*(video|watch)|watch.*(for|the).*recipe|instructions?.*(in|on).*video|check.*(video|link)|see.*video/i.test(apifyData.caption || '');
+      const captionIndicatesVideoRecipe = this.captionIndicatesVideoRecipe(apifyData.caption);
 
       const forceVideoAnalysis = captionIsMinimal || captionIndicatesVideoRecipe;
 
@@ -1030,7 +1060,7 @@ Return this JSON:
 
       // Determine extraction mode for logging
       const captionIsMinimal = !apifyData.caption || apifyData.caption.length < 200;
-      const captionIndicatesVideoRecipe = /recipe.*(in|on).*(video|watch)|full.*recipe.*(video|watch)|watch.*(for|the).*recipe|instructions?.*(in|on).*video|check.*(video|link)|see.*video/i.test(apifyData.caption || '');
+      const captionIndicatesVideoRecipe = this.captionIndicatesVideoRecipe(apifyData.caption);
       const usedVideoFirstMode = captionIsMinimal || captionIndicatesVideoRecipe;
 
       // Aggregate duplicate ingredients
@@ -1712,7 +1742,7 @@ Return this JSON:
 
     // Determine if caption is minimal - if so, prioritize video content
     const captionIsMinimal = caption.length < 200;
-    const captionIndicatesVideoRecipe = /recipe.*(in|on).*(video|watch)|full.*recipe.*(video|watch)|watch.*(for|the).*recipe|instructions?.*(in|on).*video|check.*(video|link)|see.*video/i.test(caption);
+    const captionIndicatesVideoRecipe = this.captionIndicatesVideoRecipe(caption);
     const prioritizeVideo = captionIsMinimal || captionIndicatesVideoRecipe;
 
     if (prioritizeVideo) {
@@ -2729,6 +2759,81 @@ Set confidence lower (0.60-0.80) since audio narration not available.`;
   }
 
   /**
+   * Does the caption say the recipe lives in the video itself?
+   * Single definition shared by the routing and prompt-selection code.
+   */
+  captionIndicatesVideoRecipe(caption) {
+    return /recipe.*(in|on).*(video|watch)|full.*recipe.*(video|watch)|watch.*(for|the).*recipe|instructions?.*(in|on).*video|check.*(video|link)|see.*video/i.test(caption || '');
+  }
+
+  /**
+   * Core of the website extraction: find the caption's recipe link, resolve
+   * it to the actual recipe page, extract, and gate on a title match.
+   * Returns { webRecipe, resolvedUrl } or null. Never throws.
+   */
+  async fetchLinkedWebsiteRecipe(apifyData, socialTitle) {
+    try {
+      const url = this.findRecipeUrl(apifyData);
+      if (!url) return null;
+
+      console.log(`[MultiModal] Trying recipe URL from caption: ${url} (title: "${socialTitle}")`);
+
+      const resolved = await this.resolveRecipePageUrl(url, socialTitle);
+      if (!resolved) return null;
+      const resolvedUrl = resolved.url;
+
+      const webRecipe = resolved.recipe
+        || await this.getRecipeAI().extractFromWebUrl(resolvedUrl, { skipWayback: true });
+      const webIngredients = webRecipe?.extendedIngredients?.length || 0;
+      const webSteps = webRecipe?.analyzedInstructions?.[0]?.steps?.length || 0;
+      if (!webIngredients || !webSteps) {
+        console.log('[MultiModal] Website extraction incomplete');
+        return null;
+      }
+
+      // Wrong-recipe gate: never use a dish that doesn't match the post
+      const gateScore = this.titleMatchScore(socialTitle, webRecipe.title || '');
+      if (gateScore < 0.6) {
+        console.log(`[MultiModal] ❌ Title gate REJECTED website recipe "${webRecipe.title}" vs "${socialTitle}" (${Math.round(gateScore * 100)}% match)`);
+        return null;
+      }
+
+      console.log(`[MultiModal] ✅ Website recipe: "${webRecipe.title}" — ${webIngredients} ingredients, ${webSteps} steps (${Math.round(gateScore * 100)}% title match)`);
+      return { webRecipe, resolvedUrl };
+    } catch (error) {
+      console.log(`[MultiModal] Website extraction failed: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Website as the PRIMARY source: when the caption links the creator's
+   * recipe and the caption itself doesn't carry a complete recipe, the
+   * linked recipe card (copied verbatim via JSON-LD) beats AI video
+   * analysis. Returns a full extraction result, or null to let the normal
+   * pipeline proceed.
+   */
+  async tryWebsitePrimary(apifyData, captionResult) {
+    const extractedTitle = captionResult?.recipe?.title;
+    const socialTitle = (extractedTitle && extractedTitle !== 'Untitled Recipe')
+      ? extractedTitle
+      : this.deriveSocialTitle(null, apifyData);
+
+    const hit = await this.fetchLinkedWebsiteRecipe(apifyData, socialTitle);
+    if (!hit) return null;
+
+    return {
+      success: true,
+      // image stays unset so the route keeps the social post's own photo
+      recipe: { ...hit.webRecipe, image: null },
+      confidence: 0.9,
+      extractionMethod: 'website-primary',
+      sourcesUsed: { caption: false, video: false, website: true },
+      websiteSource: hit.resolvedUrl
+    };
+  }
+
+  /**
    * If the extraction result has no ingredients or no steps and the caption
    * links a recipe website, extract from the website and backfill. Fails
    * soft: any error returns the original result unchanged.
@@ -2740,33 +2845,10 @@ Set confidence lower (0.60-0.80) since audio narration not available.`;
       const hasSteps = !!recipe?.analyzedInstructions?.[0]?.steps?.length;
       if (hasIngredients && hasSteps) return result;
 
-      const url = this.findRecipeUrl(apifyData);
-      if (!url) return result;
-
       const socialTitle = this.deriveSocialTitle(result, apifyData);
-      console.log(`[MultiModal] Extraction empty, trying recipe URL from caption: ${url} (title: "${socialTitle}")`);
-
-      const resolved = await this.resolveRecipePageUrl(url, socialTitle);
-      if (!resolved) return result;
-      const resolvedUrl = resolved.url;
-
-      const webRecipe = resolved.recipe
-        || await this.getRecipeAI().extractFromWebUrl(resolvedUrl, { skipWayback: true });
-      const webIngredients = webRecipe?.extendedIngredients?.length || 0;
-      const webSteps = webRecipe?.analyzedInstructions?.[0]?.steps?.length || 0;
-      if (!webIngredients || !webSteps) {
-        console.log('[MultiModal] Website extraction incomplete, keeping original result');
-        return result;
-      }
-
-      // Wrong-recipe gate: never merge a dish that doesn't match the post
-      const gateScore = this.titleMatchScore(socialTitle, webRecipe.title || '');
-      if (gateScore < 0.6) {
-        console.log(`[MultiModal] ❌ Title gate REJECTED website recipe "${webRecipe.title}" vs "${socialTitle}" (${Math.round(gateScore * 100)}% match)`);
-        return result;
-      }
-
-      console.log(`[MultiModal] ✅ Website backfill: "${webRecipe.title}" — ${webIngredients} ingredients, ${webSteps} steps (${Math.round(gateScore * 100)}% title match)`);
+      const hit = await this.fetchLinkedWebsiteRecipe(apifyData, socialTitle);
+      if (!hit) return result;
+      const { webRecipe, resolvedUrl } = hit;
 
       if (!recipe || result.success === false) {
         // Total extraction failure — the website recipe becomes the result.

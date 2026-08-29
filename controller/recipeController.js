@@ -399,33 +399,50 @@ const recipeController = {
         )
         .in('source_type', ['instagram', 'web', 'popular'])
         .like('image', '%supabase.co/storage/%')
-        .order('times_cooked', { ascending: false })
         .order('created_at', { ascending: false })
         .limit(400);
 
       if (error) throw error;
 
-      const seen = new Set();
-      const recipes = [];
-      for (const row of data || []) {
+      const dedupeKey = (row) => (row.source_url
+        ? row.source_url.trim().toLowerCase()
+        : `${(row.title || '').trim().toLowerCase()}|${(row.source_author || '').trim().toLowerCase()}`);
+
+      // Keep only rows a hero card can actually render, then rank by how many
+      // distinct users saved the same recipe. `times_cooked` is unusable as a
+      // popularity signal: POST /saved-recipes/:id/cook exists but no client
+      // calls it, so every row reads 0. Save-count is the real signal, and it
+      // costs nothing extra since we already group by this key to dedupe.
+      const usable = (data || []).filter((row) => {
         const ingredients = Array.isArray(row.extendedIngredients) ? row.extendedIngredients : [];
         const steps = Array.isArray(row.analyzedInstructions)
           ? row.analyzedInstructions.reduce((n, block) => n + (block?.steps?.length || 0), 0)
           : 0;
-        if (ingredients.length === 0 || steps === 0) continue;
+        return ingredients.length > 0 && steps > 0;
+      });
 
-        const key = row.source_url
-          ? row.source_url.trim().toLowerCase()
-          : `${(row.title || '').trim().toLowerCase()}|${(row.source_author || '').trim().toLowerCase()}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+      const saveCounts = new Map();
+      for (const row of usable) {
+        const key = dedupeKey(row);
+        saveCounts.set(key, (saveCounts.get(key) || 0) + 1);
+      }
 
+      const seen = new Set();
+      const recipes = usable
+        .filter((row) => {
+          const key = dedupeKey(row);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .sort((a, b) =>
+          (saveCounts.get(dedupeKey(b)) - saveCounts.get(dedupeKey(a))) ||
+          (new Date(b.created_at) - new Date(a.created_at))
+        )
+        .slice(0, COMMUNITY_POOL_SIZE)
         // The card only needs the summary fields; the detail screen fetches
         // the full recipe through /saved-recipes/:id/public on tap.
-        const { analyzedInstructions, ...summary } = row;
-        recipes.push(summary);
-        if (recipes.length >= COMMUNITY_POOL_SIZE) break;
-      }
+        .map(({ analyzedInstructions, ...summary }) => summary);
 
       communityPoolCache = { recipes, expiresAt: Date.now() + COMMUNITY_POOL_TTL_MS };
       console.log(`🍲 [${requestId}] Community pool rebuilt: ${recipes.length} recipes from ${(data || []).length} rows`);

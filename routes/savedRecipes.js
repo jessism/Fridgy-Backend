@@ -97,6 +97,99 @@ router.post('/', authMiddleware.authenticateToken, checkSavedRecipeLimit, async 
   }
 });
 
+// POST /api/saved-recipes/adopt/:sourceId - Take a copy of a public-source recipe
+// Backs the Home "Suggested Meal" card: opening a community suggestion makes it the
+// user's own, so they can note/edit/cook it without touching the original.
+//
+// Deliberately NOT behind checkSavedRecipeLimit and it does NOT increment the
+// saved_recipes counter. Adopting costs ~5KB and no API spend (the image is
+// referenced by URL, never duplicated), so the weekly cap stays reserved for
+// Instagram/web/manual imports, which is the behaviour it was built around.
+router.post('/adopt/:sourceId', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
+    const { sourceId } = req.params;
+
+    console.log(`[SavedRecipes] Adopt request: source ${sourceId} for user ${userId}`);
+
+    const { data: source, error: sourceError } = await supabase
+      .from('saved_recipes')
+      .select('*')
+      .eq('id', sourceId)
+      .single();
+
+    if (sourceError || !source) {
+      console.log(`[SavedRecipes] Adopt: source not found ${sourceId}`);
+      return res.status(404).json({ success: false, error: 'Recipe not found' });
+    }
+
+    // Security boundary: only publicly-sourced recipes may be copied between
+    // users. manual/scanned/voice/user_created rows are the owner's own content
+    // — family recipes, handwritten cards, dictated notes — and nobody consented
+    // to those being handed to a stranger who guessed a UUID.
+    const PUBLIC_SOURCES = ['instagram', 'web', 'popular'];
+    if (!PUBLIC_SOURCES.includes(source.source_type)) {
+      console.warn(`[SavedRecipes] Adopt refused: ${sourceId} is source_type '${source.source_type}'`);
+      return res.status(403).json({ success: false, error: 'This recipe cannot be copied' });
+    }
+
+    // Already adopted? Return that row rather than piling up duplicates on
+    // repeat taps. Matches the pool's dedupe key: source_url, else title+author.
+    let existingQuery = supabase.from('saved_recipes').select('*').eq('user_id', userId);
+    existingQuery = source.source_url
+      ? existingQuery.eq('source_url', source.source_url)
+      : existingQuery.ilike('title', source.title || '');
+
+    const { data: existing } = await existingQuery.limit(1);
+    if (existing && existing.length > 0) {
+      console.log(`[SavedRecipes] Adopt: user already owns a copy (${existing[0].id})`);
+      return res.json({ success: true, recipe: existing[0], adopted: false });
+    }
+
+    // Copy the recipe content; drop everything personal to the original owner.
+    const {
+      id: _id, user_id: _userId, created_at: _createdAt, updated_at: _updatedAt,
+      user_notes: _notes, user_notes_updated_at: _notesAt, rating: _rating,
+      times_cooked: _cooked, last_cooked: _lastCooked, is_favorite: _fav,
+      user_edited: _edited,
+      // Belongs to the original owner, not the copy: their Google Drive sync
+      // state, the storage object they own, and a sharing setting this user
+      // never chose. Carrying any of these across accounts would be a leak.
+      drive_file_id: _driveId, drive_synced_at: _driveAt, drive_sync_status: _driveStatus,
+      image_storage_path: _storagePath, visibility: _visibility,
+      ...content
+    } = source;
+
+    const copy = {
+      ...content,
+      user_id: userId,
+      times_cooked: 0,
+      is_favorite: false,
+      user_edited: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await supabase
+      .from('saved_recipes')
+      .insert(copy)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[SavedRecipes] Adopt insert error:', error);
+      throw error;
+    }
+
+    console.log(`[SavedRecipes] Adopted ${sourceId} -> ${data.id} for user ${userId}`);
+    res.json({ success: true, recipe: data, adopted: true });
+
+  } catch (error) {
+    console.error('[SavedRecipes] Adopt error:', error);
+    res.status(500).json({ success: false, error: 'Failed to save recipe' });
+  }
+});
+
 // GET /api/saved-recipes/:id/public - Public recipe view (NO AUTH REQUIRED)
 // Used for Messenger "Open in Trackabite" button - shows full recipe without login
 router.get('/:id/public', async (req, res) => {

@@ -44,6 +44,8 @@ const voiceTtsRoutes = require('./routes/voiceTts');
 const tiktokUploadRoutes = require('./routes/tiktokUpload');
 const appVersionRoutes = require('./routes/appVersion');
 const adminAnalyticsRoutes = require('./routes/adminAnalytics');
+const adminFeedbackRoutes = require('./routes/adminFeedback');
+const adminPromosRoutes = require('./routes/adminPromos');
 const blogRoutes = require('./routes/blogRoutes');
 
 const app = express();
@@ -144,6 +146,8 @@ app.use('/api/voice-tts', voiceTtsRoutes);
 app.use('/api/tiktok-upload', tiktokUploadRoutes);
 app.use('/api/app-version', appVersionRoutes); // public — mobile version gate, must work logged out
 app.use('/api/admin/analytics', adminAnalyticsRoutes); // admin only — backs trackabite.app/admin/analytics
+app.use('/api/admin/feedback', adminFeedbackRoutes); // admin only — backs trackabite.app/admin/feedback
+app.use('/api/admin/promos', adminPromosRoutes); // admin only — backs trackabite.app/admin/promos
 app.use('/api/blog', blogRoutes); // public blog + sitemap; admin writes gated inside the router
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)

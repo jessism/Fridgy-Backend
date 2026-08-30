@@ -1,21 +1,37 @@
 /**
- * Admin analytics — DB-native numbers for the trackabite.app/admin/analytics
- * page (signups, activity, subscriptions, per-user lookup, feature adoption).
+ * Admin analytics — DB-native numbers for the trackabite.app/admin console
+ * (signups, activity, subscriptions, feature adoption, streaks, per-user lookup).
  *
  * Behavioural analytics (DAU/MAU, retention, funnels, feature trends) live in
  * PostHog; this module only aggregates what already sits in Supabase.
  *
  * Read-only. Every query goes through getServiceClient(); the "real user"
  * filter below is applied everywhere so test accounts never leak into numbers.
+ *
+ * Definitions that matter (see MD_files/PLAN_ANALYTICS_AUG29.md):
+ * - Days are calendar days in ADMIN_TZ. A window of N days is the last N
+ *   calendar days inclusive of today; tiles and charts share those buckets.
+ * - Subscription status reports what the app ENFORCES (users.tier) and
+ *   separately surfaces where the live evidence (Stripe row / RevenueCat
+ *   production events) disagrees with it, instead of silently re-deriving.
+ * - RevenueCat SANDBOX events never count toward anything.
+ * - "Active" blends users.last_active_at (written by featureTracking since
+ *   2026-08-29) with each user's latest feature write, so history before the
+ *   middleware existed still shows up.
  */
 const { getServiceClient } = require('../config/supabase');
 const revenueCatService = require('./revenueCatService');
 
+const ADMIN_TZ = process.env.ADMIN_ANALYTICS_TZ || 'America/Vancouver';
+const LAST_ACTIVE_TRACKED_SINCE = '2026-08-29'; // migration 078 + featureTracking deploy
+const STREAKS_LAUNCHED = '2026-07-18';
+
 const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000001'; // migrations/063
 const DEFAULT_EXCLUDED_EMAILS = ['hello@trackabite.app', 'jessie@trackabite.app', 'adityabiswas1999@hotmail.com'];
+// The env var ADDS to the defaults; it never replaces them.
 const EXCLUDED_EMAILS = new Set(
-  (process.env.ADMIN_ANALYTICS_EXCLUDED_EMAILS || DEFAULT_EXCLUDED_EMAILS.join(','))
-    .split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)
+  [...DEFAULT_EXCLUDED_EMAILS, ...(process.env.ADMIN_ANALYTICS_EXCLUDED_EMAILS || '').split(',')]
+    .map((e) => e.trim().toLowerCase()).filter(Boolean)
 );
 
 const USER_COLUMNS = 'id,email,first_name,created_at,tier,is_admin,is_grandfathered,signup_platform,last_active_at,deletion_status';
@@ -40,13 +56,17 @@ function isExcludedUser(u) {
     || EXCLUDED_EMAILS.has(email);
 }
 
-/** Page through a PostgREST query (default cap is 1000 rows). */
-async function fetchAll(table, select, applyFilters) {
+/**
+ * Page through a PostgREST query (default cap is 1000 rows). Always ordered:
+ * .range() without an ORDER BY is not stable in Postgres, so rows could be
+ * duplicated or skipped between pages once a table passes 1000 rows.
+ */
+async function fetchAll(table, select, applyFilters, orderCol = 'id') {
   const sb = getServiceClient();
   const rows = [];
   const page = 1000;
   for (let from = 0; ; from += page) {
-    let q = sb.from(table).select(select).range(from, from + page - 1);
+    let q = sb.from(table).select(select).order(orderCol, { ascending: true }).range(from, from + page - 1);
     if (applyFilters) q = applyFilters(q);
     const { data, error } = await q;
     if (error) throw new Error(`${table}: ${error.message}`);
@@ -56,54 +76,80 @@ async function fetchAll(table, select, applyFilters) {
   return rows;
 }
 
-let userColumns = USER_COLUMNS;
-
 async function loadRealUsers() {
   return cached('realUsers', async () => {
-    let all;
-    try {
-      all = await fetchAll('users', userColumns);
-    } catch (err) {
-      // Migration 078 (last_active_at) not applied yet — degrade instead of failing.
-      if (!/last_active_at/.test(err.message)) throw err;
-      console.warn('[AdminAnalytics] users.last_active_at missing — apply migrations/078_add_last_active_at.sql');
-      userColumns = USER_COLUMNS.replace(',last_active_at', '');
-      all = await fetchAll('users', userColumns);
-    }
+    const all = await fetchAll('users', USER_COLUMNS);
     return all.filter((u) => !isExcludedUser(u));
   });
 }
 
-// Tables that count as "using a feature". user: column holding the user id.
+// ---------------------------------------------------------------------------
+// Calendar helpers — everything is bucketed by local day in ADMIN_TZ.
+// ---------------------------------------------------------------------------
+
+/** 'YYYY-MM-DD' of an instant in ADMIN_TZ. Accepts ms or anything Date can parse. */
+function dayKey(v) {
+  const d = v instanceof Date ? v : new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-CA', { timeZone: ADMIN_TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+/** Shift a 'YYYY-MM-DD' key by n calendar days (pure calendar arithmetic, DST-proof). */
+function shiftDay(key, n) {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+/** The last `days` calendar keys ending today, oldest first. */
+function windowKeys(days, nowMs) {
+  const today = dayKey(nowMs);
+  const keys = [];
+  for (let i = days - 1; i >= 0; i--) keys.push(shiftDay(today, -i));
+  return keys;
+}
+
+const toMs = (v) => (v ? Date.parse(v) : NaN);
+
+// ---------------------------------------------------------------------------
+// Feature adoption — only things a user chose to do.
+// `streak_daily_log` is deliberately NOT here: it is written as a side effect
+// of six other actions, so as "adoption" it means "did anything". It feeds the
+// Streaks card instead (loadStreaks).
+// ---------------------------------------------------------------------------
 const FEATURE_TABLES = [
-  { feature: 'inventory',        table: 'fridge_items',          user: 'user_id',  time: 'updated_at', filter: (q) => q.is('deleted_at', null) },
-  { feature: 'meal_log',         table: 'meal_logs',             user: 'user_id',  time: 'logged_at' },
-  { feature: 'recipe_import',    table: 'import_jobs',           user: 'user_id',  time: 'created_at' },
-  { feature: 'saved_recipes',    table: 'saved_recipes',         user: 'user_id',  time: 'created_at' },
-  { feature: 'ai_recipes',       table: 'ai_generated_recipes',  user: 'user_id',  time: 'created_at' },
-  { feature: 'shopping_list',    table: 'shopping_list_items',   user: 'added_by', time: 'added_at' },
-  { feature: 'shopping_list_owner', table: 'shopping_lists',     user: 'owner_id', time: 'created_at' },
-  { feature: 'meal_plan',        table: 'meal_plans',            user: 'user_id',  time: 'created_at' },
-  { feature: 'cookbook',         table: 'cookbooks',             user: 'user_id',  time: 'created_at' },
-  { feature: 'inventory_usage',  table: 'inventory_usage',       user: 'user_id',  time: 'used_at' },
-  { feature: 'streaks',          table: 'streak_daily_log',      user: 'user_id',  time: 'date' },
-  { feature: 'guided_tour',      table: 'user_tours',            user: 'user_id',  time: 'created_at' },
-  { feature: 'push_notifications', table: 'mobile_push_tokens',  user: 'user_id',  time: 'created_at' },
+  { feature: 'inventory',          group: 'feature', table: 'fridge_items',         user: 'user_id',  time: 'created_at' },
+  { feature: 'meal_log',           group: 'feature', table: 'meal_logs',            user: 'user_id',  time: 'logged_at' },
+  { feature: 'recipe_import',      group: 'feature', table: 'import_jobs',          user: 'user_id',  time: 'created_at', filter: (q) => q.eq('status', 'completed') },
+  { feature: 'saved_recipes',      group: 'feature', table: 'saved_recipes',        user: 'user_id',  time: 'created_at' },
+  { feature: 'ai_recipes',         group: 'feature', table: 'ai_generated_recipes', user: 'user_id',  time: 'created_at' },
+  { feature: 'shopping_list',      group: 'feature', table: 'shopping_list_items',  user: 'added_by', time: 'added_at' },
+  { feature: 'meal_plan',          group: 'feature', table: 'meal_plans',           user: 'user_id',  time: 'created_at' },
+  { feature: 'cookbook',           group: 'feature', table: 'cookbooks',            user: 'user_id',  time: 'created_at' },
+  { feature: 'inventory_usage',    group: 'feature', table: 'inventory_usage',      user: 'user_id',  time: 'used_at' },
+  { feature: 'guided_tour',        group: 'setup',   table: 'user_tours',           user: 'user_id',  time: 'created_at' },
+  { feature: 'push_notifications', group: 'setup',   table: 'mobile_push_tokens',   user: 'user_id',  time: 'created_at' },
 ];
+const SETUP_FEATURES = FEATURE_TABLES.filter((f) => f.group === 'setup').map((f) => f.feature);
 
 const median = (a) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const p90 = (a) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.ceil(0.9 * s.length) - 1)]; };
+const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+const round1 = (n) => Math.round(n * 10) / 10;
 
-/** Per-feature adoption across real users, plus per-user counts for the users table. */
-async function loadFeatureUsage(realIds, sinceIso) {
+/**
+ * Per-feature adoption across real users, per-user counts for the users
+ * table, and each user's latest feature write (feeds the "active" blend).
+ */
+async function loadFeatureUsage(realIds, windowStartKey) {
   const perUserCounts = new Map(); // userId -> { feature: count }
+  const perUserLastMs = new Map(); // userId -> ms of latest feature write
   const features = [];
   for (const f of FEATURE_TABLES) {
     let rows = [];
     try {
       rows = await fetchAll(f.table, `${f.user},${f.time}`, f.filter);
     } catch (err) {
-      features.push({ feature: f.feature, error: err.message });
+      features.push({ feature: f.feature, group: f.group, error: err.message });
       continue;
     }
     const per = {};
@@ -112,7 +158,11 @@ async function loadFeatureUsage(realIds, sinceIso) {
       const uid = r[f.user];
       if (!realIds.has(uid)) continue;
       per[uid] = (per[uid] || 0) + 1;
-      if (r[f.time] && String(r[f.time]) >= sinceIso) recent.add(uid);
+      const ms = toMs(r[f.time]);
+      if (!Number.isNaN(ms)) {
+        if (dayKey(ms) >= windowStartKey) recent.add(uid);
+        if (!perUserLastMs.has(uid) || ms > perUserLastMs.get(uid)) perUserLastMs.set(uid, ms);
+      }
       const bucket = perUserCounts.get(uid) || {};
       bucket[f.feature] = (bucket[f.feature] || 0) + 1;
       perUserCounts.set(uid, bucket);
@@ -120,6 +170,7 @@ async function loadFeatureUsage(realIds, sinceIso) {
     const counts = Object.values(per);
     features.push({
       feature: f.feature,
+      group: f.group,
       table: f.table,
       adopters: counts.length,
       activeInWindow: recent.size,
@@ -128,145 +179,345 @@ async function loadFeatureUsage(realIds, sinceIso) {
       p90PerAdopter: p90(counts),
     });
   }
-  return { features, perUserCounts };
+  return { features, perUserCounts, perUserLastMs };
 }
 
-/** Latest RevenueCat event per email (app_user_id is the email in this app). */
-async function loadLatestRcEventByEmail() {
-  const events = await fetchAll('revenuecat_webhook_events', 'event_type,app_user_id,product_id,created_at', (q) => q.order('created_at', { ascending: false }));
-  const latest = new Map();
+// ---------------------------------------------------------------------------
+// RevenueCat — parse the webhook payload; production only.
+// ---------------------------------------------------------------------------
+
+function parseRcEvent(row) {
+  let p = row.payload;
+  if (typeof p === 'string') { try { p = JSON.parse(p); } catch { p = null; } }
+  const ev = (p && p.event) || p || {};
+  return {
+    eventType: row.event_type,
+    email: (row.app_user_id || '').toLowerCase(),
+    productId: row.product_id || ev.product_id || null,
+    createdAt: row.created_at,
+    createdMs: toMs(row.created_at),
+    environment: ev.environment || null,          // 'PRODUCTION' | 'SANDBOX'
+    periodType: ev.period_type || null,           // 'TRIAL' | 'NORMAL' | 'INTRO'
+    expirationMs: ev.expiration_at_ms ? Number(ev.expiration_at_ms) : null,
+    isSandbox: ev.environment === 'SANDBOX',
+  };
+}
+
+/**
+ * All RC events (parsed), plus per-email chronological PRODUCTION lists and
+ * the latest PRODUCTION event per email. Sandbox is kept only so it can be
+ * reported as a discrepancy.
+ */
+async function loadRcEvents() {
+  const rows = await fetchAll('revenuecat_webhook_events', 'event_type,app_user_id,product_id,created_at,payload');
+  const events = rows.map(parseRcEvent).filter((e) => e.email);
+  const prodByEmail = new Map();   // email -> events asc
+  const sandboxEmails = new Set();
   for (const e of events) {
-    const key = (e.app_user_id || '').toLowerCase();
-    if (key && !latest.has(key)) latest.set(key, e);
+    if (e.isSandbox) { sandboxEmails.add(e.email); continue; }
+    if (!prodByEmail.has(e.email)) prodByEmail.set(e.email, []);
+    prodByEmail.get(e.email).push(e);
   }
-  return { events, latest };
+  const latestProd = new Map();
+  for (const [email, list] of prodByEmail) {
+    list.sort((a, b) => a.createdMs - b.createdMs);
+    latestProd.set(email, list[list.length - 1]);
+  }
+  return { events, prodByEmail, latestProd, sandboxEmails };
 }
 
-const RC_ACTIVE_TYPES = new Set(['INITIAL_PURCHASE', 'RENEWAL', 'UNCANCELLATION', 'PRODUCT_CHANGE', 'CANCELLATION', 'BILLING_ISSUE']); // CANCELLATION = auto-renew off, still entitled until EXPIRATION
+// ---------------------------------------------------------------------------
+// Subscription state: what the app enforces + what the evidence says.
+// ---------------------------------------------------------------------------
 
-function subscriptionState(user, stripeSub, latestRc) {
-  if (latestRc && RC_ACTIVE_TYPES.has(latestRc.event_type)) {
-    return { source: 'revenuecat', status: latestRc.event_type === 'CANCELLATION' ? 'canceling' : 'active', productId: latestRc.product_id };
+const STRIPE_LIVE = new Set(['active', 'trialing', 'past_due']);
+const RC_DEAD_TYPES = new Set(['EXPIRATION', 'TRANSFER', 'SUBSCRIBER_ALIAS', 'TEST']);
+
+/** Live entitlement evidence for a user, or null. Stripe wins if both exist. */
+function liveEvidence(stripeSub, latestRcProd, nowMs) {
+  if (stripeSub && STRIPE_LIVE.has(stripeSub.status)) {
+    return { source: 'stripe', status: stripeSub.status, productId: stripeSub.stripe_price_id || null };
   }
-  if (stripeSub && ['active', 'trialing', 'past_due'].includes(stripeSub.status)) {
-    return { source: 'stripe', status: stripeSub.status, productId: stripeSub.stripe_price_id };
+  const rc = latestRcProd;
+  if (rc && !RC_DEAD_TYPES.has(rc.eventType) && rc.expirationMs && rc.expirationMs > nowMs) {
+    const status = rc.periodType === 'TRIAL' ? 'trialing'
+      : rc.eventType === 'CANCELLATION' ? 'canceling'
+        : rc.eventType === 'BILLING_ISSUE' ? 'past_due'
+          : 'active';
+    return { source: 'apple', status, productId: rc.productId, expiresAt: new Date(rc.expirationMs).toISOString() };
   }
-  if (user.tier === 'grandfathered' || user.is_grandfathered) return { source: 'grandfathered', status: 'grandfathered' };
-  if (latestRc) return { source: 'revenuecat', status: latestRc.event_type.toLowerCase() };
-  if (stripeSub) return { source: 'stripe', status: stripeSub.status };
-  return { source: null, status: 'free' };
+  return null;
 }
 
-function dayKey(iso) { return String(iso).slice(0, 10); }
+/**
+ * The status the console shows. `tier` is users.tier — the thing
+ * usageService enforces limits on — so it decides the bucket; evidence only
+ * refines premium into active/trialing/canceling/past_due and names the source.
+ */
+function subscriptionState(user, evidence) {
+  const tier = user.tier || 'free';
+  if (tier === 'grandfathered') return { tier, source: 'grandfathered', status: 'grandfathered', productId: evidence?.productId || null };
+  if (tier === 'premium') {
+    return { tier, source: evidence?.source || null, status: evidence?.status || 'active', productId: evidence?.productId || null, expiresAt: evidence?.expiresAt || null };
+  }
+  return { tier: 'free', source: null, status: 'free', productId: null };
+}
 
-async function getOverview({ days = 30 } = {}) {
-  const now = Date.now();
-  const sinceIso = new Date(now - days * 864e5).toISOString();
-  const users = await loadRealUsers();
-  const realIds = new Set(users.map((u) => u.id));
+/** Discrepancy rows for the "Needs attention" card. */
+function subscriptionDiscrepancies(user, evidence, sandboxEmails) {
+  const out = [];
+  const tier = user.tier || 'free';
+  const who = { userId: user.id, email: user.email };
+  if (tier === 'premium' && !evidence) {
+    out.push({ ...who, type: 'premium_without_evidence', detail: 'users.tier is premium but no live Stripe row or unexpired RevenueCat production event. Nightly IAP reconcile should downgrade; if it persists, a missed webhook.' });
+  }
+  if (tier === 'free' && evidence) {
+    out.push({ ...who, type: 'free_with_evidence', detail: `users.tier is free but ${evidence.source} shows ${evidence.status}${evidence.expiresAt ? ` until ${evidence.expiresAt.slice(0, 10)}` : ''}. Likely a missed upgrade.` });
+  }
+  if (tier === 'free' && user.is_grandfathered) {
+    out.push({ ...who, type: 'grandfathered_flag_on_free_tier', detail: 'is_grandfathered=true but tier=free: the app enforces FREE limits, while tierSyncService will never downgrade this account. Decide which is intended.' });
+  }
+  if (sandboxEmails.has((user.email || '').toLowerCase())) {
+    out.push({ ...who, type: 'sandbox_events', detail: 'Has RevenueCat SANDBOX events on a real account. They are ignored here, but this looks like a tester using a real email.' });
+  }
+  return out;
+}
 
-  const [{ features, perUserCounts }, subs, rc] = await Promise.all([
-    cached(`featureUsage:${days}`, () => loadFeatureUsage(realIds, sinceIso)),
-    fetchAll('subscriptions', 'user_id,status,tier,stripe_price_id,trial_start,trial_end,canceled_at,created_at'),
-    cached('rcEvents', loadLatestRcEventByEmail),
+// ---------------------------------------------------------------------------
+// Streaks — engagement, not adoption.
+// ---------------------------------------------------------------------------
+
+const STREAK_BUCKETS = [
+  { label: '1', min: 1, max: 1 }, { label: '2–3', min: 2, max: 3 }, { label: '4–6', min: 4, max: 6 },
+  { label: '7–13', min: 7, max: 13 }, { label: '14–29', min: 14, max: 29 }, { label: '30+', min: 30, max: Infinity },
+];
+
+async function loadStreaks(realIds, keys, nowMs) {
+  const [streakRows, logRows, milestoneRows] = await Promise.all([
+    fetchAll('user_streaks', 'user_id,current_streak,longest_streak,last_activity_date,grace_period_expires_at,freezes_used_total', null, 'user_id'),
+    fetchAll('streak_daily_log', 'user_id,date,status'),
+    fetchAll('streak_milestones', 'user_id,milestone'),
   ]);
-  const subByUser = new Map(subs.map((s) => [s.user_id, s]));
+  const streaks = streakRows.filter((s) => realIds.has(s.user_id));
+  const logs = logRows.filter((r) => realIds.has(r.user_id));
+  const milestones = milestoneRows.filter((m) => realIds.has(m.user_id));
 
-  // Signups: daily series inside the window, by platform.
-  const series = {};
-  for (let d = days - 1; d >= 0; d--) series[dayKey(new Date(now - d * 864e5).toISOString())] = { date: dayKey(new Date(now - d * 864e5).toISOString()), mobile: 0, web: 0, other: 0 };
-  const byPlatform = {};
-  let signups7 = 0, signups30 = 0, signupsWindow = 0;
-  for (const u of users) {
-    const plat = u.signup_platform || 'other';
-    byPlatform[plat] = (byPlatform[plat] || 0) + 1;
-    const age = now - new Date(u.created_at).getTime();
-    if (age < 7 * 864e5) signups7++;
-    if (age < 30 * 864e5) signups30++;
-    if (u.created_at >= sinceIso) {
-      signupsWindow++;
-      const k = dayKey(u.created_at);
-      if (series[k]) series[k][plat in series[k] ? plat : 'other']++;
+  const current = streaks.map((s) => s.current_streak || 0);
+  const longest = streaks.map((s) => s.longest_streak || 0);
+  const onStreak = current.filter((c) => c > 0);
+
+  const distribution = STREAK_BUCKETS.map((b) => ({ label: b.label, users: longest.filter((v) => v >= b.min && v <= b.max).length }));
+
+  const milestoneCounts = {};
+  for (const m of milestones) milestoneCounts[m.milestone] = (milestoneCounts[m.milestone] || 0) + 1;
+
+  const statusMix = {};
+  const activeDaysPerUser = {};
+  const activeByDay = {};
+  for (const r of logs) {
+    statusMix[r.status] = (statusMix[r.status] || 0) + 1;
+    if (r.status === 'active' || r.status === 'restored') {
+      activeDaysPerUser[r.user_id] = (activeDaysPerUser[r.user_id] || 0) + 1;
+      activeByDay[r.date] = (activeByDay[r.date] || 0) + 1; // `date` is already a user-local calendar day
     }
   }
+  const activeDays = Object.values(activeDaysPerUser);
 
-  // Activity from last_active_at (written by middleware/featureTracking.js).
-  const active = (ms) => users.filter((u) => u.last_active_at && now - new Date(u.last_active_at).getTime() < ms).length;
+  return {
+    summary: {
+      usersWithHistory: streaks.length,
+      onStreakNow: onStreak.length,
+      avgCurrentStreak: round1(mean(onStreak)),
+      avgLongestStreak: round1(mean(longest)),
+      longestEver: longest.length ? Math.max(...longest) : 0,
+      inGrace: streaks.filter((s) => s.grace_period_expires_at && toMs(s.grace_period_expires_at) > nowMs).length,
+      freezesUsed: streaks.reduce((a, s) => a + (s.freezes_used_total || 0), 0),
+      avgActiveDays: round1(mean(activeDays)),
+      medianActiveDays: median(activeDays),
+    },
+    distribution,
+    milestones: Object.entries(milestoneCounts).map(([milestone, users]) => ({ milestone: Number(milestone), users })).sort((a, b) => a.milestone - b.milestone),
+    statusMix,
+    dailyActive: keys.map((date) => ({ date, users: activeByDay[date] || 0 })),
+    launchedOn: STREAKS_LAUNCHED,
+  };
+}
 
-  // Subscription state per user.
-  const subscriptionCounts = {};
-  const trialsInWindow = rc.events.filter((e) => e.event_type === 'INITIAL_PURCHASE' && e.created_at >= sinceIso && realIds.has(emailToId(users, e.app_user_id))).length;
-  const churnInWindow = rc.events.filter((e) => e.event_type === 'EXPIRATION' && e.created_at >= sinceIso && realIds.has(emailToId(users, e.app_user_id))).length;
+// ---------------------------------------------------------------------------
+// One snapshot per window so the pieces can never drift against each other.
+// ---------------------------------------------------------------------------
+
+async function loadSnapshot(days) {
+  return cached(`snapshot:${days}`, async () => {
+    const nowMs = Date.now();
+    const keys = windowKeys(days, nowMs);
+    const windowStartKey = keys[0];
+    const users = await loadRealUsers();
+    const realIds = new Set(users.map((u) => u.id));
+    const [featureUsage, stripeSubs, rc, streaks] = await Promise.all([
+      loadFeatureUsage(realIds, windowStartKey),
+      fetchAll('subscriptions', 'user_id,status,tier,stripe_price_id,trial_start,trial_end,canceled_at,created_at'),
+      loadRcEvents(),
+      loadStreaks(realIds, keys, nowMs),
+    ]);
+    return { nowMs, days, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, streaks };
+  });
+}
+
+async function getOverview({ days = 30 } = {}) {
+  const snap = await loadSnapshot(days);
+  const { nowMs, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, streaks } = snap;
+  const { features, perUserCounts, perUserLastMs } = featureUsage;
+  const subByUser = new Map(stripeSubs.map((s) => [s.user_id, s]));
+  const idByEmail = new Map(users.map((u) => [(u.email || '').toLowerCase(), u.id]));
+  const inWindow = (v) => { const k = dayKey(v); return k !== null && k >= windowStartKey; };
+
+  // --- Signups: calendar-day buckets; the tile is the sum of the bars. ---
+  const series = {};
+  for (const k of keys) series[k] = { date: k, mobile: 0, web: 0, other: 0 };
+  const platformInWindow = { mobile: 0, web: 0, other: 0 };
+  const platformAllTime = { mobile: 0, web: 0, other: 0 };
+  let signups7 = 0;
+  const key7 = shiftDay(dayKey(nowMs), -6);
+  const key30 = shiftDay(dayKey(nowMs), -29);
+  let signups30 = 0;
   for (const u of users) {
-    const st = subscriptionState(u, subByUser.get(u.id), rc.latest.get((u.email || '').toLowerCase()));
+    const plat = u.signup_platform === 'mobile' || u.signup_platform === 'web' ? u.signup_platform : 'other';
+    platformAllTime[plat]++;
+    const k = dayKey(u.created_at);
+    if (!k) continue;
+    if (k >= key7) signups7++;
+    if (k >= key30) signups30++;
+    if (Object.hasOwn(series, k)) { series[k][plat]++; platformInWindow[plat]++; }
+  }
+  const signupSeries = keys.map((k) => series[k]);
+  const signupsInWindow = signupSeries.reduce((a, d) => a + d.mobile + d.web + d.other, 0);
+
+  // --- Activity: last_active_at blended with the latest feature write. ---
+  const lastSeenMs = (u) => {
+    const a = toMs(u.last_active_at);
+    const b = perUserLastMs.get(u.id);
+    const vals = [a, b].filter((v) => typeof v === 'number' && !Number.isNaN(v));
+    return vals.length ? Math.max(...vals) : null;
+  };
+  const active = (ms) => users.filter((u) => { const s = lastSeenMs(u); return s !== null && nowMs - s < ms; }).length;
+
+  // --- Subscriptions ---
+  const subscriptionCounts = { active: 0, trialing: 0, canceling: 0, past_due: 0, grandfathered: 0, free: 0 };
+  const discrepancies = [];
+  let paying = 0;
+  for (const u of users) {
+    const evidence = liveEvidence(subByUser.get(u.id), rc.latestProd.get((u.email || '').toLowerCase()), nowMs);
+    const st = subscriptionState(u, evidence);
     subscriptionCounts[st.status] = (subscriptionCounts[st.status] || 0) + 1;
+    if (st.tier === 'premium' && ['active', 'canceling', 'past_due'].includes(st.status)) paying++;
+    discrepancies.push(...subscriptionDiscrepancies(u, evidence, rc.sandboxEmails));
+  }
+
+  // --- Trials / paid starts / lapses in the window (production, real users) ---
+  let trialsStarted = 0, paidStarts = 0, lapsedTrial = 0, lapsedPaid = 0;
+  for (const [email, list] of rc.prodByEmail) {
+    if (!realIds.has(idByEmail.get(email))) continue;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!inWindow(e.createdMs)) continue;
+      if (e.eventType === 'INITIAL_PURCHASE') {
+        if (e.periodType === 'TRIAL') trialsStarted++; else paidStarts++;
+      } else if (e.eventType === 'RENEWAL') {
+        // A RENEWAL whose previous event was a TRIAL period is the trial converting to paid.
+        const prev = list[i - 1];
+        if (prev && prev.periodType === 'TRIAL' && e.periodType !== 'TRIAL') paidStarts++;
+      } else if (e.eventType === 'EXPIRATION') {
+        if (e.periodType === 'TRIAL') lapsedTrial++; else lapsedPaid++;
+      }
+    }
+  }
+  for (const s of stripeSubs) {
+    if (!realIds.has(s.user_id)) continue;
+    if (inWindow(s.created_at)) paidStarts++;
+    if (s.canceled_at && inWindow(s.canceled_at)) lapsedPaid++;
   }
 
   const activated = users.filter((u) => {
     const c = perUserCounts.get(u.id);
-    return c && Object.keys(c).some((f) => !['guided_tour', 'push_notifications'].includes(f));
+    return c && Object.keys(c).some((f) => !SETUP_FEATURES.includes(f));
   }).length;
 
+  const pendingDeletion = users.filter((u) => u.deletion_status).length;
+
   return {
-    generatedAt: new Date(now).toISOString(),
+    generatedAt: new Date(nowMs).toISOString(),
     windowDays: days,
+    windowStart: windowStartKey,
+    windowEnd: keys[keys.length - 1],
+    timezone: ADMIN_TZ,
     excludedEmails: [...EXCLUDED_EMAILS],
+    assumptions: [
+      `Days are calendar days in ${ADMIN_TZ}; the window is the last ${days} days including today, and tiles are sums of the same buckets the charts draw.`,
+      `Active = a real user seen in the last 1/7/30 × 24h, where "seen" is the later of users.last_active_at (API activity, tracked since ${LAST_ACTIVE_TRACKED_SINCE}) and their latest feature write.`,
+      'Subscription buckets follow users.tier — the tier the app enforces limits on. Stripe rows and RevenueCat production events only refine premium into active / trialing / canceling / past_due and are cross-checked in "Needs attention".',
+      'RevenueCat SANDBOX events are ignored everywhere except the sandbox discrepancy row.',
+      'Feature adoption counts things a user chose to do; streaks (a side-effect log) have their own card, and guided tour / push token are listed under Setup and excluded from "Activated".',
+    ],
     totals: {
       realUsers: users.length,
+      pendingDeletion,
       activated,
       signups7d: signups7,
       signups30d: signups30,
-      signupsInWindow: signupsWindow,
+      signupsInWindow,
       active1d: active(864e5),
       active7d: active(7 * 864e5),
       active30d: active(30 * 864e5),
       lastActiveTracked: users.some((u) => u.last_active_at),
+      lastActiveTrackedSince: LAST_ACTIVE_TRACKED_SINCE,
     },
-    signupsByPlatform: byPlatform,
-    signupSeries: Object.values(series),
-    subscriptions: { counts: subscriptionCounts, newPurchasesInWindow: trialsInWindow, expirationsInWindow: churnInWindow },
+    signupsByPlatform: platformInWindow,
+    signupsByPlatformAllTime: platformAllTime,
+    signupSeries,
+    subscriptions: {
+      counts: subscriptionCounts,
+      paying,
+      trialsStarted,
+      paidStarts,
+      lapsed: { trial: lapsedTrial, paid: lapsedPaid },
+      discrepancies,
+    },
+    streaks,
     features: features
       .filter((f) => !f.error)
       .map((f) => ({ ...f, adoptionPct: users.length ? Math.round((100 * f.adopters) / users.length) : 0, activePct: users.length ? Math.round((100 * f.activeInWindow) / users.length) : 0 }))
-      .sort((a, b) => b.adopters - a.adopters),
+      .sort((a, b) => (a.group === b.group ? b.adopters - a.adopters : a.group === 'feature' ? -1 : 1)),
     featureErrors: features.filter((f) => f.error),
   };
 }
 
-function emailToId(users, email) {
-  const e = (email || '').toLowerCase();
-  const u = users.find((x) => (x.email || '').toLowerCase() === e);
-  return u ? u.id : null;
-}
-
 async function listUsers({ search = '', sort = 'created_at', dir = 'desc', page = 1, pageSize = 50 } = {}) {
-  const users = await loadRealUsers();
-  const realIds = new Set(users.map((u) => u.id));
-  const [{ perUserCounts }, subs, streaks, rc] = await Promise.all([
-    cached('featureUsage:30', () => loadFeatureUsage(realIds, new Date(Date.now() - 30 * 864e5).toISOString())),
-    fetchAll('subscriptions', 'user_id,status,tier,stripe_price_id'),
-    fetchAll('user_streaks', 'user_id,current_streak,longest_streak,last_activity_date'),
-    cached('rcEvents', loadLatestRcEventByEmail),
-  ]);
-  const subByUser = new Map(subs.map((s) => [s.user_id, s]));
-  const streakByUser = new Map(streaks.map((s) => [s.user_id, s]));
+  const snap = await loadSnapshot(30);
+  const { nowMs, users, featureUsage, stripeSubs, rc } = snap;
+  const streakRows = await fetchAll('user_streaks', 'user_id,current_streak,longest_streak,last_activity_date', null, 'user_id');
+  const subByUser = new Map(stripeSubs.map((s) => [s.user_id, s]));
+  const streakByUser = new Map(streakRows.map((s) => [s.user_id, s]));
 
   const q = search.trim().toLowerCase();
-  let rows = users
+  const rows = users
     .filter((u) => !q || (u.email || '').toLowerCase().includes(q) || (u.first_name || '').toLowerCase().includes(q) || u.id === q)
-    .map((u) => ({
-      id: u.id,
-      email: u.email,
-      firstName: u.first_name,
-      createdAt: u.created_at,
-      signupPlatform: u.signup_platform,
-      tier: u.tier,
-      lastActiveAt: u.last_active_at,
-      deletionStatus: u.deletion_status,
-      subscription: subscriptionState(u, subByUser.get(u.id), rc.latest.get((u.email || '').toLowerCase())),
-      streak: streakByUser.get(u.id) || null,
-      features: perUserCounts.get(u.id) || {},
-    }));
+    .map((u) => {
+      const evidence = liveEvidence(subByUser.get(u.id), rc.latestProd.get((u.email || '').toLowerCase()), nowMs);
+      return {
+        id: u.id,
+        email: u.email,
+        firstName: u.first_name,
+        createdAt: u.created_at,
+        signupPlatform: u.signup_platform,
+        tier: u.tier,
+        lastActiveAt: u.last_active_at,
+        deletionStatus: u.deletion_status,
+        subscription: subscriptionState(u, evidence),
+        streak: streakByUser.get(u.id) || null,
+        features: featureUsage.perUserCounts.get(u.id) || {},
+      };
+    });
 
   const key = { created_at: 'createdAt', last_active_at: 'lastActiveAt', email: 'email' }[sort] || 'createdAt';
   rows.sort((a, b) => {
@@ -281,27 +532,30 @@ async function listUsers({ search = '', sort = 'created_at', dir = 'desc', page 
 
 async function getUserDetail(userId) {
   const sb = getServiceClient();
-  await loadRealUsers(); // resolves userColumns
-  const { data: user, error } = await sb.from('users').select(userColumns).eq('id', userId).single();
+  const { data: user, error } = await sb.from('users').select(USER_COLUMNS).eq('id', userId).single();
   if (error || !user) return null;
   const email = (user.email || '').toLowerCase();
 
   const [subRes, rcRes, streakRes, onboardingRes, usageRes, liveRc] = await Promise.all([
     sb.from('subscriptions').select('*').eq('user_id', userId).maybeSingle(),
-    sb.from('revenuecat_webhook_events').select('event_type,product_id,created_at,processed,error_message').ilike('app_user_id', email).order('created_at', { ascending: false }).limit(50),
+    sb.from('revenuecat_webhook_events').select('event_type,app_user_id,product_id,created_at,payload,processed,error_message').eq('app_user_id', email).order('created_at', { ascending: false }).limit(50),
     sb.from('user_streaks').select('*').eq('user_id', userId).maybeSingle(),
     sb.from('user_onboarding_data').select('primary_goal,household_size,weekly_budget,onboarding_completed,created_at').eq('user_id', userId).maybeSingle(),
     sb.from('usage_limits').select('*').eq('user_id', userId).maybeSingle(),
     revenueCatService.getSubscriberInfo(user.email).catch(() => null),
   ]);
 
+  const rcEvents = (rcRes.data || []).map((row) => ({ ...parseRcEvent(row), processed: row.processed, error_message: row.error_message }));
+  const latestProd = rcEvents.find((e) => !e.isSandbox) || null;
+  const evidence = liveEvidence(subRes.data, latestProd, Date.now());
+
   const counts = {};
-  for (const f of FEATURE_TABLES) {
+  await Promise.all(FEATURE_TABLES.map(async (f) => {
     let q = sb.from(f.table).select('*', { count: 'exact', head: true }).eq(f.user, userId);
     if (f.filter) q = f.filter(q);
     const { count } = await q;
     counts[f.feature] = count || 0;
-  }
+  }));
 
   return {
     user: {
@@ -309,9 +563,16 @@ async function getUserDetail(userId) {
       tier: user.tier, isGrandfathered: user.is_grandfathered, signupPlatform: user.signup_platform,
       lastActiveAt: user.last_active_at, deletionStatus: user.deletion_status, excluded: isExcludedUser(user),
     },
-    subscription: subscriptionState(user, subRes.data, rcRes.data && rcRes.data[0]),
+    subscription: subscriptionState(user, evidence),
+    evidence,
+    discrepancies: subscriptionDiscrepancies(user, evidence, new Set(rcEvents.some((e) => e.isSandbox) ? [email] : [])),
     stripeSubscription: subRes.data || null,
-    revenueCatEvents: rcRes.data || [],
+    revenueCatEvents: rcEvents.map((e) => ({
+      event_type: e.eventType, product_id: e.productId, created_at: e.createdAt,
+      period_type: e.periodType, environment: e.environment,
+      expires_at: e.expirationMs ? new Date(e.expirationMs).toISOString() : null,
+      processed: e.processed, error_message: e.error_message,
+    })),
     revenueCatLive: liveRc ? { entitlements: liveRc.entitlements, subscriptions: liveRc.subscriptions, firstSeen: liveRc.first_seen, lastSeen: liveRc.last_seen } : null,
     streak: streakRes.data || null,
     onboarding: onboardingRes.data || null,
@@ -320,4 +581,4 @@ async function getUserDetail(userId) {
   };
 }
 
-module.exports = { getOverview, listUsers, getUserDetail, isExcludedUser, loadRealUsers, EXCLUDED_EMAILS };
+module.exports = { getOverview, listUsers, getUserDetail, isExcludedUser, loadRealUsers, EXCLUDED_EMAILS, ADMIN_TZ, dayKey };

@@ -12,12 +12,17 @@ const { getServiceClient } = require('../config/supabase');
 const { resolveFeature, resolvePlatform } = require('../services/featureEventMap');
 
 const LAST_ACTIVE_THROTTLE_MS = 5 * 60 * 1000;
+const LAST_ACTIVE_REARM_MS = 10 * 60 * 1000;
 const lastActiveWrites = new Map(); // userId -> epoch ms of last write
-let lastActiveEnabled = true;       // flipped off if migration 078 is not applied
+// Paused only when Postgres says the column really doesn't exist (42703),
+// and only for LAST_ACTIVE_REARM_MS. A message-regex latch used to disable
+// this for the process lifetime — and PostgREST's transient schema-cache miss
+// right after a migration produces exactly that message.
+let lastActivePausedUntil = 0;
 
 function touchLastActive(userId) {
-  if (!lastActiveEnabled) return;
   const now = Date.now();
+  if (now < lastActivePausedUntil) return;
   const prev = lastActiveWrites.get(userId) || 0;
   if (now - prev < LAST_ACTIVE_THROTTLE_MS) return;
   lastActiveWrites.set(userId, now);
@@ -35,9 +40,9 @@ function touchLastActive(userId) {
     .eq('id', userId)
     .then(({ error }) => {
       if (!error) return;
-      if (/last_active_at/.test(error.message)) {
-        lastActiveEnabled = false;
-        console.warn('[FeatureTracking] users.last_active_at missing — apply migrations/078_add_last_active_at.sql (disabled until restart)');
+      if (error.code === '42703') {
+        lastActivePausedUntil = Date.now() + LAST_ACTIVE_REARM_MS;
+        console.warn('[FeatureTracking] users.last_active_at missing — apply migrations/078_add_last_active_at.sql (retrying in 10 min)');
         return;
       }
       console.warn('[FeatureTracking] last_active_at update failed:', error.message);

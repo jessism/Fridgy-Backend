@@ -116,18 +116,35 @@ const toMs = (v) => (v ? Date.parse(v) : NaN);
 // of six other actions, so as "adoption" it means "did anything". It feeds the
 // Streaks card instead (loadStreaks).
 // ---------------------------------------------------------------------------
+// Rows on saved_recipes with import_method = 'default_seed' are the "Rosemary
+// Gnocchi" recipe that older accounts were given on signup (now disabled in
+// authController). It is stored as an Instagram import, so without this filter
+// 7 of 22 real users count as "saved a recipe" having never saved anything.
+const notSeed = (q) => q.or('import_method.is.null,import_method.neq.default_seed');
+
 const FEATURE_TABLES = [
-  { feature: 'inventory',          group: 'feature', table: 'fridge_items',         user: 'user_id',  time: 'created_at' },
-  { feature: 'meal_log',           group: 'feature', table: 'meal_logs',            user: 'user_id',  time: 'logged_at' },
-  { feature: 'recipe_import',      group: 'feature', table: 'import_jobs',          user: 'user_id',  time: 'created_at', filter: (q) => q.eq('status', 'completed') },
-  { feature: 'saved_recipes',      group: 'feature', table: 'saved_recipes',        user: 'user_id',  time: 'created_at' },
-  { feature: 'ai_recipes',         group: 'feature', table: 'ai_generated_recipes', user: 'user_id',  time: 'created_at' },
-  { feature: 'shopping_list',      group: 'feature', table: 'shopping_list_items',  user: 'added_by', time: 'added_at' },
-  { feature: 'meal_plan',          group: 'feature', table: 'meal_plans',           user: 'user_id',  time: 'created_at' },
-  { feature: 'cookbook',           group: 'feature', table: 'cookbooks',            user: 'user_id',  time: 'created_at' },
-  { feature: 'inventory_usage',    group: 'feature', table: 'inventory_usage',      user: 'user_id',  time: 'used_at' },
-  { feature: 'guided_tour',        group: 'setup',   table: 'user_tours',           user: 'user_id',  time: 'created_at' },
-  { feature: 'push_notifications', group: 'setup',   table: 'mobile_push_tokens',   user: 'user_id',  time: 'created_at' },
+  { feature: 'inventory',          group: 'feature', table: 'fridge_items',         user: 'user_id',  time: 'created_at',
+    definition: 'Users with at least one fridge_items row (including items since deleted). Active = an item created in the window.' },
+  { feature: 'meal_log',           group: 'feature', table: 'meal_logs',            user: 'user_id',  time: 'logged_at',
+    definition: 'Users with at least one meal_logs row. Active = a meal logged in the window.' },
+  { feature: 'recipe_import',      group: 'feature', table: 'import_jobs',          user: 'user_id',  time: 'created_at', filter: (q) => q.eq('status', 'completed'),
+    definition: 'Users with at least one COMPLETED import_jobs row — the Instagram / TikTok / Facebook / web extraction pipeline. Failed jobs do not count. A completed import also creates a saved recipe, so these users appear under Recipe library too.' },
+  { feature: 'saved_recipes',      group: 'feature', table: 'saved_recipes',        user: 'user_id',  time: 'created_at', filter: notSeed,
+    definition: 'Users with at least one saved_recipes row however it got there — import, iOS shortcut, scan, manual entry, community adopt — EXCLUDING the seeded "Rosemary Gnocchi" default recipe (import_method = default_seed) that older accounts received on signup.' },
+  { feature: 'ai_recipes',         group: 'feature', table: 'ai_generated_recipes', user: 'user_id',  time: 'created_at',
+    definition: 'Users with at least one ai_generated_recipes row (generated a recipe from their inventory).' },
+  { feature: 'shopping_list',      group: 'feature', table: 'shopping_list_items',  user: 'added_by', time: 'added_at',
+    definition: 'Users who added at least one shopping_list_items row (added_by), including on lists shared with them.' },
+  { feature: 'meal_plan',          group: 'feature', table: 'meal_plans',           user: 'user_id',  time: 'created_at',
+    definition: 'Users with at least one meal_plans row.' },
+  { feature: 'cookbook',           group: 'feature', table: 'cookbooks',            user: 'user_id',  time: 'created_at',
+    definition: 'Users with at least one cookbooks row.' },
+  { feature: 'inventory_usage',    group: 'feature', table: 'inventory_usage',      user: 'user_id',  time: 'used_at',
+    definition: 'Users with at least one inventory_usage row (marked an inventory item as used or consumed).' },
+  { feature: 'guided_tour',        group: 'setup',   table: 'user_tours',           user: 'user_id',  time: 'created_at',
+    definition: 'Users with a user_tours row, created when the guided tour starts. Setup, not a feature: excluded from "Activated".' },
+  { feature: 'push_notifications', group: 'setup',   table: 'mobile_push_tokens',   user: 'user_id',  time: 'created_at',
+    definition: 'Users with a mobile_push_tokens row, registered when the app obtains a push token. Setup, not a feature: excluded from "Activated".' },
 ];
 const SETUP_FEATURES = FEATURE_TABLES.filter((f) => f.group === 'setup').map((f) => f.feature);
 
@@ -149,7 +166,7 @@ async function loadFeatureUsage(realIds, windowStartKey) {
     try {
       rows = await fetchAll(f.table, `${f.user},${f.time}`, f.filter);
     } catch (err) {
-      features.push({ feature: f.feature, group: f.group, error: err.message });
+      features.push({ feature: f.feature, group: f.group, definition: f.definition, error: err.message });
       continue;
     }
     const per = {};
@@ -172,6 +189,7 @@ async function loadFeatureUsage(realIds, windowStartKey) {
       feature: f.feature,
       group: f.group,
       table: f.table,
+      definition: f.definition,
       adopters: counts.length,
       activeInWindow: recent.size,
       rows: counts.reduce((a, b) => a + b, 0),

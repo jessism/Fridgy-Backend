@@ -27,14 +27,44 @@ const LAST_ACTIVE_TRACKED_SINCE = '2026-08-29'; // migration 078 + featureTracki
 const STREAKS_LAUNCHED = '2026-07-18';
 
 const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000001'; // migrations/063
-const DEFAULT_EXCLUDED_EMAILS = ['hello@trackabite.app', 'jessie@trackabite.app', 'adityabiswas1999@hotmail.com'];
-// The env var ADDS to the defaults; it never replaces them.
+
+/**
+ * Internal accounts that must never count as real users.
+ *
+ * The `email.includes('test')` heuristic below catches most of them, but not
+ * the ones that simply don't say "test": typo'd variants of an owned address,
+ * a personal address, an App Store sandbox tester. Each entry here was
+ * confirmed against the data (owner's first_name, no activity, or sandbox-only
+ * IAP events) rather than guessed from the address.
+ *
+ * The durable fix is users.is_test (migrations/080) — once that is applied,
+ * flagging an account needs no deploy. This list stays as a backstop.
+ */
+const DEFAULT_EXCLUDED_EMAILS = [
+  'hello@trackabite.app',
+  'jessie@trackabite.app',
+  'adityabiswas1999@hotmail.com',
+  'adityabiswas1999@hotmail.coma',  // typo of the above; first_name "Aditya", no activity
+  'abiswas@sfu.ca',                 // owner's personal address
+  'hello@trackabte.app',            // typo of the trackabite.app address
+  'jessietrackie@gmail.com',        // first_name "Trackie"
+  'tann.kh0ngtuoc@gmail.com',       // first_name "Jessie"; sibling of tan.kh0ngtuoc+testaug26@
+  'nathannorth2005@gmail.com',      // six daily SANDBOX App Store renewals — IAP testing
+];
+
+// Whole domains that can never be a customer.
+// example.com/.org/.net and .test are reserved by RFC 2606; trackabte.app is a
+// typo of our own domain.
+const EXCLUDED_DOMAINS = new Set(['example.com', 'example.org', 'example.net', 'test.com', 'trackabte.app']);
+
+// ADMIN_ANALYTICS_EXCLUDED_EMAILS adds to the defaults; it never replaces them.
 const EXCLUDED_EMAILS = new Set(
   [...DEFAULT_EXCLUDED_EMAILS, ...(process.env.ADMIN_ANALYTICS_EXCLUDED_EMAILS || '').split(',')]
     .map((e) => e.trim().toLowerCase()).filter(Boolean)
 );
 
 const USER_COLUMNS = 'id,email,first_name,created_at,tier,is_admin,is_grandfathered,signup_platform,last_active_at,deletion_status';
+const USER_COLUMNS_WITH_IS_TEST = `${USER_COLUMNS},is_test`;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const cache = new Map(); // key -> { at, value }
 
@@ -46,14 +76,23 @@ async function cached(key, fn) {
   return value;
 }
 
+/** Why an account is not a real user, or null if it is one. */
+function exclusionReason(u) {
+  const email = (u.email || '').toLowerCase();
+  const domain = email.slice(email.lastIndexOf('@') + 1);
+  if (!email) return 'no email';
+  if (u.id === SYSTEM_USER_ID) return 'system user';
+  if (u.is_test === true) return 'users.is_test';
+  if (u.is_admin === true) return 'admin';
+  if (EXCLUDED_EMAILS.has(email)) return 'internal account';
+  if (EXCLUDED_DOMAINS.has(domain)) return `reserved domain (${domain})`;
+  if (email.includes('test')) return 'email contains "test"';
+  return null;
+}
+
 /** True for accounts that must never count as real users. */
 function isExcludedUser(u) {
-  const email = (u.email || '').toLowerCase();
-  return !email
-    || u.id === SYSTEM_USER_ID
-    || u.is_admin === true
-    || email.includes('test')
-    || EXCLUDED_EMAILS.has(email);
+  return exclusionReason(u) !== null;
 }
 
 /**
@@ -78,7 +117,16 @@ async function fetchAll(table, select, applyFilters, orderCol = 'id') {
 
 async function loadRealUsers() {
   return cached('realUsers', async () => {
-    const all = await fetchAll('users', USER_COLUMNS);
+    // Prefer users.is_test (migrations/080) so accounts can be flagged without
+    // a deploy. If the column isn't applied yet, fall back for this call only —
+    // no sticky flag, so it starts working the moment the migration lands.
+    let all;
+    try {
+      all = await fetchAll('users', USER_COLUMNS_WITH_IS_TEST);
+    } catch (err) {
+      if (!/is_test/.test(err.message)) throw err;
+      all = await fetchAll('users', USER_COLUMNS);
+    }
     return all.filter((u) => !isExcludedUser(u));
   });
 }
@@ -469,7 +517,11 @@ async function getOverview({ days = 30 } = {}) {
     windowStart: windowStartKey,
     windowEnd: keys[keys.length - 1],
     timezone: ADMIN_TZ,
-    excludedEmails: [...EXCLUDED_EMAILS],
+    exclusions: {
+      emails: [...EXCLUDED_EMAILS],
+      domains: [...EXCLUDED_DOMAINS],
+      rule: 'Excluded: any email containing "test", the internal addresses and reserved domains listed here, admins, accounts flagged users.is_test, and the system user.',
+    },
     assumptions: [
       `Days are calendar days in ${ADMIN_TZ}; the window is the last ${days} days including today, and tiles are sums of the same buckets the charts draw.`,
       `Active = a real user seen in the last 1/7/30 × 24h, where "seen" is the later of users.last_active_at (API activity, tracked since ${LAST_ACTIVE_TRACKED_SINCE}) and their latest feature write.`,
@@ -599,4 +651,4 @@ async function getUserDetail(userId) {
   };
 }
 
-module.exports = { getOverview, listUsers, getUserDetail, isExcludedUser, loadRealUsers, EXCLUDED_EMAILS, ADMIN_TZ, dayKey };
+module.exports = { getOverview, listUsers, getUserDetail, isExcludedUser, exclusionReason, loadRealUsers, EXCLUDED_EMAILS, EXCLUDED_DOMAINS, ADMIN_TZ, dayKey };

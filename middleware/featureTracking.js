@@ -10,6 +10,7 @@
 const { getPostHogClient } = require('../config/posthog');
 const { getServiceClient } = require('../config/supabase');
 const { resolveFeature, resolvePlatform } = require('../services/featureEventMap');
+const { isInternalAccount } = require('../services/internalAccounts');
 
 const LAST_ACTIVE_THROTTLE_MS = 5 * 60 * 1000;
 const LAST_ACTIVE_REARM_MS = 10 * 60 * 1000;
@@ -61,8 +62,19 @@ function featureTracking(req, res, next) {
       const routePath = rawPath && rawPath.length > 1 ? rawPath.replace(/\/$/, '') : rawPath;
       const resolved = resolveFeature(req.method, routePath);
 
+      // last_active_at is still written for internal accounts: only the admin
+      // analytics service reads it, and that filters them out anyway, so it
+      // stays useful when looking one up on the user detail page.
       touchLastActive(user.id);
       if (!resolved) return;
+
+      // Admins, the system user and test accounts must not reach PostHog, or
+      // its dashboards disagree with the admin console. Set
+      // FEATURE_TRACKING_INCLUDE_INTERNAL=1 to watch your own events land.
+      if (!process.env.FEATURE_TRACKING_INCLUDE_INTERNAL && isInternalAccount(user)) {
+        if (process.env.FEATURE_TRACKING_DEBUG) console.log(`[FeatureTracking] skipped internal account ${user.email}`);
+        return;
+      }
 
       const client = getPostHogClient();
       if (!client) return;

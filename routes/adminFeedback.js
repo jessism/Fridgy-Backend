@@ -11,6 +11,7 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const { requireAdmin } = require('../middleware/adminAuth');
 const { getServiceClient } = require('../config/supabase');
+const { isInternalAccount } = require('../services/internalAccounts');
 
 const router = express.Router();
 router.use(authenticateToken, requireAdmin);
@@ -34,35 +35,45 @@ router.get('/', async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize, 10) || 50));
     const status = STATUSES.includes(req.query.status) ? req.query.status : null;
-    const from = (page - 1) * pageSize;
 
+    // Fetch, join, then filter and paginate in memory. Paging in the query
+    // would make `total` count submissions from internal accounts that are
+    // about to be filtered out, so the pager would disagree with the list.
+    // Feedback volume is small; revisit if it ever passes a few thousand.
     let q = sb
       .from('feedback_submissions')
-      .select(ROW_COLUMNS, { count: 'exact' })
+      .select(ROW_COLUMNS)
       .order('created_at', { ascending: false })
-      .range(from, from + pageSize - 1);
+      .limit(5000);
     if (status) q = q.eq('status', status);
 
-    const { data: rows, error, count } = await q;
+    const { data: rows, error } = await q;
     if (error) throw error;
 
-    // Join the submitter in a second query — N is one page (<= 100), so this
-    // stays a single extra round trip rather than a join we'd have to maintain.
     const ids = [...new Set((rows || []).map((r) => r.user_id).filter(Boolean))];
     let usersById = {};
     if (ids.length) {
       const { data: users, error: userError } = await sb
         .from('users')
-        .select('id,tier,signup_platform')
+        .select('id,email,tier,signup_platform,is_admin,is_test')
         .in('id', ids);
       if (userError) throw userError;
       usersById = Object.fromEntries((users || []).map((u) => [u.id, u]));
     }
 
-    const items = (rows || []).map((r) => shape(r, usersById[r.user_id]));
+    // Submissions from admins, the system user and test accounts are not
+    // product feedback. They are counted, not silently dropped, so nothing
+    // looks like it went missing.
+    const all = (rows || []).map((r) => ({ row: r, user: usersById[r.user_id] }));
+    const kept = all.filter(({ user }) => !user || !isInternalAccount(user));
+    const internalHidden = all.length - kept.length;
+
+    const from = (page - 1) * pageSize;
+    const items = kept.slice(from, from + pageSize).map(({ row, user }) => shape(row, user));
+
     res.json({
       success: true,
-      data: { items, total: count == null ? items.length : count, page, pageSize },
+      data: { items, total: kept.length, page, pageSize, internalHidden },
     });
   } catch (error) {
     console.error('[AdminFeedback] list failed:', error.message);

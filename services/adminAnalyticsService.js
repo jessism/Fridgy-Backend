@@ -21,47 +21,11 @@
  */
 const { getServiceClient } = require('../config/supabase');
 const revenueCatService = require('./revenueCatService');
+const { SYSTEM_USER_ID, INTERNAL_EMAILS, INTERNAL_DOMAINS, exclusionReason, isInternalAccount } = require('./internalAccounts');
 
 const ADMIN_TZ = process.env.ADMIN_ANALYTICS_TZ || 'America/Vancouver';
 const LAST_ACTIVE_TRACKED_SINCE = '2026-08-29'; // migration 078 + featureTracking deploy
 const STREAKS_LAUNCHED = '2026-07-18';
-
-const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000001'; // migrations/063
-
-/**
- * Internal accounts that must never count as real users.
- *
- * The `email.includes('test')` heuristic below catches most of them, but not
- * the ones that simply don't say "test": typo'd variants of an owned address,
- * a personal address, an App Store sandbox tester. Each entry here was
- * confirmed against the data (owner's first_name, no activity, or sandbox-only
- * IAP events) rather than guessed from the address.
- *
- * The durable fix is users.is_test (migrations/080) — once that is applied,
- * flagging an account needs no deploy. This list stays as a backstop.
- */
-const DEFAULT_EXCLUDED_EMAILS = [
-  'hello@trackabite.app',
-  'jessie@trackabite.app',
-  'adityabiswas1999@hotmail.com',
-  'adityabiswas1999@hotmail.coma',  // typo of the above; first_name "Aditya", no activity
-  'abiswas@sfu.ca',                 // owner's personal address
-  'hello@trackabte.app',            // typo of the trackabite.app address
-  'jessietrackie@gmail.com',        // first_name "Trackie"
-  'tann.kh0ngtuoc@gmail.com',       // first_name "Jessie"; sibling of tan.kh0ngtuoc+testaug26@
-  'nathannorth2005@gmail.com',      // six daily SANDBOX App Store renewals — IAP testing
-];
-
-// Whole domains that can never be a customer.
-// example.com/.org/.net and .test are reserved by RFC 2606; trackabte.app is a
-// typo of our own domain.
-const EXCLUDED_DOMAINS = new Set(['example.com', 'example.org', 'example.net', 'test.com', 'trackabte.app']);
-
-// ADMIN_ANALYTICS_EXCLUDED_EMAILS adds to the defaults; it never replaces them.
-const EXCLUDED_EMAILS = new Set(
-  [...DEFAULT_EXCLUDED_EMAILS, ...(process.env.ADMIN_ANALYTICS_EXCLUDED_EMAILS || '').split(',')]
-    .map((e) => e.trim().toLowerCase()).filter(Boolean)
-);
 
 const USER_COLUMNS = 'id,email,first_name,created_at,tier,is_admin,is_grandfathered,signup_platform,last_active_at,deletion_status';
 const USER_COLUMNS_WITH_IS_TEST = `${USER_COLUMNS},is_test`;
@@ -76,24 +40,8 @@ async function cached(key, fn) {
   return value;
 }
 
-/** Why an account is not a real user, or null if it is one. */
-function exclusionReason(u) {
-  const email = (u.email || '').toLowerCase();
-  const domain = email.slice(email.lastIndexOf('@') + 1);
-  if (!email) return 'no email';
-  if (u.id === SYSTEM_USER_ID) return 'system user';
-  if (u.is_test === true) return 'users.is_test';
-  if (u.is_admin === true) return 'admin';
-  if (EXCLUDED_EMAILS.has(email)) return 'internal account';
-  if (EXCLUDED_DOMAINS.has(domain)) return `reserved domain (${domain})`;
-  if (email.includes('test')) return 'email contains "test"';
-  return null;
-}
-
-/** True for accounts that must never count as real users. */
-function isExcludedUser(u) {
-  return exclusionReason(u) !== null;
-}
+/** Kept as a named export for callers that predate services/internalAccounts.js. */
+const isExcludedUser = isInternalAccount;
 
 /**
  * Page through a PostgREST query (default cap is 1000 rows). Always ordered:
@@ -518,8 +466,8 @@ async function getOverview({ days = 30 } = {}) {
     windowEnd: keys[keys.length - 1],
     timezone: ADMIN_TZ,
     exclusions: {
-      emails: [...EXCLUDED_EMAILS],
-      domains: [...EXCLUDED_DOMAINS],
+      emails: [...INTERNAL_EMAILS],
+      domains: [...INTERNAL_DOMAINS],
       rule: 'Excluded: any email containing "test", the internal addresses and reserved domains listed here, admins, accounts flagged users.is_test, and the system user.',
     },
     assumptions: [
@@ -602,8 +550,20 @@ async function listUsers({ search = '', sort = 'created_at', dir = 'desc', page 
 
 async function getUserDetail(userId) {
   const sb = getServiceClient();
-  const { data: user, error } = await sb.from('users').select(USER_COLUMNS).eq('id', userId).single();
-  if (error || !user) return null;
+  // Select is_test too: without it the `excluded` badge below can never fire
+  // the flag branch, so an account excluded from every aggregate would show as
+  // "not excluded" on its own detail page.
+  let user = null;
+  {
+    const withFlag = await sb.from('users').select(USER_COLUMNS_WITH_IS_TEST).eq('id', userId).maybeSingle();
+    if (withFlag.error && /is_test/.test(withFlag.error.message)) {
+      const fallback = await sb.from('users').select(USER_COLUMNS).eq('id', userId).maybeSingle();
+      user = fallback.data;
+    } else {
+      user = withFlag.data;
+    }
+  }
+  if (!user) return null;
   const email = (user.email || '').toLowerCase();
 
   const [subRes, rcRes, streakRes, onboardingRes, usageRes, liveRc] = await Promise.all([
@@ -651,4 +611,4 @@ async function getUserDetail(userId) {
   };
 }
 
-module.exports = { getOverview, listUsers, getUserDetail, isExcludedUser, exclusionReason, loadRealUsers, EXCLUDED_EMAILS, EXCLUDED_DOMAINS, ADMIN_TZ, dayKey };
+module.exports = { getOverview, listUsers, getUserDetail, isExcludedUser, exclusionReason, loadRealUsers, ADMIN_TZ, dayKey };

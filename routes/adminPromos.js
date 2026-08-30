@@ -20,6 +20,7 @@ const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const { requireAdmin } = require('../middleware/adminAuth');
 const { getServiceClient } = require('../config/supabase');
+const { isInternalAccount } = require('../services/internalAccounts');
 // Lazy: constructing the Stripe client throws if STRIPE_SECRET_KEY is absent,
 // and a route module that throws on require takes the whole server down at
 // boot. Building it on first use keeps that failure inside one request.
@@ -130,15 +131,21 @@ function validateCreate(body) {
 router.get('/', async (req, res) => {
   try {
     const sb = getServiceClient();
-    const [codesResult, redemptionsResult] = await Promise.all([
+    const [codesResult, redemptionsResult, usersResult] = await Promise.all([
       sb.from('promo_codes').select('*').order('created_at', { ascending: false }),
-      sb.from('user_promo_codes').select('promo_code_id'),
+      sb.from('user_promo_codes').select('promo_code_id,user_id').limit(5000),
+      sb.from('users').select('id,email,is_admin,is_test').limit(5000),
     ]);
     if (codesResult.error) throw codesResult.error;
     if (redemptionsResult.error) throw redemptionsResult.error;
+    if (usersResult.error) throw usersResult.error;
 
+    // A redemption by an admin or a test account is not a real redemption.
+    const usersById = new Map((usersResult.data || []).map((u) => [u.id, u]));
     const counts = {};
     for (const r of redemptionsResult.data || []) {
+      const u = usersById.get(r.user_id);
+      if (u && isInternalAccount(u)) continue;
       counts[r.promo_code_id] = (counts[r.promo_code_id] || 0) + 1;
     }
 

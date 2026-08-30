@@ -73,7 +73,7 @@ const authenticateToken = async (req, res, next) => {
     const supabase = getServiceClient();
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, email, first_name')
+      .select('id, email, first_name, is_admin, is_test')
       .eq('id', decoded.userId)
       .single();
 
@@ -90,7 +90,11 @@ const authenticateToken = async (req, res, next) => {
     req.user = {
       id: user.id,
       email: user.email,
-      firstName: user.first_name
+      firstName: user.first_name,
+      // Carried so downstream middleware can tell an internal account from a
+      // real one without another round trip (see middleware/featureTracking.js).
+      isAdmin: user.is_admin === true,
+      isTest: user.is_test === true
     };
 
     next();

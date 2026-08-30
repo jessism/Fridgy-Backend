@@ -46,7 +46,10 @@ WHERE is_test = false
 -- flag should put the person back in the numbers) and the system user
 -- (excluded by id).
 
--- Expected after running, as of 2026-08-30: 117 flagged, 15 real users.
+-- Expected after running, as of 2026-08-30: 115 flagged, 15 real users.
+-- (Not 117: the system user and the second admin are excluded by id and by
+--  is_admin respectively, and this backfill deliberately does not flag them.
+--  Migration 081 flags them and adds a trigger so this stays correct.)
 --   SELECT COUNT(*) FILTER (WHERE is_test) AS flagged,
 --          COUNT(*) FILTER (WHERE NOT is_test AND NOT is_admin) AS remaining
 --   FROM public.users;

@@ -166,6 +166,10 @@ router.post('/adopt/:sourceId', authMiddleware.authenticateToken, async (req, re
       times_cooked: 0,
       is_favorite: false,
       user_edited: false,
+      // Marks this as taken from the Home suggestion card so that card can stop
+      // re-suggesting it as "your most recent save". Set after the spread so a
+      // source that was itself adopted doesn't pass its own pointer along.
+      adopted_from: sourceId,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };

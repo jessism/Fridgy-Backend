@@ -118,16 +118,34 @@ const toMs = (v) => (v ? Date.parse(v) : NaN);
 // 7 of 22 real users count as "saved a recipe" having never saved anything.
 const notSeed = (q) => q.or('import_method.is.null,import_method.neq.default_seed');
 
-/** How a saved recipe arrived. Raw values come from saved_recipes.import_method. */
-const IMPORT_METHOD_LABELS = {
-  'multi-modal-async': 'Instagram / TikTok / web',
-  'multi-modal': 'Instagram / TikTok / web',
-  'ai-web-extract': 'Web page extraction',
-  'ios_shortcut': 'iOS share shortcut',
-  'scanned': 'Photo scan',
-  'manual': 'Typed in by hand',
-  'adopted': 'Adopted from community',
+/**
+ * Where a saved recipe came from. Raw values are saved_recipes.source_type.
+ *
+ * Deliberately NOT import_method: that names the extraction pipeline
+ * ('multi-modal-async', 'ai-web-extract'), which lumps Instagram, Facebook and
+ * TikTok into one bucket and answers a question nobody asks. source_type holds
+ * the platform, which is what "where do people get recipes from" means.
+ */
+const SOURCE_TYPE_LABELS = {
+  instagram: 'Instagram',
+  facebook: 'Facebook',
+  tiktok: 'TikTok',
+  youtube: 'YouTube',
+  web: 'Web',
+  scanned: 'Scan',
+  manual: 'Manual entry',
+  voice: 'Voice',
+  ai_generated: 'AI generated',
+  popular: 'Community pool',
+  curated: 'Community pool',
 };
+
+/**
+ * Always shown, in this order, even at zero — "nobody has ever typed one in by
+ * hand" is a real answer, the same reason the table keeps 0% feature rows.
+ * Anything else appears only when it has data, so the list stays bounded.
+ */
+const CANONICAL_SOURCES = ['instagram', 'facebook', 'tiktok', 'youtube', 'web', 'scanned', 'manual'];
 
 const FEATURE_TABLES = [
   { feature: 'inventory',          group: 'feature', table: 'fridge_items',         user: 'user_id',  time: 'created_at',
@@ -139,8 +157,8 @@ const FEATURE_TABLES = [
   // importing, and nobody imported without ending up with a recipe — so two
   // rows made one behaviour look like two. It is now the breakdown below.
   { feature: 'saved_recipes',      group: 'feature', table: 'saved_recipes',        user: 'user_id',  time: 'created_at', filter: notSeed,
-    breakdown: { column: 'import_method', labels: IMPORT_METHOD_LABELS, fallback: 'Manual / other' },
-    definition: 'Users with at least one saved_recipes row however it got there — import, iOS shortcut, scan, manual entry, community adopt — EXCLUDING the seeded "Rosemary Gnocchi" default recipe (import_method = default_seed) that older accounts received on signup. The breakdown shows how those recipes actually arrived.' },
+    breakdown: { column: 'source_type', labels: SOURCE_TYPE_LABELS, canonical: CANONICAL_SOURCES, fallback: 'Other' },
+    definition: 'Users with at least one saved_recipes row however it got there — import, iOS shortcut, scan, manual entry, community adopt — EXCLUDING the seeded "Rosemary Gnocchi" default recipe (import_method = default_seed) that older accounts received on signup. The breakdown shows which source each recipe came from; a person can use more than one, so those user counts can sum to more than the row total.' },
   { feature: 'ai_recipes',         group: 'feature', table: 'ai_generated_recipes', user: 'user_id',  time: 'created_at',
     definition: 'Users with at least one ai_generated_recipes row (generated a recipe from their inventory).' },
   { feature: 'shopping_list',      group: 'feature', table: 'shopping_list_items',  user: 'added_by', time: 'added_at',
@@ -167,7 +185,47 @@ const round1 = (n) => Math.round(n * 10) / 10;
  * Per-feature adoption across real users, per-user counts for the users
  * table, and each user's latest feature write (feeds the "active" blend).
  */
+
+/**
+ * Canonical buckets first, in configured order and including zeros, then any
+ * other value that actually occurred (sorted by users). `pct` uses the same
+ * denominator as the parent row so the two columns are comparable.
+ */
+function buildBreakdown(cfg, tally, realTotal) {
+  const pct = (n) => (realTotal ? Math.round((100 * n) / realTotal) : 0);
+  const seen = new Set();
+  const row = (raw) => {
+    const b = tally.get(raw) || { users: new Set(), rows: 0 };
+    seen.add(raw);
+    return {
+      key: raw,
+      label: raw === '__none__' ? cfg.fallback : (cfg.labels[raw] || raw),
+      users: b.users.size,
+      rows: b.rows,
+      pct: pct(b.users.size),
+    };
+  };
+
+  const canonical = (cfg.canonical || []).map(row);
+  const extras = [...tally.keys()]
+    .filter((raw) => !seen.has(raw))
+    .map(row)
+    .filter((r) => r.users > 0 || r.rows > 0)
+    .sort((a, b) => b.users - a.users || b.rows - a.rows);
+
+  // Labels can collide (popular and curated are both "Community pool"): merge
+  // them so the same name never appears twice.
+  const merged = [];
+  for (const r of [...canonical, ...extras]) {
+    const hit = merged.find((m) => m.label === r.label);
+    if (hit) { hit.users += r.users; hit.rows += r.rows; hit.pct = pct(hit.users); }
+    else merged.push(r);
+  }
+  return merged;
+}
+
 async function loadFeatureUsage(realIds, windowStartKey) {
+  const realTotal = realIds.size;
   const perUserCounts = new Map(); // userId -> { feature: count }
   const perUserLastMs = new Map(); // userId -> ms of latest feature write
   const features = [];
@@ -214,16 +272,7 @@ async function loadFeatureUsage(realIds, windowStartKey) {
       rows: counts.reduce((a, b) => a + b, 0),
       medianPerAdopter: median(counts),
       p90PerAdopter: p90(counts),
-      breakdown: f.breakdown
-        ? [...byMethod.entries()]
-            .map(([raw, b]) => ({
-              key: raw,
-              label: raw === '__none__' ? f.breakdown.fallback : (f.breakdown.labels[raw] || raw),
-              users: b.users.size,
-              rows: b.rows,
-            }))
-            .sort((a, b) => b.users - a.users || b.rows - a.rows)
-        : undefined,
+      breakdown: f.breakdown ? buildBreakdown(f.breakdown, byMethod, realTotal) : undefined,
     });
   }
   return { features, perUserCounts, perUserLastMs };

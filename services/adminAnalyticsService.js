@@ -118,15 +118,29 @@ const toMs = (v) => (v ? Date.parse(v) : NaN);
 // 7 of 22 real users count as "saved a recipe" having never saved anything.
 const notSeed = (q) => q.or('import_method.is.null,import_method.neq.default_seed');
 
+/** How a saved recipe arrived. Raw values come from saved_recipes.import_method. */
+const IMPORT_METHOD_LABELS = {
+  'multi-modal-async': 'Instagram / TikTok / web',
+  'multi-modal': 'Instagram / TikTok / web',
+  'ai-web-extract': 'Web page extraction',
+  'ios_shortcut': 'iOS share shortcut',
+  'scanned': 'Photo scan',
+  'manual': 'Typed in by hand',
+  'adopted': 'Adopted from community',
+};
+
 const FEATURE_TABLES = [
   { feature: 'inventory',          group: 'feature', table: 'fridge_items',         user: 'user_id',  time: 'created_at',
     definition: 'Users with at least one fridge_items row (including items since deleted). Active = an item created in the window.' },
   { feature: 'meal_log',           group: 'feature', table: 'meal_logs',            user: 'user_id',  time: 'logged_at',
     definition: 'Users with at least one meal_logs row. Active = a meal logged in the window.' },
-  { feature: 'recipe_import',      group: 'feature', table: 'import_jobs',          user: 'user_id',  time: 'created_at', filter: (q) => q.eq('status', 'completed'),
-    definition: 'Users with at least one COMPLETED import_jobs row — the Instagram / TikTok / Facebook / web extraction pipeline. Failed jobs do not count. A completed import also creates a saved recipe, so these users appear under Recipe library too.' },
+  // Recipe import used to be a second row counted from import_jobs. It was the
+  // *same people* as this one — every real user with a saved recipe got it by
+  // importing, and nobody imported without ending up with a recipe — so two
+  // rows made one behaviour look like two. It is now the breakdown below.
   { feature: 'saved_recipes',      group: 'feature', table: 'saved_recipes',        user: 'user_id',  time: 'created_at', filter: notSeed,
-    definition: 'Users with at least one saved_recipes row however it got there — import, iOS shortcut, scan, manual entry, community adopt — EXCLUDING the seeded "Rosemary Gnocchi" default recipe (import_method = default_seed) that older accounts received on signup.' },
+    breakdown: { column: 'import_method', labels: IMPORT_METHOD_LABELS, fallback: 'Manual / other' },
+    definition: 'Users with at least one saved_recipes row however it got there — import, iOS shortcut, scan, manual entry, community adopt — EXCLUDING the seeded "Rosemary Gnocchi" default recipe (import_method = default_seed) that older accounts received on signup. The breakdown shows how those recipes actually arrived.' },
   { feature: 'ai_recipes',         group: 'feature', table: 'ai_generated_recipes', user: 'user_id',  time: 'created_at',
     definition: 'Users with at least one ai_generated_recipes row (generated a recipe from their inventory).' },
   { feature: 'shopping_list',      group: 'feature', table: 'shopping_list_items',  user: 'added_by', time: 'added_at',
@@ -160,17 +174,26 @@ async function loadFeatureUsage(realIds, windowStartKey) {
   for (const f of FEATURE_TABLES) {
     let rows = [];
     try {
-      rows = await fetchAll(f.table, `${f.user},${f.time}`, f.filter);
+      const cols = f.breakdown ? `${f.user},${f.time},${f.breakdown.column}` : `${f.user},${f.time}`;
+      rows = await fetchAll(f.table, cols, f.filter);
     } catch (err) {
       features.push({ feature: f.feature, group: f.group, definition: f.definition, error: err.message });
       continue;
     }
     const per = {};
     const recent = new Set();
+    const byMethod = new Map(); // raw value -> { users:Set, rows:number }
     for (const r of rows) {
       const uid = r[f.user];
       if (!realIds.has(uid)) continue;
       per[uid] = (per[uid] || 0) + 1;
+      if (f.breakdown) {
+        const raw = r[f.breakdown.column] || '__none__';
+        if (!byMethod.has(raw)) byMethod.set(raw, { users: new Set(), rows: 0 });
+        const b = byMethod.get(raw);
+        b.users.add(uid);
+        b.rows += 1;
+      }
       const ms = toMs(r[f.time]);
       if (!Number.isNaN(ms)) {
         if (dayKey(ms) >= windowStartKey) recent.add(uid);
@@ -191,6 +214,16 @@ async function loadFeatureUsage(realIds, windowStartKey) {
       rows: counts.reduce((a, b) => a + b, 0),
       medianPerAdopter: median(counts),
       p90PerAdopter: p90(counts),
+      breakdown: f.breakdown
+        ? [...byMethod.entries()]
+            .map(([raw, b]) => ({
+              key: raw,
+              label: raw === '__none__' ? f.breakdown.fallback : (f.breakdown.labels[raw] || raw),
+              users: b.users.size,
+              rows: b.rows,
+            }))
+            .sort((a, b) => b.users - a.users || b.rows - a.rows)
+        : undefined,
     });
   }
   return { features, perUserCounts, perUserLastMs };

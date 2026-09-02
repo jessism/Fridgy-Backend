@@ -206,7 +206,7 @@ async function getInsights(userId, days, sub) {
   const startLocal = start.format('YYYY-MM-DD');
   const inCurrent = (iso) => iso >= startIso;
 
-  const [deletedRows, usageRows, mealRows, cookRows, earlierCookKeys, streakRow, dailyLog] = await Promise.all([
+  const [deletedRows, usageRows, mealRows, cookRows, earlierCookKeys, streakRow, dailyLog, recipeRows] = await Promise.all([
     fetchAllRows(() => supabase
       .from('fridge_items')
       .select('id, item_name, category, quantity, weight_equivalent, weight_unit, expiration_date, delete_reason, waste_reason, deleted_at')
@@ -257,6 +257,15 @@ async function getInsights(userId, days, sub) {
       .select('id, date, status')
       .eq('user_id', userId)
       .gte('date', startLocal)
+      .order('id', { ascending: true })), []),
+    // Whole library — needed for the save→cook gap and taste profile. The
+    // seeded default recipe is excluded like adminAnalyticsService does; the
+    // .or() keeps NULL import_method rows (a bare .neq would drop them).
+    tolerant(() => fetchAllRows(() => supabase
+      .from('saved_recipes')
+      .select('id, title, cuisines, source_type, times_cooked, created_at, import_method')
+      .eq('user_id', userId)
+      .or('import_method.is.null,import_method.neq.default_seed')
       .order('id', { ascending: true })), []),
   ]);
 
@@ -465,6 +474,31 @@ async function getInsights(userId, days, sub) {
     hasData: cCur.length > 0,
   };
 
+  // ── recipes (the app's #1 used feature — first section on the page) ───────
+  // "Cooked" = times_cooked > 0 (web writes it; cook-events bumps it too) OR
+  // the title matches a cook_events name-key. History accrues from the
+  // cook_events launch, so this starts conservative and gets truthful.
+  const cookedKeys = new Set([...earlierCookKeys, ...cookRows].map((r) => r.recipe_name_key));
+  const titleKey = (t) => String(t || '').trim().toLowerCase();
+  const isCooked = (r) => (r.times_cooked || 0) > 0 || cookedKeys.has(titleKey(r.title));
+  const savedCur = recipeRows.filter((r) => r.created_at >= startIso).length;
+  const savedPrev = recipeRows.filter((r) => r.created_at >= prevIso && r.created_at < startIso).length;
+  const cookedCount = recipeRows.filter(isCooked).length;
+  const recipeCuisines = new Map();
+  for (const r of recipeRows) for (const c of (Array.isArray(r.cuisines) ? r.cuisines : [])) recipeCuisines.set(c, (recipeCuisines.get(c) || 0) + 1);
+  const cuisineTagTotal = [...recipeCuisines.values()].reduce((a, b) => a + b, 0);
+  const sourceMap = countBy(recipeRows, (r) => r.source_type || 'manual');
+  const recipes = {
+    savedThisPeriod: D(savedCur, savedPrev),
+    libraryTotal: recipeRows.length,
+    cookedCount,
+    neverCookedCount: recipeRows.length - cookedCount,
+    cookedPct: recipeRows.length > 0 ? pct(cookedCount, recipeRows.length) : null,
+    topCuisines: sortedCounts(recipeCuisines).slice(0, 5).map(([cuisine, count]) => ({ cuisine, count, pct: pct(count, cuisineTagTotal) })),
+    sources: sortedCounts(sourceMap).slice(0, 5).map(([source, count]) => ({ source, count, pct: pct(count, recipeRows.length) })),
+    hasData: recipeRows.length > 0,
+  };
+
   const payload = {
     period: {
       days,
@@ -484,6 +518,7 @@ async function getInsights(userId, days, sub) {
     waste,
     cooking,
     meals,
+    recipes,
     habits,
     impact,
     methodology: {

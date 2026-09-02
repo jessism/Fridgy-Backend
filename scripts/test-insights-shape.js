@@ -48,6 +48,16 @@ const TABLES = {
     { id: 'c0', user_id: 'u1', recipe_id: null, recipe_name: 'Pasta', recipe_name_key: 'pasta', cuisines: ['Italian'], items_rescued_count: 0, cooked_at: daysAgo(20) },
   ],
   user_streaks: [{ user_id: 'u1', current_streak: 4, longest_streak: 9 }],
+  saved_recipes: [
+    // cooked ONLY via cook_events title match (times_cooked 0); NULL import_method must be kept
+    { id: 'r1', user_id: 'u1', title: '  Pasta ', cuisines: ['Italian'], source_type: 'instagram', times_cooked: 0, created_at: daysAgo(20), import_method: null },
+    // cooked via the counter; saved in the CURRENT window
+    { id: 'r2', user_id: 'u1', title: 'Salad', cuisines: ['Mediterranean'], source_type: 'web', times_cooked: 2, created_at: daysAgo(3), import_method: 'web' },
+    // never cooked; saved in the PREVIOUS window
+    { id: 'r3', user_id: 'u1', title: 'Smoothie', cuisines: [], source_type: 'ai', times_cooked: 0, created_at: daysAgo(10), import_method: 'ai' },
+    // the seeded default recipe — must be excluded everywhere
+    { id: 'r4', user_id: 'u1', title: 'Rosemary Gnocchi', cuisines: ['Italian'], source_type: 'manual', times_cooked: 0, created_at: daysAgo(40), import_method: 'default_seed' },
+  ],
   streak_daily_log: [
     { id: 's1', user_id: 'u1', date: '2026-08-31', status: 'active' },
     { id: 's2', user_id: 'u1', date: '2026-08-30', status: 'active' },
@@ -71,6 +81,20 @@ function makeQuery(table) {
     lte(c, v) { filters.push((r) => r[c] <= v); return q; },
     is(c, v) { filters.push((r) => (v === null ? r[c] == null : r[c] === v)); return q; },
     not() { return q; },
+    // minimal .or(): comma-separated "col.op.value" terms, ORed. Handles the
+    // is.null / neq patterns the service uses.
+    or(expr) {
+      const terms = expr.split(',').map((t) => {
+        const [col, op, ...rest] = t.split('.');
+        const val = rest.join('.');
+        if (op === 'is' && val === 'null') return (r) => r[col] == null;
+        if (op === 'neq') return (r) => r[col] != null && r[col] !== val;
+        if (op === 'eq') return (r) => r[col] === val;
+        throw new Error(`stub .or(): unsupported term ${t}`);
+      });
+      filters.push((r) => terms.some((f) => f(r)));
+      return q;
+    },
     order() { return q; },
     limit() { return q; },
     maybeSingle() { return q.range(0, 0).then((res) => ({ data: res.data?.[0] ?? null, error: res.error })); },
@@ -176,6 +200,16 @@ moment.now = () => NOW.getTime();
   assert.strictEqual(typeof p.impact.co2eKg, 'number');
   assert.ok(p.methodology.costPerItem.Vegetables === 1.25);
 
+  // recipes: seed excluded, NULL import_method kept, cooked via key OR counter
+  assert.strictEqual(p.recipes.libraryTotal, 3, 'default_seed excluded, NULL import_method kept');
+  assert.strictEqual(p.recipes.cookedCount, 2, 'Pasta via cook_events key (trimmed/lowered), Salad via times_cooked');
+  assert.strictEqual(p.recipes.neverCookedCount, 1);
+  assert.strictEqual(p.recipes.cookedPct, 67);
+  assert.strictEqual(p.recipes.savedThisPeriod.current, 1, 'Salad saved in current 7d');
+  assert.strictEqual(p.recipes.savedThisPeriod.previous, 1, 'Smoothie saved in previous 7d');
+  assert.strictEqual(p.recipes.topCuisines[0].cuisine, 'Italian', 'tie broken alphabetically');
+  assert.strictEqual(p.recipes.sources.length, 3);
+
   // ---- free, 7d: deltas + trend locked, ranges 30/90 locked -----------------
   const f = await insightsService.getInsights('u1', 7, { tier: 'free', isPremium: false });
   assert.strictEqual(f.trend, null);
@@ -183,6 +217,7 @@ moment.now = () => NOW.getTime();
   assert.strictEqual(f.hero.itemsConsumed.available, false);
   assert.strictEqual(f.hero.itemsConsumed.previous, null, 'never ship a number the client must hide');
   assert.strictEqual(f.hero.itemsConsumed.current, 3);
+  assert.strictEqual(f.recipes.savedThisPeriod.available, false, 'recipes delta locked for free');
 
   // ---- 30d premium: week buckets --------------------------------------------
   insightsService.invalidateInsights('u1');
@@ -204,6 +239,8 @@ moment.now = () => NOW.getTime();
   assert.strictEqual(pre.hero.itemsConsumed.current, 3, 'fridge_items query falls back without waste_reason');
   assert.strictEqual(pre.hero.ingredientUses.current, 4, 'inventory_usage falls back to FK embed shape');
   assert.deepStrictEqual(pre.waste.reasons, []);
+  assert.strictEqual(pre.recipes.cookedCount, 1, 'without cook_events only times_cooked counts (Salad)');
+  assert.strictEqual(pre.recipes.libraryTotal, 3);
 
   // ---- legacy GET /api/inventory-analytics/usage — the web page's contract ----
   // Frontend/src/pages/InventoryUsagePage.js dereferences previousPeriod.* and

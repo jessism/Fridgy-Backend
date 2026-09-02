@@ -13,6 +13,16 @@ const insightsController = require('../controller/insightsController');
 
 const router = express.Router();
 
+// Unauthenticated deploy marker: lists the sections this build serves, so a
+// client (or a rollout script) can tell which payload shape is live.
+router.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    sections: ['recipes', 'hero', 'trend', 'waste', 'cooking', 'meals', 'habits', 'impact'],
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Limiter is keyed on req.user.id, so it must run AFTER authenticateToken.
 router.get('/', authenticateToken, insightsLimiter, insightsController.getInsights);
 

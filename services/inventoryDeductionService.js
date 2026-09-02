@@ -1,5 +1,7 @@
 
 const { getServiceClient } = require('../config/supabase');
+const { decrementUsageCounter } = require('../middleware/checkLimits');
+const { invalidateInsights } = require('./insightsService');
 // Ingredient mapping for smart matching
 const INGREDIENT_MAPPINGS = {
   // Proteins
@@ -76,6 +78,7 @@ const inventoryDeductionService = {
 
       // Log the transaction with image URL, meal type, target date, and meal name
       await this.logMealTransaction(supabase, userId, consumedIngredients, deductionResults, imageUrl, mealType, logDate, mealName);
+      invalidateInsights(userId);
 
       return {
         success: true,
@@ -155,20 +158,37 @@ const inventoryDeductionService = {
         throw new Error('Invalid inventory item - missing id');
       }
       
-      // IMPORTANT: Delete FIRST if quantity reaches 0 (to avoid CHECK constraint violation)
+      // Depleted → SOFT delete, never a hard delete. The old hard delete made the
+      // inventory_usage insert below fail its FK check (item_id → fridge_items,
+      // ON DELETE CASCADE), silently losing the consumption record for every
+      // fully-used item. quantity is deliberately left at its pre-deduction
+      // value: fridge_items carries CHECK (quantity > 0), and every reader of
+      // the table filters deleted_at IS NULL.
       if (newQuantity === 0) {
-        // Delete immediately when depleted
         const { error: deleteError } = await supabase
           .from('fridge_items')
-          .delete()
-          .eq('id', match.id);
-          
+          .update({
+            deleted_at: new Date().toISOString(),
+            delete_reason: 'auto_depleted',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', match.id)
+          .is('deleted_at', null);
+
         if (deleteError) {
-          console.error('❌ Delete failed:', deleteError);
+          console.error('❌ Soft delete failed:', deleteError);
           throw deleteError;
         }
-        
-        console.log(`🗑️ Item ${match.item_name} depleted and removed from inventory`);
+
+        console.log(`🗑️ Item ${match.item_name} depleted → soft-deleted (auto_depleted)`);
+
+        // Keep the free-tier inventory counter honest; the manual delete path
+        // already does this in inventoryController.deleteItem.
+        try {
+          await decrementUsageCounter(userId, 'grocery_items');
+        } catch (counterError) {
+          console.warn('⚠️ grocery_items counter decrement failed:', counterError.message);
+        }
       } else {
         // Only update if quantity > 0
         const { data: updated, error: updateError } = await supabase
@@ -189,28 +209,35 @@ const inventoryDeductionService = {
         console.log(`✅ Updated ${match.item_name}: ${currentQty} → ${newQuantity}`);
       }
 
-      // Log the usage to inventory_usage table for tracking
+      // Record the consumption event. item_name/category snapshots (migration
+      // 083) let the row outlive its fridge item. Migrations are hand-applied,
+      // so if the columns aren't there yet (Postgres 42703) fall back to the
+      // pre-083 row shape rather than drop the record.
+      const usageRow = {
+        item_id: match.id,
+        user_id: userId,
+        amount_used: deductionAmount,
+        unit: match.unit || ingredient.unit || 'pieces',
+        usage_type: 'meal',
+        notes: mealName ? `Used in: ${mealName}` : `Used ${deductionAmount} ${match.unit || 'units'} for ${ingredient.name}`
+      };
       try {
-        const { error: usageError } = await supabase
+        let { error: usageError } = await supabase
           .from('inventory_usage')
-          .insert({
-            item_id: match.id,
-            user_id: userId,
-            amount_used: deductionAmount,
-            unit: match.unit || ingredient.unit || 'pieces',
-            usage_type: 'meal',
-            notes: mealName ? `Used in: ${mealName}` : `Used ${deductionAmount} ${match.unit || 'units'} for ${ingredient.name}`
-          });
-        
+          .insert({ ...usageRow, item_name: match.item_name, category: match.category });
+
+        if (usageError?.code === '42703') {
+          ({ error: usageError } = await supabase.from('inventory_usage').insert(usageRow));
+        }
+
         if (usageError) {
-          console.warn('Failed to log usage:', usageError);
-          // Don't fail the deduction if usage logging fails
+          // Non-fatal for the meal log, but it is analytics data loss — make it loud.
+          console.error('❌ inventory_usage insert failed (consumption NOT recorded):', usageError);
         } else {
           console.log(`📊 Usage logged: ${deductionAmount} ${match.unit || 'units'} of ${match.item_name}`);
         }
       } catch (logError) {
-        console.warn('Error logging usage:', logError);
-        // Continue even if logging fails
+        console.error('❌ inventory_usage insert threw:', logError);
       }
 
       return {

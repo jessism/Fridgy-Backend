@@ -54,6 +54,7 @@ const RULES = [
   { re: /^DELETE \/api\/inventory\//, feature: 'inventory', action: 'delete_item' },
   { re: /^POST \/api\/scan-recipe/, feature: 'recipe_import', action: 'scan_photo' },
   { re: /^GET \/api\/inventory-analytics\/usage/, feature: 'inventory_usage', action: 'view' },
+  { re: /^GET \/api\/insights/, feature: 'insights', action: 'view' }, // new Insights screen (mobile)
 
   // --- meals
   { re: /^POST \/api\/meals\/scan/, feature: 'meal_log', action: 'scan' },
@@ -80,6 +81,7 @@ const RULES = [
   { re: /^POST \/api\/saved-recipes\/from-ai/, feature: 'saved_recipes', action: 'save_from_ai' },
   { re: /^POST \/api\/saved-recipes\/[^/]+\/favorite/, feature: 'saved_recipes', action: 'favorite' },
   { re: /^POST \/api\/saved-recipes\/[^/]+\/cook/, feature: 'cooking', action: 'cook' },
+  { re: /^POST \/api\/cook-events/, feature: 'cooking', action: 'cook_complete' }, // mobile Cooking Mode ✓
   { re: /^(GET|POST) \/api\/saved-recipes\/collections/, feature: 'saved_recipes', action: 'collections' },
   { re: /^POST \/api\/saved-recipes\/[^/]+\/collections\//, feature: 'saved_recipes', action: 'add_to_collection' },
   { re: /^POST \/api\/saved-recipes$/, feature: 'saved_recipes', action: 'save' },

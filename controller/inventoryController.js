@@ -1,5 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
+const { WASTE_REASONS } = require('../services/insightsConstants');
+const { invalidateInsights } = require('../services/insightsService');
 const streakService = require('../services/streakService');
 const { getServiceClient } = require('../config/supabase');
 
@@ -316,7 +318,7 @@ const inventoryController = {
       console.log(`🗑️ REQUEST ID: ${requestId}`);
       
       const { id } = req.params;
-      const { deleteReason } = req.body;
+      const { deleteReason, wasteReason } = req.body;
       
       // Get user ID from JWT token
       const userId = getUserIdFromToken(req);
@@ -324,10 +326,18 @@ const inventoryController = {
       console.log(`🗑️ [${requestId}] Delete Reason: ${deleteReason}`);
       
       // Validate delete reason
+      // 'auto_depleted' is written by inventoryDeductionService only — never accepted here.
       const validReasons = ['mistake', 'used_up', 'thrown_away'];
       if (!deleteReason || !validReasons.includes(deleteReason)) {
         throw new Error(`Invalid delete reason. Must be one of: ${validReasons.join(', ')}`);
       }
+
+      // Optional "why?" for thrown-away items (migration 083). Silently ignored
+      // on other reasons or unknown values — shipped clients never send it and
+      // a stale chip must never block a delete.
+      const waste = deleteReason === 'thrown_away' && WASTE_REASONS.includes(wasteReason)
+        ? wasteReason
+        : null;
       
       const supabase = getServiceClient();
       
@@ -337,7 +347,10 @@ const inventoryController = {
         .update({
           deleted_at: new Date().toISOString(),
           delete_reason: deleteReason,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
+          // Only send the column when we have a value, so the delete keeps
+          // working on a database where 083 hasn't been applied yet.
+          ...(waste ? { waste_reason: waste } : {})
         })
         .eq('id', id)
         .eq('user_id', userId) // Ensure user can only delete their own items
@@ -358,6 +371,7 @@ const inventoryController = {
 
       // Decrement usage counter
       await decrementUsageCounter(userId, 'grocery_items');
+      invalidateInsights(userId);
       console.log(`🗑️ [${requestId}] Usage counter decremented`);
 
       res.json({
@@ -366,7 +380,8 @@ const inventoryController = {
         deletedItem: deletedItem,
         analytics: {
           deletedAt: deletedItem.deleted_at,
-          deleteReason: deletedItem.delete_reason
+          deleteReason: deletedItem.delete_reason,
+          wasteReason: deletedItem.waste_reason ?? null
         },
         requestId: requestId
       });
@@ -406,11 +421,13 @@ const inventoryController = {
       
       const supabase = getServiceClient();
       
-      // Get user's current inventory
+      // Get user's current inventory (live rows only — soft-deleted items must not
+      // inflate the servings heuristic)
       const { data: inventory, error: inventoryError } = await supabase
         .from('fridge_items')
         .select('*')
-        .eq('user_id', userId);
+        .eq('user_id', userId)
+        .is('deleted_at', null);
       
       if (inventoryError) {
         console.error(`❌ [${requestId}] Inventory fetch error:`, inventoryError);

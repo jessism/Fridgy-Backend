@@ -61,9 +61,28 @@ const voiceTtsPrewarmLimiter = rateLimit({
   }
 });
 
+// Insights: an aggregation endpoint now open to every signed-in user (7-day
+// window). One screen open is one request; pull-to-refresh a few more. Per
+// user, so a shared office IP can't lock everyone out.
+const insightsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || req.socket.remoteAddress,
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      error: 'Too many requests. Please wait a moment.',
+      code: 'BUSY'
+    });
+  }
+});
+
 module.exports = {
   shortcutImportLimiter,
   apiLimiter,
   voiceTtsSpeakLimiter,
-  voiceTtsPrewarmLimiter
+  voiceTtsPrewarmLimiter,
+  insightsLimiter
 };

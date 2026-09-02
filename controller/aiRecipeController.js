@@ -66,6 +66,7 @@ const aiRecipeController = {
           .from('fridge_items')
           .select('*')
           .eq('user_id', userId)
+          .is('deleted_at', null) // never suggest recipes from food already eaten / thrown out
           .order('expiration_date', { ascending: true }); // Prioritize items expiring soon
 
         if (inventoryError) {

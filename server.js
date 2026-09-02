@@ -15,6 +15,8 @@ const { featureTracking } = require('./middleware/featureTracking');
 const authRoutes = require('./routes/auth');
 const inventoryRoutes = require('./routes/inventory');
 const inventoryAnalyticsRoutes = require('./routes/inventoryAnalytics');
+const cookEventsRoutes = require('./routes/cookEvents');
+const insightsRoutes = require('./routes/insights');
 const recipeRoutes = require('./routes/recipes');
 const userPreferencesRoutes = require('./routes/userPreferences');
 const aiRecipeRoutes = require('./routes/aiRecipes');
@@ -119,6 +121,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/inventory-analytics', inventoryAnalyticsRoutes);
+app.use('/api/cook-events', cookEventsRoutes); // Cooking Mode completions → cook_events (insights)
+app.use('/api/insights', insightsRoutes); // user Insights screen — 7d free, 30/90 premium (gated in controller)
 app.use('/api/recipes', recipeRoutes);
 app.use('/api/user-preferences', userPreferencesRoutes);
 app.use('/api/ai-recipes', aiRecipeRoutes);

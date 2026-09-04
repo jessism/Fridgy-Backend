@@ -35,6 +35,7 @@ const DEFAULT_INTERNAL_EMAILS = [
   'jessietrackie@gmail.com',        // first_name "Trackie"
   'tann.kh0ngtuoc@gmail.com',       // first_name "Jessie"
   'nathannorth2005@gmail.com',      // six daily SANDBOX App Store renewals
+  'vancitypcrepairs@gmail.com',     // first_name "Trackabite Meta App Tester"; comped premium for Meta's app review
 ];
 
 /** ADMIN_ANALYTICS_EXCLUDED_EMAILS adds to the defaults; it never replaces them. */

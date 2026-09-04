@@ -282,9 +282,14 @@ async function loadFeatureUsage(realIds, windowStartKey) {
 // RevenueCat — parse the webhook payload; production only.
 // ---------------------------------------------------------------------------
 
+/** Webhook payloads are jsonb, but a stringified column would parse as text. */
+function asObject(payload) {
+  if (typeof payload !== 'string') return payload || null;
+  try { return JSON.parse(payload); } catch { return null; }
+}
+
 function parseRcEvent(row) {
-  let p = row.payload;
-  if (typeof p === 'string') { try { p = JSON.parse(p); } catch { p = null; } }
+  const p = asObject(row.payload);
   const ev = (p && p.event) || p || {};
   return {
     eventType: row.event_type,
@@ -296,21 +301,28 @@ function parseRcEvent(row) {
     periodType: ev.period_type || null,           // 'TRIAL' | 'NORMAL' | 'INTRO'
     expirationMs: ev.expiration_at_ms ? Number(ev.expiration_at_ms) : null,
     isSandbox: ev.environment === 'SANDBOX',
+    // RevenueCat sends price 0 for free-trial events, so this is a literal
+    // "did money move" test. `price` is normalised to USD; the local-currency
+    // field is only a fallback for older events that predate it.
+    priceUsd: Number(ev.price ?? ev.price_in_purchased_currency ?? 0) || 0,
   };
 }
 
 /**
  * All RC events (parsed), plus per-email chronological PRODUCTION lists and
  * the latest PRODUCTION event per email. Sandbox is kept only so it can be
- * reported as a discrepancy.
+ * reported as a discrepancy — it can never contribute to `paidEmails`, because
+ * a sandbox purchase costs nothing.
  */
 async function loadRcEvents() {
   const rows = await fetchAll('revenuecat_webhook_events', 'event_type,app_user_id,product_id,created_at,payload');
   const events = rows.map(parseRcEvent).filter((e) => e.email);
   const prodByEmail = new Map();   // email -> events asc
   const sandboxEmails = new Set();
+  const paidEmails = new Set();    // at least one PRODUCTION event with price > 0
   for (const e of events) {
     if (e.isSandbox) { sandboxEmails.add(e.email); continue; }
+    if (e.priceUsd > 0) paidEmails.add(e.email);
     if (!prodByEmail.has(e.email)) prodByEmail.set(e.email, []);
     prodByEmail.get(e.email).push(e);
   }
@@ -319,7 +331,63 @@ async function loadRcEvents() {
     list.sort((a, b) => a.createdMs - b.createdMs);
     latestProd.set(email, list[list.length - 1]);
   }
-  return { events, prodByEmail, latestProd, sandboxEmails };
+  return { events, prodByEmail, latestProd, sandboxEmails, paidEmails };
+}
+
+// ---------------------------------------------------------------------------
+// Stripe — proof that money actually moved.
+// ---------------------------------------------------------------------------
+
+/** Cents on a logged invoice.payment_succeeded event, or 0. */
+function invoiceAmountPaid(payload) {
+  const p = asObject(payload);
+  return Number(p?.data?.object?.amount_paid ?? 0) || 0;
+}
+
+/**
+ * Stripe customers who have paid a non-zero invoice at least once.
+ * $0 invoices — trial periods, 100%-off promo codes — are excluded by the
+ * amount test, which is the whole point: they are not revenue.
+ */
+async function loadStripePaidCustomers() {
+  const rows = await fetchAll(
+    'stripe_webhook_events',
+    'stripe_customer_id,payload',
+    (q) => q.eq('event_type', 'invoice.payment_succeeded'),
+  );
+  const paid = new Set();
+  for (const r of rows) {
+    if (r.stripe_customer_id && invoiceAmountPaid(r.payload) > 0) paid.add(r.stripe_customer_id);
+  }
+  return paid;
+}
+
+/**
+ * Has this account ever moved money? Either store counts, since a user can
+ * subscribe on the web and on the phone. The RevenueCat side joins by email
+ * (app_user_id), the Stripe side by customer id off the subscriptions row.
+ */
+function everPaid(email, stripeSub, rc, stripePaidCustomers) {
+  if (rc.paidEmails.has(email)) return true;
+  const customerId = stripeSub?.stripe_customer_id;
+  return Boolean(customerId && stripePaidCustomers.has(customerId));
+}
+
+/**
+ * The same test for a single account, without loading every event in the
+ * system. Deliberately not built from the detail page's 50-event preview: an
+ * old purchase can sit past that cut-off, and the badge must agree with the
+ * bucket the overview counted this account in.
+ */
+async function everPaidOne(email, stripeCustomerId) {
+  const [rcRows, stripeRows] = await Promise.all([
+    fetchAll('revenuecat_webhook_events', 'event_type,app_user_id,product_id,created_at,payload', (q) => q.eq('app_user_id', email)),
+    stripeCustomerId
+      ? fetchAll('stripe_webhook_events', 'stripe_customer_id,payload', (q) => q.eq('event_type', 'invoice.payment_succeeded').eq('stripe_customer_id', stripeCustomerId))
+      : Promise.resolve([]),
+  ]);
+  return rcRows.map(parseRcEvent).some((e) => !e.isSandbox && e.priceUsd > 0)
+    || stripeRows.some((r) => invoiceAmountPaid(r.payload) > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -332,35 +400,53 @@ const RC_DEAD_TYPES = new Set(['EXPIRATION', 'TRANSFER', 'SUBSCRIBER_ALIAS', 'TE
 /** Live entitlement evidence for a user, or null. Stripe wins if both exist. */
 function liveEvidence(stripeSub, latestRcProd, nowMs) {
   if (stripeSub && STRIPE_LIVE.has(stripeSub.status)) {
-    return { source: 'stripe', status: stripeSub.status, productId: stripeSub.stripe_price_id || null };
+    const status = stripeSub.status === 'active' ? 'paying' : stripeSub.status;
+    return { source: 'stripe', status, productId: stripeSub.stripe_price_id || null };
   }
   const rc = latestRcProd;
   if (rc && !RC_DEAD_TYPES.has(rc.eventType) && rc.expirationMs && rc.expirationMs > nowMs) {
     const status = rc.periodType === 'TRIAL' ? 'trialing'
       : rc.eventType === 'CANCELLATION' ? 'canceling'
         : rc.eventType === 'BILLING_ISSUE' ? 'past_due'
-          : 'active';
+          : 'paying';
     return { source: 'apple', status, productId: rc.productId, expiresAt: new Date(rc.expirationMs).toISOString() };
   }
   return null;
 }
 
 /**
- * The status the console shows. `tier` is users.tier — the thing
- * usageService enforces limits on — so it decides the bucket; evidence only
- * refines premium into active/trialing/canceling/past_due and names the source.
+ * The status the console shows. `tier` is users.tier — the thing usageService
+ * enforces limits on — so it decides whether an account is premium at all.
+ * Money then decides which premium bucket:
+ *
+ *   paying   revenue > $0 at some point AND a live subscription right now
+ *   trialing live, but $0 so far by design
+ *   comped   premium the app is giving away — a manual grant, an expired or
+ *            sandbox-only entitlement, or a 100%-off promo. Never revenue.
+ *
+ * `hasPaid` is deliberately "ever paid", not "paid this period": someone on a
+ * live annual plan paid ten months ago and is still a paying customer. The
+ * "still" half is `evidence`, which requires an unexpired entitlement.
+ *
+ * Known gap, harmless today: a paid NON_RENEWING_PURCHASE carries no
+ * expiration_at_ms, so liveEvidence() returns null and it would read as comped.
+ * There is no lifetime SKU, so nothing hits this yet.
  */
-function subscriptionState(user, evidence) {
+function subscriptionState(user, evidence, hasPaid) {
   const tier = user.tier || 'free';
   if (tier === 'grandfathered') return { tier, source: 'grandfathered', status: 'grandfathered', productId: evidence?.productId || null };
   if (tier === 'premium') {
-    return { tier, source: evidence?.source || null, status: evidence?.status || 'active', productId: evidence?.productId || null, expiresAt: evidence?.expiresAt || null };
+    const base = { tier, source: evidence?.source || null, productId: evidence?.productId || null, expiresAt: evidence?.expiresAt || null };
+    if (!evidence) return { ...base, status: 'comped' };                        // nothing live
+    if (evidence.status === 'trialing') return { ...base, status: 'trialing' }; // $0 by design
+    if (!hasPaid) return { ...base, status: 'comped' };                         // live, but no money ever
+    return { ...base, status: evidence.status };                                // paying | canceling | past_due
   }
   return { tier: 'free', source: null, status: 'free', productId: null };
 }
 
 /** Discrepancy rows for the "Needs attention" card. */
-function subscriptionDiscrepancies(user, evidence, sandboxEmails) {
+function subscriptionDiscrepancies(user, evidence, sandboxEmails, hasPaid) {
   const out = [];
   const tier = user.tier || 'free';
   const who = { userId: user.id, email: user.email };
@@ -369,6 +455,9 @@ function subscriptionDiscrepancies(user, evidence, sandboxEmails) {
   }
   if (tier === 'free' && evidence) {
     out.push({ ...who, type: 'free_with_evidence', detail: `users.tier is free but ${evidence.source} shows ${evidence.status}${evidence.expiresAt ? ` until ${evidence.expiresAt.slice(0, 10)}` : ''}. Likely a missed upgrade.` });
+  }
+  if (tier === 'premium' && evidence && evidence.status !== 'trialing' && !hasPaid) {
+    out.push({ ...who, type: 'premium_live_but_never_paid', detail: `${evidence.source} shows a live ${evidence.status} subscription, but no PRODUCTION purchase with a price above $0 and no paid Stripe invoice. A manual grant, a 100%-off promo, or a purchase whose price never reached us.` });
   }
   if (tier === 'free' && user.is_grandfathered) {
     out.push({ ...who, type: 'grandfathered_flag_on_free_tier', detail: 'is_grandfathered=true but tier=free: the app enforces FREE limits, while tierSyncService will never downgrade this account. Decide which is intended.' });
@@ -450,19 +539,21 @@ async function loadSnapshot(days) {
     const windowStartKey = keys[0];
     const users = await loadRealUsers();
     const realIds = new Set(users.map((u) => u.id));
-    const [featureUsage, stripeSubs, rc, streaks] = await Promise.all([
+    const [featureUsage, stripeSubs, rc, stripePaid, streaks] = await Promise.all([
       loadFeatureUsage(realIds, windowStartKey),
-      fetchAll('subscriptions', 'user_id,status,tier,stripe_price_id,trial_start,trial_end,canceled_at,created_at'),
+      // stripe_customer_id is the only join key to the logged invoice events.
+      fetchAll('subscriptions', 'user_id,status,tier,stripe_customer_id,stripe_price_id,trial_start,trial_end,canceled_at,created_at'),
       loadRcEvents(),
+      loadStripePaidCustomers(),
       loadStreaks(realIds, keys, nowMs),
     ]);
-    return { nowMs, days, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, streaks };
+    return { nowMs, days, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, stripePaid, streaks };
   });
 }
 
 async function getOverview({ days = 30 } = {}) {
   const snap = await loadSnapshot(days);
-  const { nowMs, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, streaks } = snap;
+  const { nowMs, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, stripePaid, streaks } = snap;
   const { features, perUserCounts, perUserLastMs } = featureUsage;
   const subByUser = new Map(stripeSubs.map((s) => [s.user_id, s]));
   const idByEmail = new Map(users.map((u) => [(u.email || '').toLowerCase(), u.id]));
@@ -499,16 +590,20 @@ async function getOverview({ days = 30 } = {}) {
   const active = (ms) => users.filter((u) => { const s = lastSeenMs(u); return s !== null && nowMs - s < ms; }).length;
 
   // --- Subscriptions ---
-  const subscriptionCounts = { active: 0, trialing: 0, canceling: 0, past_due: 0, grandfathered: 0, free: 0 };
+  const subscriptionCounts = { paying: 0, trialing: 0, canceling: 0, past_due: 0, comped: 0, grandfathered: 0, free: 0 };
   const discrepancies = [];
-  let paying = 0;
   for (const u of users) {
-    const evidence = liveEvidence(subByUser.get(u.id), rc.latestProd.get((u.email || '').toLowerCase()), nowMs);
-    const st = subscriptionState(u, evidence);
+    const email = (u.email || '').toLowerCase();
+    const sub = subByUser.get(u.id);
+    const evidence = liveEvidence(sub, rc.latestProd.get(email), nowMs);
+    const hasPaid = everPaid(email, sub, rc, stripePaid);
+    const st = subscriptionState(u, evidence, hasPaid);
     subscriptionCounts[st.status] = (subscriptionCounts[st.status] || 0) + 1;
-    if (st.tier === 'premium' && ['active', 'canceling', 'past_due'].includes(st.status)) paying++;
-    discrepancies.push(...subscriptionDiscrepancies(u, evidence, rc.sandboxEmails));
+    discrepancies.push(...subscriptionDiscrepancies(u, evidence, rc.sandboxEmails, hasPaid));
   }
+  // One number, one definition: the Paying tile is the paying bucket. Canceling
+  // and past due have paid before but are not paying now; trialing never has.
+  const paying = subscriptionCounts.paying;
 
   // --- Trials / paid starts / lapses in the window (production, real users) ---
   let trialsStarted = 0, paidStarts = 0, lapsedTrial = 0, lapsedPaid = 0;
@@ -555,7 +650,7 @@ async function getOverview({ days = 30 } = {}) {
     assumptions: [
       `Days are calendar days in ${ADMIN_TZ}; the window is the last ${days} days including today, and tiles are sums of the same buckets the charts draw.`,
       `Active = a real user seen in the last 1/7/30 × 24h, where "seen" is the later of users.last_active_at (API activity, tracked since ${LAST_ACTIVE_TRACKED_SINCE}) and their latest feature write.`,
-      'Subscription buckets follow users.tier — the tier the app enforces limits on. Stripe rows and RevenueCat production events only refine premium into active / trialing / canceling / past_due and are cross-checked in "Needs attention".',
+      'Paying = a real user with a live subscription right now AND at least one payment above $0 — a RevenueCat PRODUCTION event with price > 0, or a Stripe invoice.payment_succeeded with amount_paid > 0. Trialing, canceling and past due are counted separately and are not revenue; premium with no payment behind it is "comped"; grandfathered is lifetime-free.',
       'RevenueCat SANDBOX events are ignored everywhere except the sandbox discrepancy row.',
       'Feature adoption counts things a user chose to do; streaks (a side-effect log) have their own card, and guided tour / push token are listed under Setup and excluded from "Activated".',
     ],
@@ -594,7 +689,7 @@ async function getOverview({ days = 30 } = {}) {
 
 async function listUsers({ search = '', sort = 'created_at', dir = 'desc', page = 1, pageSize = 50 } = {}) {
   const snap = await loadSnapshot(30);
-  const { nowMs, users, featureUsage, stripeSubs, rc } = snap;
+  const { nowMs, users, featureUsage, stripeSubs, rc, stripePaid } = snap;
   const streakRows = await fetchAll('user_streaks', 'user_id,current_streak,longest_streak,last_activity_date', null, 'user_id');
   const subByUser = new Map(stripeSubs.map((s) => [s.user_id, s]));
   const streakByUser = new Map(streakRows.map((s) => [s.user_id, s]));
@@ -603,7 +698,9 @@ async function listUsers({ search = '', sort = 'created_at', dir = 'desc', page 
   const rows = users
     .filter((u) => !q || (u.email || '').toLowerCase().includes(q) || (u.first_name || '').toLowerCase().includes(q) || u.id === q)
     .map((u) => {
-      const evidence = liveEvidence(subByUser.get(u.id), rc.latestProd.get((u.email || '').toLowerCase()), nowMs);
+      const email = (u.email || '').toLowerCase();
+      const sub = subByUser.get(u.id);
+      const evidence = liveEvidence(sub, rc.latestProd.get(email), nowMs);
       return {
         id: u.id,
         email: u.email,
@@ -613,7 +710,7 @@ async function listUsers({ search = '', sort = 'created_at', dir = 'desc', page 
         tier: u.tier,
         lastActiveAt: u.last_active_at,
         deletionStatus: u.deletion_status,
-        subscription: subscriptionState(u, evidence),
+        subscription: subscriptionState(u, evidence, everPaid(email, sub, rc, stripePaid)),
         streak: streakByUser.get(u.id) || null,
         features: featureUsage.perUserCounts.get(u.id) || {},
       };
@@ -660,6 +757,7 @@ async function getUserDetail(userId) {
   const rcEvents = (rcRes.data || []).map((row) => ({ ...parseRcEvent(row), processed: row.processed, error_message: row.error_message }));
   const latestProd = rcEvents.find((e) => !e.isSandbox) || null;
   const evidence = liveEvidence(subRes.data, latestProd, Date.now());
+  const hasPaid = await everPaidOne(email, subRes.data?.stripe_customer_id || null);
 
   const counts = {};
   await Promise.all(FEATURE_TABLES.map(async (f) => {
@@ -675,9 +773,10 @@ async function getUserDetail(userId) {
       tier: user.tier, isGrandfathered: user.is_grandfathered, signupPlatform: user.signup_platform,
       lastActiveAt: user.last_active_at, deletionStatus: user.deletion_status, excluded: isExcludedUser(user),
     },
-    subscription: subscriptionState(user, evidence),
+    subscription: subscriptionState(user, evidence, hasPaid),
     evidence,
-    discrepancies: subscriptionDiscrepancies(user, evidence, new Set(rcEvents.some((e) => e.isSandbox) ? [email] : [])),
+    hasPaid,
+    discrepancies: subscriptionDiscrepancies(user, evidence, new Set(rcEvents.some((e) => e.isSandbox) ? [email] : []), hasPaid),
     stripeSubscription: subRes.data || null,
     revenueCatEvents: rcEvents.map((e) => ({
       event_type: e.eventType, product_id: e.productId, created_at: e.createdAt,

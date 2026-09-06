@@ -228,6 +228,7 @@ async function loadFeatureUsage(realIds, windowStartKey) {
   const realTotal = realIds.size;
   const perUserCounts = new Map(); // userId -> { feature: count }
   const perUserLastMs = new Map(); // userId -> ms of latest feature write
+  const savedRecipeMs = new Map(); // userId -> ms of each non-seed saved_recipes row (quota drift check)
   const features = [];
   for (const f of FEATURE_TABLES) {
     let rows = [];
@@ -256,6 +257,10 @@ async function loadFeatureUsage(realIds, windowStartKey) {
       if (!Number.isNaN(ms)) {
         if (dayKey(ms) >= windowStartKey) recent.add(uid);
         if (!perUserLastMs.has(uid) || ms > perUserLastMs.get(uid)) perUserLastMs.set(uid, ms);
+        if (f.feature === 'saved_recipes') {
+          if (!savedRecipeMs.has(uid)) savedRecipeMs.set(uid, []);
+          savedRecipeMs.get(uid).push(ms);
+        }
       }
       const bucket = perUserCounts.get(uid) || {};
       bucket[f.feature] = (bucket[f.feature] || 0) + 1;
@@ -275,7 +280,7 @@ async function loadFeatureUsage(realIds, windowStartKey) {
       breakdown: f.breakdown ? buildBreakdown(f.breakdown, byMethod, realTotal) : undefined,
     });
   }
-  return { features, perUserCounts, perUserLastMs };
+  return { features, perUserCounts, perUserLastMs, savedRecipeMs };
 }
 
 // ---------------------------------------------------------------------------
@@ -431,8 +436,17 @@ function liveEvidence(stripeSub, latestRcProd, nowMs) {
  * Known gap, harmless today: a paid NON_RENEWING_PURCHASE carries no
  * expiration_at_ms, so liveEvidence() returns null and it would read as comped.
  * There is no lifetime SKU, so nothing hits this yet.
+ *
+ * Free accounts are split by how they got there, because "free" alone hides
+ * the story — a churned trial looks identical to someone who never tried:
+ *
+ *   churned        free now, but paid at some point (Apple or Stripe)
+ *   trial_expired  free now, and the last thing we saw was a $0 trial that ran
+ *                  out — the account was premium for those days, so their
+ *                  usage in that window was legitimately unlimited
+ *   free           never had an entitlement we know of
  */
-function subscriptionState(user, evidence, hasPaid) {
+function subscriptionState(user, evidence, hasPaid, latestRcProd = null, stripeSub = null) {
   const tier = user.tier || 'free';
   if (tier === 'grandfathered') return { tier, source: 'grandfathered', status: 'grandfathered', productId: evidence?.productId || null };
   if (tier === 'premium') {
@@ -441,6 +455,20 @@ function subscriptionState(user, evidence, hasPaid) {
     if (evidence.status === 'trialing') return { ...base, status: 'trialing' }; // $0 by design
     if (!hasPaid) return { ...base, status: 'comped' };                         // live, but no money ever
     return { ...base, status: evidence.status };                                // paying | canceling | past_due
+  }
+  if (!evidence) {
+    const rc = latestRcProd;
+    const rcExpiresAt = rc?.expirationMs ? new Date(rc.expirationMs).toISOString() : null;
+    if (hasPaid) {
+      const source = stripeSub && !STRIPE_LIVE.has(stripeSub.status) ? 'stripe' : rc ? 'apple' : null;
+      return { tier: 'free', source, status: 'churned', productId: rc?.productId || stripeSub?.stripe_price_id || null, expiresAt: rcExpiresAt };
+    }
+    if (rc && rc.periodType === 'TRIAL') {
+      return { tier: 'free', source: 'apple', status: 'trial_expired', productId: rc.productId, expiresAt: rcExpiresAt };
+    }
+    if (stripeSub && stripeSub.trial_end && !STRIPE_LIVE.has(stripeSub.status)) {
+      return { tier: 'free', source: 'stripe', status: 'trial_expired', productId: stripeSub.stripe_price_id || null, expiresAt: stripeSub.trial_end };
+    }
   }
   return { tier: 'free', source: null, status: 'free', productId: null };
 }
@@ -464,6 +492,47 @@ function subscriptionDiscrepancies(user, evidence, sandboxEmails, hasPaid) {
   }
   if (sandboxEmails.has((user.email || '').toLowerCase())) {
     out.push({ ...who, type: 'sandbox_events', detail: 'Has RevenueCat SANDBOX events on a real account. They are ignored here, but this looks like a tester using a real email.' });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Recipe quota counter vs reality.
+// ---------------------------------------------------------------------------
+
+// Backend d466b89 (pushed 2026-07-27 PDT) made saved_recipes_count the only
+// recipe gate and started charging it on every save. Rows older than that were
+// charged to a different counter, so they can't be held against this one.
+const SAVED_RECIPES_CHARGED_SINCE_MS = Date.parse('2026-07-28T07:00:00Z');
+
+// usage_limits.last_reset_at is TIMESTAMP without a zone (migration 001) and
+// comes back as '2026-09-02T11:34:25.517' — no suffix. It was written from
+// toISOString(), so it is UTC; say so before parsing, or the host zone leaks in.
+const naiveUtcMs = (v) => (v ? Date.parse(/[Zz]|[+-]\d\d:?\d\d$/.test(v) ? v : `${v}Z`) : NaN);
+
+/**
+ * A free user whose weekly counter is BELOW the recipes they actually saved
+ * since their last reset has lost an increment: the cap is under-enforced for
+ * them and nothing else would say so, because incrementUsageCounter() swallows
+ * its errors. Counter ABOVE saves is normal (deleting a recipe does not refund
+ * quota) and premium counters drift by design (never reset while premium), so
+ * neither of those is flagged.
+ */
+function recipeQuotaDrift(users, usageLimits, savedRecipeMs) {
+  const byId = new Map(users.map((u) => [u.id, u]));
+  const out = [];
+  for (const ul of usageLimits) {
+    const u = byId.get(ul.user_id);
+    if (!u || (u.tier || 'free') !== 'free') continue;
+    const resetMs = naiveUtcMs(ul.last_reset_at);
+    const since = Math.max(Number.isNaN(resetMs) ? 0 : resetMs, SAVED_RECIPES_CHARGED_SINCE_MS);
+    const saves = (savedRecipeMs.get(u.id) || []).filter((ms) => ms >= since).length;
+    const counter = ul.saved_recipes_count || 0;
+    if (counter >= saves) continue;
+    out.push({
+      userId: u.id, email: u.email, type: 'usage_counter_drift',
+      detail: `usage_limits.saved_recipes_count is ${counter}, but ${saves} recipes were saved since the ${new Date(since).toISOString().slice(0, 10)} reset. An increment was lost, so the weekly cap is under-enforced for this account. Look for "[UsageService] Error incrementing usage" in Railway logs.`,
+    });
   }
   return out;
 }
@@ -539,21 +608,22 @@ async function loadSnapshot(days) {
     const windowStartKey = keys[0];
     const users = await loadRealUsers();
     const realIds = new Set(users.map((u) => u.id));
-    const [featureUsage, stripeSubs, rc, stripePaid, streaks] = await Promise.all([
+    const [featureUsage, stripeSubs, rc, stripePaid, streaks, usageLimits] = await Promise.all([
       loadFeatureUsage(realIds, windowStartKey),
       // stripe_customer_id is the only join key to the logged invoice events.
       fetchAll('subscriptions', 'user_id,status,tier,stripe_customer_id,stripe_price_id,trial_start,trial_end,canceled_at,created_at'),
       loadRcEvents(),
       loadStripePaidCustomers(),
       loadStreaks(realIds, keys, nowMs),
+      fetchAll('usage_limits', 'user_id,saved_recipes_count,last_reset_at', null, 'user_id'),
     ]);
-    return { nowMs, days, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, stripePaid, streaks };
+    return { nowMs, days, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, stripePaid, streaks, usageLimits };
   });
 }
 
 async function getOverview({ days = 30 } = {}) {
   const snap = await loadSnapshot(days);
-  const { nowMs, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, stripePaid, streaks } = snap;
+  const { nowMs, keys, windowStartKey, users, realIds, featureUsage, stripeSubs, rc, stripePaid, streaks, usageLimits } = snap;
   const { features, perUserCounts, perUserLastMs } = featureUsage;
   const subByUser = new Map(stripeSubs.map((s) => [s.user_id, s]));
   const idByEmail = new Map(users.map((u) => [(u.email || '').toLowerCase(), u.id]));
@@ -590,17 +660,18 @@ async function getOverview({ days = 30 } = {}) {
   const active = (ms) => users.filter((u) => { const s = lastSeenMs(u); return s !== null && nowMs - s < ms; }).length;
 
   // --- Subscriptions ---
-  const subscriptionCounts = { paying: 0, trialing: 0, canceling: 0, past_due: 0, comped: 0, grandfathered: 0, free: 0 };
+  const subscriptionCounts = { paying: 0, trialing: 0, canceling: 0, past_due: 0, comped: 0, grandfathered: 0, churned: 0, trial_expired: 0, free: 0 };
   const discrepancies = [];
   for (const u of users) {
     const email = (u.email || '').toLowerCase();
     const sub = subByUser.get(u.id);
     const evidence = liveEvidence(sub, rc.latestProd.get(email), nowMs);
     const hasPaid = everPaid(email, sub, rc, stripePaid);
-    const st = subscriptionState(u, evidence, hasPaid);
+    const st = subscriptionState(u, evidence, hasPaid, rc.latestProd.get(email), sub);
     subscriptionCounts[st.status] = (subscriptionCounts[st.status] || 0) + 1;
     discrepancies.push(...subscriptionDiscrepancies(u, evidence, rc.sandboxEmails, hasPaid));
   }
+  discrepancies.push(...recipeQuotaDrift(users, usageLimits, featureUsage.savedRecipeMs));
   // One number, one definition: the Paying tile is the paying bucket. Canceling
   // and past due have paid before but are not paying now; trialing never has.
   const paying = subscriptionCounts.paying;
@@ -710,7 +781,7 @@ async function listUsers({ search = '', sort = 'created_at', dir = 'desc', page 
         tier: u.tier,
         lastActiveAt: u.last_active_at,
         deletionStatus: u.deletion_status,
-        subscription: subscriptionState(u, evidence, everPaid(email, sub, rc, stripePaid)),
+        subscription: subscriptionState(u, evidence, everPaid(email, sub, rc, stripePaid), rc.latestProd.get(email), sub),
         streak: streakByUser.get(u.id) || null,
         features: featureUsage.perUserCounts.get(u.id) || {},
       };
@@ -773,7 +844,7 @@ async function getUserDetail(userId) {
       tier: user.tier, isGrandfathered: user.is_grandfathered, signupPlatform: user.signup_platform,
       lastActiveAt: user.last_active_at, deletionStatus: user.deletion_status, excluded: isExcludedUser(user),
     },
-    subscription: subscriptionState(user, evidence, hasPaid),
+    subscription: subscriptionState(user, evidence, hasPaid, latestProd, subRes.data || null),
     evidence,
     hasPaid,
     discrepancies: subscriptionDiscrepancies(user, evidence, new Set(rcEvents.some((e) => e.isSandbox) ? [email] : []), hasPaid),

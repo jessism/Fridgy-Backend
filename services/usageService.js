@@ -41,7 +41,7 @@ function getLimitsForTier(tier) {
   const limits = {
     free: {
       grocery_items: 10,
-      saved_recipes: 5, // 5 total recipes per week (all sources: imported, scanned, voice, manual)
+      saved_recipes: 3, // 3 total recipes per week (all sources: imported, scanned, voice, manual)
       // DEPRECATED - no longer written or enforced. Kept because
       // subscriptionController serializes this whole object to clients, and
       // already-installed builds would render `undefined` if the keys vanished.

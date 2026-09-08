@@ -85,7 +85,7 @@ console.log('[checkLimits] MODULE LOADING - Creating middleware instances...');
 const checkInventoryLimit = checkLimit('grocery_items');
 console.log('[checkLimits] checkInventoryLimit created:', typeof checkInventoryLimit);
 
-// Saved recipes limit (5 per week for free tier - ALL recipe sources).
+// Saved recipes limit (3 per week for free tier - ALL recipe sources).
 // This is the ONLY recipe gate: extraction endpoints check it without consuming
 // it, and quota is charged once when a recipe is successfully persisted.
 // The old checkImportedRecipeLimit / checkUploadedRecipeLimit are gone on
@@ -210,7 +210,7 @@ async function decrementUsageCounter(userId, feature) {
 module.exports = {
   // Specific limit checkers
   checkInventoryLimit,
-  checkSavedRecipeLimit, // Combined limit for all recipe saves (5/week)
+  checkSavedRecipeLimit, // Combined limit for all recipe saves (3/week)
   checkMealLogLimit,
   checkShoppingListLimit,
   checkAggregatedListLimit, // NEW: Aggregated shopping lists from meal plan (1/week)

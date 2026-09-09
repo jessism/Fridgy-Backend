@@ -28,6 +28,12 @@ const COMMUNITY_POOL_TTL_MS = 6 * 60 * 60 * 1000;
 const COMMUNITY_POOL_SIZE = 50;
 let communityPoolCache = { recipes: null, expiresAt: 0 };
 
+// Popular Now cache — same list for every user, so one query per TTL serves
+// everyone. Per-instance; a restart just means one extra query.
+const POPULAR_TTL_MS = 6 * 60 * 60 * 1000;
+const POPULAR_LIMIT = 12;
+let popularCache = { recipes: null, expiresAt: 0 };
+
 // Recipe Controller Functions
 const recipeController = {
   
@@ -455,6 +461,68 @@ const recipeController = {
         return res.status(401).json({ success: false, error: 'Authentication required', requestId });
       }
       res.status(500).json({ success: false, error: 'Failed to load community recipes', requestId });
+    }
+  },
+
+  /**
+   * Home "Popular Now" shelf.
+   * GET /api/recipes/popular
+   *
+   * A true leaderboard: public-source recipes ranked by how many DISTINCT users
+   * saved a copy, computed across the whole saved_recipes table by
+   * public.popular_saved_recipes() (migration 085). Deliberately NOT personalised
+   * — everyone sees the same list, including recipes they already own.
+   *
+   * Distinct from getCommunityPool above, which ranks inside a 400-row window
+   * and is filtered client-side to what this user does NOT have; that one feeds
+   * the Suggested Meal card, this one feeds a shelf.
+   */
+  async getPopularRecipes(req, res) {
+    const requestId = Math.random().toString(36).substring(7);
+
+    try {
+      getUserIdFromToken(req);
+
+      if (popularCache.recipes && popularCache.expiresAt > Date.now()) {
+        return res.json({
+          success: true,
+          recipes: popularCache.recipes,
+          count: popularCache.recipes.length,
+          cached: true,
+          requestId
+        });
+      }
+
+      const supabase = getServiceClient();
+      const { data, error } = await supabase
+        .rpc('popular_saved_recipes', { limit_n: POPULAR_LIMIT });
+
+      if (error) throw error;
+
+      const recipes = data || [];
+      popularCache = { recipes, expiresAt: Date.now() + POPULAR_TTL_MS };
+      console.log(`🔥 [${requestId}] Popular Now rebuilt: ${recipes.length} recipes`);
+
+      res.json({ success: true, recipes, count: recipes.length, cached: false, requestId });
+
+    } catch (error) {
+      console.error(`❌ [${requestId}] Popular recipes error:`, error.message);
+      if (error.message === 'No token provided' || error.message === 'Invalid token') {
+        return res.status(401).json({ success: false, error: 'Authentication required', requestId });
+      }
+      // Serve the last good list rather than nothing — the shelf is decorative
+      // and a stale leaderboard beats the client dropping to its bundled five.
+      if (popularCache.recipes) {
+        return res.json({
+          success: true,
+          recipes: popularCache.recipes,
+          count: popularCache.recipes.length,
+          cached: true,
+          stale: true,
+          requestId
+        });
+      }
+      res.status(500).json({ success: false, error: 'Failed to load popular recipes', requestId });
     }
   },
 

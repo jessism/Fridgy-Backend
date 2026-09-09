@@ -1974,6 +1974,10 @@ router.post('/suggestions', authMiddleware.authenticateToken, recipeController.g
 // stay above the '/:id' route or Express reads "community-pool" as an id.
 router.get('/community-pool', authMiddleware.authenticateToken, recipeController.getCommunityPool);
 
+// Home "Popular Now" shelf (see controller). Like '/community-pool' this must
+// stay above the '/:id' route or Express reads "popular" as a recipe id.
+router.get('/popular', authMiddleware.authenticateToken, recipeController.getPopularRecipes);
+
 // Get curated/popular recipes
 // GET /api/recipes/curated
 router.get('/curated', async (req, res) => {

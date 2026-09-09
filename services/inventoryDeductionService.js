@@ -38,8 +38,9 @@ const inventoryDeductionService = {
    * @param {Date} logDate - Target date to log the meal (optional, defaults to current date)
    * @param {String} mealName - Name of the meal (optional)
    * @returns {Promise<Object>} Deduction results
+   * @param {Object} extras - Extra meal_logs columns (source, description, macros, price…)
    */
-  async deductFromInventory(userId, consumedIngredients, imageUrl = null, mealType = null, logDate = null, mealName = null) {
+  async deductFromInventory(userId, consumedIngredients, imageUrl = null, mealType = null, logDate = null, mealName = null, extras = {}) {
     const supabase = getServiceClient();
     const deductionResults = [];
     const errors = [];
@@ -77,7 +78,7 @@ const inventoryDeductionService = {
       }
 
       // Log the transaction with image URL, meal type, target date, and meal name
-      await this.logMealTransaction(supabase, userId, consumedIngredients, deductionResults, imageUrl, mealType, logDate, mealName);
+      await this.logMealTransaction(supabase, userId, consumedIngredients, deductionResults, imageUrl, mealType, logDate, mealName, extras);
       invalidateInsights(userId);
 
       return {
@@ -669,7 +670,7 @@ const inventoryDeductionService = {
   /**
    * Log the meal transaction for history
    */
-  async logMealTransaction(supabase, userId, ingredients, results, imageUrl = null, mealType = null, logDate = null, mealName = null) {
+  async logMealTransaction(supabase, userId, ingredients, results, imageUrl = null, mealType = null, logDate = null, mealName = null, extras = {}) {
     try {
       // Use provided logDate or current date as fallback
       const mealDate = logDate ? logDate.toISOString() : new Date().toISOString();
@@ -694,7 +695,8 @@ const inventoryDeductionService = {
           ingredients_detected: ingredients,
           ingredients_logged: ingredients,  // Store the actual ingredients instead of deduction results
           logged_at: mealDate,  // Use target date instead of current date
-          created_at: new Date().toISOString()  // created_at is always current time
+          created_at: new Date().toISOString(),  // created_at is always current time
+          ...extras  // source/description/macros/price/is_dine_out — only keys the caller set
         })
         .select();
 

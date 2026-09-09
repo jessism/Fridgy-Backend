@@ -3,7 +3,9 @@ const router = express.Router();
 const multer = require('multer');
 const mealController = require('../controller/mealController');
 const authMiddleware = require('../middleware/auth');
-// Meal logs are now unlimited for all tiers - no limit check needed
+const { checkMealTextLimit } = require('../middleware/checkLimits');
+// Meal logs are unlimited for all tiers. The one exception is text-described
+// meals, which cost an AI call + a generated image: 3/week on free.
 
 // Configure multer for image uploads
 const storage = multer.memoryStorage();
@@ -25,6 +27,7 @@ const upload = multer({
 // Routes - Meal logs are unlimited, only authentication required
 router.post('/scan', authMiddleware.authenticateToken, upload.single('image'), mealController.scanMeal);
 router.post('/scan-async', authMiddleware.authenticateToken, upload.single('image'), mealController.scanMealAsync);
+router.post('/text-async', authMiddleware.authenticateToken, checkMealTextLimit, mealController.analyzeMealTextAsync);
 router.post('/log', authMiddleware.authenticateToken, mealController.logMeal);
 router.post('/dine-out', authMiddleware.authenticateToken, upload.single('image'), mealController.logDineOutMeal);
 router.get('/history', authMiddleware.authenticateToken, mealController.getMealHistory);

@@ -1,6 +1,9 @@
 const mealAnalysisService = require('../services/mealAnalysisService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
 const streakService = require('../services/streakService');
+const mealImageService = require('../services/mealImageService');
+const { incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
+const { invalidateInsights } = require('../services/insightsService');
 const jwt = require('jsonwebtoken');
 const moment = require('moment-timezone');
 const { getServiceClient } = require('../config/supabase');
@@ -125,7 +128,179 @@ async function processMealScanJob(jobId, userId, file) {
   }
 }
 
+// Preview jobs have no deadline wrapper (runImportWithDeadline is URL-import
+// only), so cap each AI call here. A hung OpenRouter call otherwise leaves the
+// phone polling for the full 3 minutes.
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+const TEXT_ANALYSIS_TIMEOUT_MS = 60 * 1000;
+const TEXT_IMAGE_TIMEOUT_MS = 40 * 1000; // phone polls for 45s after analysis
+// Column bounds (migration 088): INTEGER, NUMERIC(7,1), NUMERIC(8,2). Anything
+// past these is a model hallucination, not a meal.
+const MAX_CALORIES = 50000;
+const MAX_MACRO_G = 10000;
+const MAX_PRICE_USD = 10000;
+const TEXT_DESCRIPTION_MIN = 3;
+const TEXT_DESCRIPTION_MAX = 300;
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\x00-\x1F\x7F]/g;
+
+/**
+ * Background processor for "log meal from text" jobs. Two phases so the user
+ * never waits on the picture:
+ *   1. analysis → completePreviewJob (phone shows the review screen)
+ *   2. image    → updateResult      (phone polls and swaps in the photo)
+ * Quota is charged between them, only once analysis has succeeded.
+ */
+async function processMealTextJob(jobId, userId, description, mealSource) {
+  const previewJobService = require('../services/previewJobService');
+  const deepLink = `/(main)/meal-capture?jobId=${jobId}`;
+
+  let analysis;
+  try {
+    analysis = await withTimeout(
+      mealAnalysisService.analyzeMealText(description, { mealSource }),
+      TEXT_ANALYSIS_TIMEOUT_MS,
+      'Text meal analysis'
+    );
+  } catch (error) {
+    const noFood = error.message === 'NO_INGREDIENTS';
+    console.error(`❌ [${jobId}] Text meal analysis failed:`, error.message);
+    // Charged at request time (see analyzeMealTextAsync); a failed AI call
+    // must not cost the user one of their 3.
+    await decrementUsageCounter(userId, 'meal_text');
+    await previewJobService.failPreviewJob(
+      jobId,
+      userId,
+      noFood
+        ? "We couldn't identify a meal from that description. Try adding a bit more detail."
+        : 'Failed to analyze meal',
+      'meal_text',
+      {
+        title: 'Meal analysis failed',
+        body: noFood ? 'Try adding a bit more detail to your description.' : "We couldn't analyze that meal. Please try again.",
+        tag: 'meal-text',
+        data: { screen: deepLink, type: 'meal_text_failed', jobId },
+        requireInteraction: false,
+      }
+    );
+    return;
+  }
+
+  const cachedImage = await mealImageService.getCachedMealImage(analysis.meal_name);
+
+  const result = {
+    inputMode: 'text',
+    mealSource,
+    description,
+    ...analysis,
+    imageUrl: cachedImage,
+    imageStatus: cachedImage ? 'ready' : 'pending',
+  };
+
+  await previewJobService.completePreviewJob(jobId, userId, result, 'meal_text', {
+    title: 'Meal analysis ready!',
+    body: `"${analysis.meal_name}" — tap to review`,
+    tag: 'meal-text',
+    data: { screen: deepLink, type: 'meal_text_complete', jobId },
+    requireInteraction: false,
+  });
+  console.log(`✅ [${jobId}] Text meal analysis complete (image ${result.imageStatus})`);
+
+  if (cachedImage) return;
+
+  const imageUrl = await withTimeout(
+    mealImageService.generateMealImage({
+      mealName: analysis.meal_name,
+      keyIngredients: analysis.key_ingredients,
+      cuisine: analysis.cuisine,
+    }),
+    TEXT_IMAGE_TIMEOUT_MS,
+    'Meal image generation'
+  ).catch(err => {
+    console.warn(`⚠️ [${jobId}] ${err.message}`);
+    return null;
+  });
+
+  await previewJobService.updateResult(jobId, userId, {
+    imageUrl: imageUrl || null,
+    imageStatus: imageUrl ? 'ready' : 'failed',
+  });
+  console.log(`🖼️ [${jobId}] Text meal image ${imageUrl ? 'ready' : 'failed'}`);
+}
+
+/**
+ * Clean a typed description. Returns null when it's unusable.
+ */
+function sanitizeDescription(raw) {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw
+    .replace(CONTROL_CHARS, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned.length < TEXT_DESCRIPTION_MIN || cleaned.length > TEXT_DESCRIPTION_MAX) return null;
+  return cleaned;
+}
+
+const clampRange = (v, max) => {
+  const n = parseFloat(v);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.min(n, max);
+};
+
 const mealController = {
+  /**
+   * Analyze a typed meal description as a background job.
+   * POST /api/meals/text-async  { description, mealSource }
+   * Gated by checkMealTextLimit (3/week free); the counter is charged inside
+   * the job only after analysis succeeds, so a failed AI call costs nothing.
+   */
+  async analyzeMealTextAsync(req, res) {
+    try {
+      const userId = getUserIdFromToken(req);
+
+      const description = sanitizeDescription(req.body?.description);
+      if (!description) {
+        return res.status(400).json({
+          success: false,
+          error: 'INVALID_DESCRIPTION',
+          message: `Describe your meal in ${TEXT_DESCRIPTION_MIN}-${TEXT_DESCRIPTION_MAX} characters.`
+        });
+      }
+
+      const mealSource = req.body?.mealSource === 'dine_out' ? 'dine_out' : 'eat_in';
+
+      const previewJobService = require('../services/previewJobService');
+      const jobId = await previewJobService.createPreviewJob(userId, 'meal_text');
+
+      // Charge now, not after analysis: incrementUsage drops the 5-minute
+      // limit cache, so a burst of taps can't all pass on a stale check.
+      // The job refunds it if the AI call fails.
+      await incrementUsageCounter(userId, 'meal_text');
+
+      console.log(`🍽️ [${jobId}] Text meal analysis started (${description.length} chars, ${mealSource})`);
+
+      res.json({ success: true, jobId, status: 'processing' });
+
+      processMealTextJob(jobId, userId, description, mealSource).catch(err => {
+        console.error(`[MealTextJob] Job ${jobId} unhandled error:`, err);
+      });
+    } catch (error) {
+      console.error('[MealTextJob] Failed to start:', error);
+      const statusCode = error.message.includes('token') ? 401 : 500;
+      res.status(statusCode).json({
+        success: false,
+        error: error.message.includes('token') ? 'Authentication required' : 'Failed to start meal analysis'
+      });
+    }
+  },
+
   /**
    * Scan and analyze a meal photo (synchronous — kept for older app builds)
    */
@@ -225,7 +400,14 @@ const mealController = {
       console.log(`📝 [${requestId}] User ID from JWT: ${userId}`);
       console.log(`📝 [${requestId}] User ID type: ${typeof userId}`);
       
-      const { ingredients, imageUrl, mealType, targetDate, mealName } = req.body;
+      const {
+        ingredients, mealType, targetDate, mealName,
+        // Text-meal fields (absent from photo logs and older builds)
+        source = 'photo', isDineOut = false, description,
+        totalCalories, macros, estimatedPriceUsd,
+        analysisMealName, // the AI's dish name — the generated picture is cached under it
+      } = req.body;
+      let { imageUrl } = req.body;
       
       // Debug log the received data
       console.log(`📝 [${requestId}] Received imageUrl: ${imageUrl}`);
@@ -255,26 +437,94 @@ const mealController = {
         }
       }
       
-      // Deduct ingredients from inventory and save meal log
-      const deductionResult = await inventoryDeductionService.deductFromInventory(
-        userId,
-        ingredients,
-        imageUrl,  // Pass image URL to save in meal log
-        mealType,  // Pass meal type to save in meal log
-        logDate,   // Pass target date to save in meal log
-        mealName   // Pass meal name to save in meal log
-      );
-      
-      console.log(`📝 [${requestId}] Deduction results:`, deductionResult.summary);
-      
-      // Return the results
-      res.json({
-        success: true,
-        results: deductionResult,
-        message: `Successfully logged meal with ${deductionResult.summary.successfulDeductions} items deducted`,
-        requestId: requestId,
-        timestamp: new Date().toISOString()
-      });
+      // Extra meal_logs columns (migration 088). Only keys the client actually
+      // sent are written, so a photo log's insert is byte-identical to before.
+      const isText = source === 'text';
+      const extras = {};
+      if (isText) {
+        extras.source = 'text';
+        if (typeof description === 'string' && description.trim()) {
+          extras.description = description.trim().slice(0, 300);
+        }
+      }
+
+      // Totals: trust the submitted ingredients when they carry the numbers
+      // (the user may have toggled some off), else the client's dish totals.
+      const hasIngredientMacros = ingredients.some(i => i && (i.protein_g != null || i.carbs_g != null || i.fat_g != null));
+      const sumField = (key) => ingredients.reduce((t, i) => t + (parseFloat(i?.[key]) || 0), 0);
+      const round1 = (n) => Math.round(n * 10) / 10;
+
+      if (isText || totalCalories != null) {
+        const submittedCalories = sumField('calories');
+        const totalCal = clampRange(submittedCalories > 0 ? submittedCalories : totalCalories, MAX_CALORIES);
+        if (totalCal != null) extras.total_calories = Math.round(totalCal);
+      }
+
+      const macroSource = hasIngredientMacros
+        ? { protein_g: sumField('protein_g'), carbs_g: sumField('carbs_g'), fat_g: sumField('fat_g') }
+        : (macros && typeof macros === 'object' ? macros : null);
+      if (macroSource) {
+        for (const key of ['protein_g', 'carbs_g', 'fat_g']) {
+          const v = clampRange(macroSource[key], MAX_MACRO_G);
+          if (v != null) extras[key] = round1(v);
+        }
+      }
+
+      const price = clampRange(estimatedPriceUsd, MAX_PRICE_USD);
+      if (price != null) extras.estimated_price_usd = Math.round(price * 100) / 100;
+
+      // The generated picture may have finished after the user tapped Log. It
+      // is cached under the AI's name; the user may have renamed the dish.
+      if (isText && !imageUrl) {
+        for (const candidate of [analysisMealName, mealName]) {
+          if (!candidate) continue;
+          imageUrl = await mealImageService.getCachedMealImage(candidate);
+          if (imageUrl) break;
+        }
+      }
+
+      if (isDineOut === true) {
+        // Dine-out: nothing leaves the pantry. Save the real ingredients (not
+        // the photo flow's 'Total Calories' pseudo-item) so detail can list them.
+        const supabase = getServiceClient();
+        const saved = await inventoryDeductionService.logMealTransaction(
+          supabase, userId, ingredients, [], imageUrl || null, mealType, logDate, mealName,
+          { ...extras, is_dine_out: true }
+        );
+        invalidateInsights(userId); // deductFromInventory does this for eat-in
+        console.log(`📝 [${requestId}] Dine-out meal saved (no deduction)`);
+
+        res.json({
+          success: true,
+          results: { deducted: [], errors: [], summary: { successfulDeductions: 0, failedDeductions: 0, totalIngredients: ingredients.length } },
+          message: 'Dine-out meal logged',
+          meal: saved?.[0] || null,
+          requestId: requestId,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        // Deduct ingredients from inventory and save meal log
+        const deductionResult = await inventoryDeductionService.deductFromInventory(
+          userId,
+          ingredients,
+          imageUrl,  // Pass image URL to save in meal log
+          mealType,  // Pass meal type to save in meal log
+          logDate,   // Pass target date to save in meal log
+          mealName,  // Pass meal name to save in meal log
+          extras
+        );
+
+        console.log(`📝 [${requestId}] Deduction results:`, deductionResult.summary);
+
+        // Return the results
+        res.json({
+          success: true,
+          results: deductionResult,
+          message: `Successfully logged meal with ${deductionResult.summary.successfulDeductions} items deducted`,
+          requestId: requestId,
+          timestamp: new Date().toISOString()
+        });
+      }
 
       // Streak: fire-and-forget; back-dated logs (targetDate ≠ today) don't count
       streakService.recordActionForDate(userId, 'meal_log', targetDate).catch(err => {

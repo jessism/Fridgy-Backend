@@ -170,7 +170,9 @@ async function getStatus(req, res) {
         billing: null,
         apple: null,
       },
-      usage: usage.current,
+      // Mobile reads usage.next_reset_date for the "resets on" line under
+      // every free-tier limit; it lives one level up in getUserUsage's return.
+      usage: { ...usage.current, next_reset_date: usage.next_reset_date || null },
       limits: usage.limits,
       tier: tier,
       // Debug info (can remove in production)

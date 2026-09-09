@@ -488,7 +488,7 @@ router.get('/import-status/:jobId', authMiddleware.authenticateToken, async (req
     // result_data (migration 072) survives restarts — selected separately
     // and best-effort so a missing column can't break the shared endpoint.
     let recipe = null;
-    if (data.status === 'completed' && ['scan', 'voice', 'meal_scan'].includes(data.source_type)) {
+    if (data.status === 'completed' && ['scan', 'voice', 'meal_scan', 'meal_text'].includes(data.source_type)) {
       recipe = previewJobService.getResult(jobId);
       if (!recipe) {
         try {

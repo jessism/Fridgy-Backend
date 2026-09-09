@@ -17,6 +17,8 @@ function limitMessage(feature, result) {
   switch (feature) {
     case 'saved_recipes':
       return `You've saved ${result.limit} recipes this week — that's your free limit. Upgrade for unlimited saves.`;
+    case 'meal_text':
+      return `You've used your ${result.limit} free text meal logs this week. Upgrade for unlimited, or snap a photo — photo logging is always free.`;
     default:
       return `You've reached your ${result.tier} tier limit for ${feature.replace(/_/g, ' ')}`;
   }
@@ -55,7 +57,8 @@ function checkLimit(feature) {
           limit: result.limit,
           tier: result.tier,
           upgradeRequired: true,
-          feature
+          feature,
+          nextResetDate: result.nextResetDate || null
         });
       }
 
@@ -109,6 +112,9 @@ const checkAIRecipeLimit = checkLimit('ai_recipes');
 
 // Aggregated shopping lists from meal plan limit (1 per week for free tier)
 const checkAggregatedListLimit = checkLimit('aggregated_shopping_lists');
+
+// Text meal analyses (3 per week for free tier). Photo meal logging is ungated.
+const checkMealTextLimit = checkLimit('meal_text');
 
 /**
  * Premium feature gate - requires premium or grandfathered tier
@@ -217,6 +223,7 @@ module.exports = {
   checkJoinedListLimit,
   checkJoinedCookbookLimit,
   checkAIRecipeLimit,
+  checkMealTextLimit, // Text meal analyses (3/week free)
 
   // Premium feature gate
   requirePremium,

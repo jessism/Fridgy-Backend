@@ -229,7 +229,9 @@ DO NOT include: any text, labels, watermarks, human hands, wooden utensils, mult
   }
 
   // Generate image using OpenRouter GPT Image 1 Mini (fallback provider)
-  async generateImageWithOpenRouter(recipeTitle, keyIngredients, cuisineType = '') {
+  // options.quality: gpt-image-1-mini accepts low | medium | high. Omitted by
+  // recipe callers (provider default); meal images pass 'low'.
+  async generateImageWithOpenRouter(recipeTitle, keyIngredients, cuisineType = '', options = {}) {
     const requestId = Math.random().toString(36).substring(7);
 
     console.log(`\n🖼️ [${requestId}] ===== OPENROUTER (fallback) IMAGE GENERATION =====`);
@@ -255,7 +257,8 @@ DO NOT include: any text, labels, watermarks, human hands, wooden utensils, mult
         prompt: prompt,
         n: 1,
         response_format: 'b64_json',
-        size: '1024x1024'
+        size: '1024x1024',
+        ...(options.quality ? { quality: options.quality } : {})
       })
     });
 

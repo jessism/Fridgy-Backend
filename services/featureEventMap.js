@@ -58,6 +58,7 @@ const RULES = [
 
   // --- meals
   { re: /^POST \/api\/meals\/scan/, feature: 'meal_log', action: 'scan' },
+  { re: /^POST \/api\/meals\/text-async/, feature: 'meal_log', action: 'text_analyze' },
   { re: /^POST \/api\/meals\/log/, feature: 'meal_log', action: 'log' },
   { re: /^POST \/api\/meals\/dine-out/, feature: 'meal_log', action: 'log_dine_out' },
   { re: /^GET \/api\/meals\/(history|calendar-summary)/, feature: 'meal_log', action: 'view' },

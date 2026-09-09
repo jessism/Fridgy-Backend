@@ -140,9 +140,47 @@ async function failPreviewJob(jobId, userId, errorMessage, sourceLabel, notifica
   }
 }
 
+/**
+ * Merge a patch into a completed job's result (e.g. attach a generated image
+ * that finished after the analysis was already handed to the phone). Memory
+ * first; result_data best-effort, same tolerance as completePreviewJob.
+ */
+async function updateResult(jobId, userId, patch) {
+  let current = getResult(jobId);
+  if (!current) {
+    // Memory is per-process; fall back to the durable copy so the patch
+    // can never replace the analysis with just {imageUrl, imageStatus}.
+    const { data } = await supabase
+      .from('import_jobs')
+      .select('result_data')
+      .eq('id', jobId)
+      .eq('user_id', userId)
+      .single();
+    current = data?.result_data || null;
+  }
+  if (!current) {
+    console.warn(`[PreviewJob] Job ${jobId}: no result to patch; skipping`);
+    return null;
+  }
+
+  const merged = { ...current, ...patch };
+  storeResult(jobId, merged);
+
+  const { error } = await supabase
+    .from('import_jobs')
+    .update({ result_data: merged })
+    .eq('id', jobId)
+    .eq('user_id', userId);
+  if (error) {
+    console.warn(`[PreviewJob] Job ${jobId}: result_data patch failed (${error.message})`);
+  }
+  return merged;
+}
+
 module.exports = {
   createPreviewJob,
   completePreviewJob,
   failPreviewJob,
+  updateResult,
   getResult,
 };

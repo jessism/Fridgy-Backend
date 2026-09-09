@@ -53,6 +53,7 @@ function getLimitsForTier(tier) {
       joined_shopping_lists: 1,
       joined_cookbooks: 1, // 1 joined cookbook for free tier
       ai_recipes: 3, // 3 generations per month (9 recipes total)
+      meal_text: 3, // 3 text meal analyses per week (photo logging stays unlimited)
       analytics: false, // Not allowed
     },
     premium: {
@@ -66,6 +67,7 @@ function getLimitsForTier(tier) {
       joined_shopping_lists: Infinity,
       joined_cookbooks: Infinity,
       ai_recipes: Infinity,
+      meal_text: Infinity,
       analytics: true,
     },
     grandfathered: {
@@ -80,6 +82,7 @@ function getLimitsForTier(tier) {
       joined_shopping_lists: Infinity,
       joined_cookbooks: Infinity,
       ai_recipes: Infinity,
+      meal_text: Infinity,
       analytics: true,
     },
   };
@@ -98,6 +101,7 @@ function getColumnName(feature) {
     'ai_recipes': 'ai_recipe_generations_count',
     'saved_recipes': 'saved_recipes_count',
     'aggregated_shopping_lists': 'aggregated_shopping_lists_count',
+    'meal_text': 'meal_text_count',
     // All others follow the pattern: {feature}_count
   };
 
@@ -145,10 +149,14 @@ async function getUserUsage(userId) {
     const limits = getLimitsForTier(tier);
     const usage = usageLimits || {};
 
-    // Calculate next reset date (weekly = 7 days)
-    const nextResetDate = usage.last_reset_at
+    // Calculate next reset date (weekly = 7 days). Counters are reset lazily
+    // by checkLimit, so a user who hasn't hit a gated route in a while has a
+    // stale last_reset_at and a "next" date in the past — clamp to now, which
+    // is when the next gated call will actually reset them.
+    let nextResetDate = usage.last_reset_at
       ? new Date(new Date(usage.last_reset_at).getTime() + 7 * 24 * 60 * 60 * 1000)
       : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    if (nextResetDate.getTime() < Date.now()) nextResetDate = new Date();
 
     return {
       tier,
@@ -163,6 +171,7 @@ async function getUserUsage(userId) {
         aggregated_shopping_lists_count: usage.aggregated_shopping_lists_count || 0, // NEW: Weekly aggregated list counter
         joined_shopping_lists_count: usage.joined_shopping_lists_count || 0,
         ai_recipe_generations_count: usage.ai_recipe_generations_count || 0,
+        meal_text_count: usage.meal_text_count || 0, // Weekly text-meal counter
       },
       last_reset_at: usage.last_reset_at,
       next_reset_date: nextResetDate.toISOString(),
@@ -295,6 +304,7 @@ async function checkLimit(userId, feature) {
             owned_shopping_lists_count: 0,
             joined_shopping_lists_count: 0,
             ai_recipe_generations_count: 0,
+            meal_text_count: 0, // Weekly text-meal counter
             last_reset_at: new Date().toISOString()
           })
           .eq('user_id', userId);
@@ -566,6 +576,7 @@ async function resetUsage(userId) {
         owned_shopping_lists_count: 0,
         joined_shopping_lists_count: 0,
         ai_recipe_generations_count: 0,
+        meal_text_count: 0,
         last_reset_at: new Date().toISOString()
       })
       .eq('user_id', userId);

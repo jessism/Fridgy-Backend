@@ -182,7 +182,7 @@ const weekdayOf = (iso, tz) => moment.utc(iso).tz(tz).day();
 // ── main ─────────────────────────────────────────────────────────────────────
 /**
  * @param {string} userId
- * @param {7|30|90} days
+ * @param {7|14|30} days
  * @param {{ tier: string, isPremium: boolean }} sub
  */
 async function getInsights(userId, days, sub) {

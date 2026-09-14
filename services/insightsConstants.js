@@ -42,7 +42,7 @@ const WASTE_REASONS = ['expired', 'spoiled_early', 'cooked_too_much', 'didnt_lik
 const COOK_SOURCES = ['saved', 'ai', 'popular', 'community', 'unsaved'];
 
 // Allowed analytics windows. Anything else is coerced to the default.
-const ALLOWED_DAYS = [7, 30, 90];
+const ALLOWED_DAYS = [7, 14, 30];
 const DEFAULT_DAYS = 30;
 const clampDays = (value) => {
   const n = parseInt(value, 10);

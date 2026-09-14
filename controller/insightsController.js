@@ -2,11 +2,11 @@ const insightsService = require('../services/insightsService');
 const subscriptionService = require('../services/subscriptionService');
 const { ALLOWED_DAYS } = require('../services/insightsConstants');
 
-// The one range free users may request. 30/90 (and deltas, trend) are premium.
+// The one range free users may request. 14/30 (and deltas, trend) are premium.
 const FREE_DAYS = 7;
 
 const insightsController = {
-  // GET /api/insights?days=7|30|90
+  // GET /api/insights?days=7|14|30
   async getInsights(req, res) {
     const requestId = Math.random().toString(36).substring(7);
     try {
@@ -17,7 +17,7 @@ const insightsController = {
       const days = ALLOWED_DAYS.includes(parsed) ? parsed : FREE_DAYS;
 
       // Tier check inline (not requirePremium): the gate is per-range. Fail
-      // CLOSED to free — a Supabase blip must not hand out 90-day data, but
+      // CLOSED to free — a Supabase blip must not hand out 30-day data, but
       // it also must not 500 the free 7-day view.
       let tier = 'free';
       try {

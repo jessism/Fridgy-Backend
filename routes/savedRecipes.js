@@ -233,7 +233,9 @@ router.get('/share/:slug', publicShareLimiter, async (req, res) => {
       recipeShare.buildOgImage(recipe),
     ]);
 
-    res.set('Cache-Control', 'public, max-age=60');
+    // Short: turning sharing off has to take effect promptly, and the CDN in
+    // front of the web page is what absorbs a scraper burst.
+    res.set('Cache-Control', 'public, max-age=30');
     res.json(recipeShare.toPublicRecipe(recipe, {
       slug,
       shared_at: recipe.shared_at,

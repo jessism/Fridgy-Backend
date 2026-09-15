@@ -35,15 +35,8 @@ module.exports = {
   },
 
   // Email identity. GMAIL_SENDER is the mailbox (jessie@trackabite.app).
+  // No footer is appended: the email body is exactly the draft.
   fromName: 'Jessie at Trackabite',
-  // CASL / CAN-SPAM footer. Mailing address comes from env so it stays out of git.
-  footer: (address) => [
-    '',
-    '--',
-    'Jessie · Trackabite · https://trackabite.app',
-    address || '',
-    "If you'd rather not hear from me again, just reply STOP and I won't contact you further.",
-  ].filter((l) => l !== null).join('\n'),
 
   dashboardUrl: process.env.OUTREACH_DASHBOARD_URL || 'https://trackabite.app/admin/influencers',
 };

@@ -4,8 +4,7 @@
  * NOT Postmark. Postmark's terms ban cold outreach and a violation could
  * suspend the app's transactional mail. This transport is only for outreach.
  *
- * Env: GMAIL_SENDER, GMAIL_APP_PASSWORD, OUTREACH_EMAIL_ENABLED ('true' to send),
- *      OUTREACH_MAILING_ADDRESS (footer).
+ * Env: GMAIL_SENDER, GMAIL_APP_PASSWORD, OUTREACH_EMAIL_ENABLED ('true' to send).
  */
 const nodemailer = require('nodemailer');
 const { getServiceClient } = require('../../config/supabase');
@@ -59,20 +58,19 @@ async function sendCreatorEmail({ to, subject, text, inReplyTo }) {
   if (sent >= config.emailDailyCap) throw new Error(`Daily creator email cap reached (${config.emailDailyCap})`);
 
   const from = `"${config.fromName}" <${process.env.GMAIL_SENDER}>`;
-  const body = `${text.trimEnd()}\n${config.footer(process.env.OUTREACH_MAILING_ADDRESS)}\n`;
 
   const info = await getTransport().sendMail({
     from,
     to,
     replyTo: process.env.GMAIL_SENDER,
     subject,
-    text: body,
+    text: `${text.trimEnd()}\n`,
     ...(inReplyTo ? { inReplyTo, references: inReplyTo } : {}),
   });
   return { messageId: info.messageId };
 }
 
-/** Internal notifications (to Jessie). Same transport, no cap, no footer. */
+/** Internal notifications (to Jessie). Same transport, no cap. */
 async function sendInternal({ subject, text }) {
   const to = process.env.NOTIFY_EMAIL || process.env.GMAIL_SENDER;
   if (!isConfigured() || !to) {

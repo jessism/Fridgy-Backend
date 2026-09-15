@@ -334,9 +334,15 @@ async function checkLimit(userId, feature) {
       nextResetDate: nextResetDate.toISOString(),
     };
 
-    // Cache the result to speed up future requests
-    limitCache.set(cacheKey, result);
-    console.log(`[UsageService] Cached result for ${cacheKey}`);
+    // Cache allows only. A denial is rare, already blocked, and the one result
+    // that must not outlive a tier change: the RevenueCat webhook, the /status
+    // self-heal and Stripe's confirm path all flip users.tier, and not every
+    // one of them reaches this process's cache (per-process, see top of file).
+    // Recomputing a denial costs one indexed read.
+    if (result.allowed) {
+      limitCache.set(cacheKey, result);
+      console.log(`[UsageService] Cached result for ${cacheKey}`);
+    }
 
     return result;
   } catch (error) {

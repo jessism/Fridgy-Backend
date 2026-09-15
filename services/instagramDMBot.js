@@ -577,7 +577,7 @@ class InstagramDMBot {
     const token = this.generateLinkToken(igsid);
     await this.storeLinkToken(igsid, token);
 
-    const frontendUrl = process.env.FRONTEND_URL || 'https://trackabite.com';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://www.trackabite.app';
     const linkUrl = `${frontendUrl}/link-instagram-dm?igsid=${igsid}&token=${token}`;
 
     try {
@@ -643,7 +643,7 @@ class InstagramDMBot {
       return false;
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || 'https://trackabite.com';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://www.trackabite.app';
     const recipeUrl = `${frontendUrl}/open-recipe/${recipe.id}`;
 
     const savedText = userName ? `Recipe saved, ${userName}!` : 'Recipe saved!';

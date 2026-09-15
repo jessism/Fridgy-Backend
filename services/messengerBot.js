@@ -583,7 +583,7 @@ class MessengerBot {
     const token = this.generateLinkToken(psid);
     await this.storeLinkToken(psid, token);
 
-    const frontendUrl = process.env.FRONTEND_URL || 'https://trackabite.com';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://www.trackabite.app';
     const linkUrl = `${frontendUrl}/link-messenger?psid=${psid}&token=${token}`;
 
     try {
@@ -637,7 +637,7 @@ class MessengerBot {
       return false;
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || 'https://trackabite.com';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://www.trackabite.app';
     // Use smart landing page that attempts to open PWA instead of browser
     const recipeUrl = `${frontendUrl}/open-recipe/${recipe.id}`;
 

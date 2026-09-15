@@ -1,4 +1,5 @@
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
 
 // Rate limiter for shortcut import endpoint
 const shortcutImportLimiter = rateLimit({
@@ -79,10 +80,47 @@ const insightsLimiter = rateLimit({
   }
 });
 
+// Public share pages (/r/<slug> and /:id/public): no auth, so keyed by IP.
+// Needs app.set('trust proxy', 1) in server.js or every Railway request keys
+// on the proxy's address. ipKeyGenerator collapses IPv6 to a /56 so one
+// visitor can't rotate addresses for free (express-rate-limit v7+ validator).
+const publicShareLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip || req.socket.remoteAddress || ''),
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      error: 'Too many requests. Please wait a moment.',
+      code: 'BUSY'
+    });
+  }
+});
+
+// Share on/off: a human taps this a handful of times; per user.
+const shareMutationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || ipKeyGenerator(req.ip || req.socket.remoteAddress || ''),
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      error: 'Too many requests. Please wait a moment.',
+      code: 'BUSY'
+    });
+  }
+});
+
 module.exports = {
   shortcutImportLimiter,
   apiLimiter,
   voiceTtsSpeakLimiter,
   voiceTtsPrewarmLimiter,
-  insightsLimiter
+  insightsLimiter,
+  publicShareLimiter,
+  shareMutationLimiter
 };

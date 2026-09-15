@@ -278,9 +278,12 @@ class GoogleCalendarService {
       lines.push(`Ready in: ${readyInMinutes} minutes`);
     }
 
-    if (mealPlan.recipe_id) {
+    // /recipes/<id> only serves publicly-sourced recipes now (manual ones
+    // 404), so link the share URL when the owner has one, else say nothing.
+    const recipe = mealPlan.recipe || mealPlan.recipe_snapshot;
+    if (recipe?.share_slug && recipe?.visibility === 'public') {
       lines.push('');
-      lines.push(`View recipe: https://trackabite.app/recipes/${mealPlan.recipe_id}`);
+      lines.push(`View recipe: https://www.trackabite.app/r/${recipe.share_slug}`);
     }
 
     return lines.join('\n');

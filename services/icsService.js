@@ -148,8 +148,11 @@ class ICSService {
       lines.push(`Ready in: ${readyInMinutes} minutes`);
     }
 
-    if (mealPlan.recipe_id) {
-      lines.push(`View: https://trackabite.app/recipes/${mealPlan.recipe_id}`);
+    // See googleCalendarService.buildEventDescription: only shared recipes
+    // have a public URL now.
+    const recipe = mealPlan.recipe || mealPlan.recipe_snapshot;
+    if (recipe?.share_slug && recipe?.visibility === 'public') {
+      lines.push(`View: https://www.trackabite.app/r/${recipe.share_slug}`);
     }
 
     // ICS uses \n for newlines in description (escaped)

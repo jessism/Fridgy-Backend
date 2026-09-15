@@ -906,6 +906,18 @@ const authController = {
         throw updateError;
       }
 
+      // Someone deleting their account for privacy shouldn't stay reachable
+      // at /r/<slug> for the 30-day grace period. Flip now, not at purge time.
+      // Cancelling the deletion does NOT re-share; that's a deliberate act.
+      const { error: unshareError } = await serviceClient
+        .from('saved_recipes')
+        .update({ visibility: 'private', shared_at: null })
+        .eq('user_id', userId)
+        .eq('visibility', 'public');
+      if (unshareError) {
+        console.warn(`[Account Deletion] Could not unshare recipes for ${userId}:`, unshareError.message);
+      }
+
       console.log(`[Account Deletion] User ${userId} (${existingUser.email}) requested deletion, scheduled for ${deletionDate.toISOString()}`);
 
       res.json({

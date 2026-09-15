@@ -54,6 +54,11 @@ const blogRoutes = require('./routes/blogRoutes');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Railway terminates TLS and forwards through one proxy hop. Without this
+// req.ip is the proxy for every request, so IP-keyed rate limiters (public
+// share pages) would throttle everyone together. Exactly 1, never `true`.
+app.set('trust proxy', 1);
+
 // Configure multer for file uploads
 const upload = multer({ 
   storage: multer.memoryStorage(),

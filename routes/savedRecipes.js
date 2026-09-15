@@ -5,6 +5,8 @@ const { checkSavedRecipeLimit, incrementUsageCounter } = require('../middleware/
 const { generateRecipeTags } = require('../services/recipeTagService');
 const streakService = require('../services/streakService');
 const { getServiceClient } = require('../config/supabase');
+const { publicShareLimiter, shareMutationLimiter } = require('../middleware/rateLimiter');
+const recipeShare = require('../services/recipeShareService');
 
 const supabase = getServiceClient();
 
@@ -127,8 +129,9 @@ router.post('/adopt/:sourceId', authMiddleware.authenticateToken, async (req, re
     // users. manual/scanned/voice/user_created rows are the owner's own content
     // — family recipes, handwritten cards, dictated notes — and nobody consented
     // to those being handed to a stranger who guessed a UUID.
-    const PUBLIC_SOURCES = ['instagram', 'web', 'popular'];
-    if (!PUBLIC_SOURCES.includes(source.source_type)) {
+    // A recipe the owner explicitly shared (visibility='public', /r/<slug>)
+    // is also fair game: "Save to my recipes" on a shared link lands here.
+    if (!recipeShare.PUBLIC_SOURCES.includes(source.source_type) && source.visibility !== 'public') {
       console.warn(`[SavedRecipes] Adopt refused: ${sourceId} is source_type '${source.source_type}'`);
       return res.status(403).json({ success: false, error: 'This recipe cannot be copied' });
     }
@@ -157,6 +160,9 @@ router.post('/adopt/:sourceId', authMiddleware.authenticateToken, async (req, re
       // never chose. Carrying any of these across accounts would be a leak.
       drive_file_id: _driveId, drive_synced_at: _driveAt, drive_sync_status: _driveStatus,
       image_storage_path: _storagePath, visibility: _visibility,
+      // The share link is the original owner's too (unique index on share_slug
+      // would reject the copy outright).
+      share_slug: _shareSlug, shared_at: _sharedAt,
       ...content
     } = source;
 
@@ -194,48 +200,207 @@ router.post('/adopt/:sourceId', authMiddleware.authenticateToken, async (req, re
   }
 });
 
-// GET /api/saved-recipes/:id/public - Public recipe view (NO AUTH REQUIRED)
-// Used for Messenger "Open in Trackabite" button - shows full recipe without login
-router.get('/:id/public', async (req, res) => {
+// ===== Share links (/r/<slug>) =====
+// Declared above /:id/public and /:id — Express matches in declaration order.
+
+// GET /api/saved-recipes/share/:slug - Public read by share slug (NO AUTH)
+// 404: no such slug. 410: slug exists but the owner turned sharing off (the
+// slug is kept so re-sharing yields the same URL; 410 is also the fastest
+// "drop it" signal for anything that cached the link).
+router.get('/share/:slug', publicShareLimiter, async (req, res) => {
   try {
+    const { slug } = req.params;
+    if (!recipeShare.isValidSlug(slug)) {
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+
+    const { data: recipe, error } = await supabase
+      .from('saved_recipes')
+      .select('*')
+      .eq('share_slug', slug)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!recipe) {
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+    if (recipe.visibility !== 'public') {
+      return res.status(410).json({ error: 'This recipe is no longer shared', code: 'UNSHARED' });
+    }
+
+    const [ownerName, og] = await Promise.all([
+      recipeShare.lookupOwnerName(recipe.user_id),
+      recipeShare.buildOgImage(recipe),
+    ]);
+
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json(recipeShare.toPublicRecipe(recipe, {
+      slug,
+      shared_at: recipe.shared_at,
+      owner: { displayName: ownerName },
+      ...og,
+    }));
+  } catch (error) {
+    console.error('[SavedRecipes] Share read error:', error);
+    res.status(500).json({ error: 'Failed to fetch recipe' });
+  }
+});
+
+// POST /api/saved-recipes/:id/share - Turn sharing on (idempotent)
+router.post('/:id/share', authMiddleware.authenticateToken, shareMutationLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
     const { id } = req.params;
 
-    console.log(`[SavedRecipes] Public recipe request for ID: ${id}`);
+    // popular-* pseudo-ids and garbage would otherwise reach Postgres as a
+    // uuid cast error (22P02) and surface as a 500.
+    if (!recipeShare.isUuid(id)) {
+      return res.status(403).json({ success: false, error: 'This recipe cannot be shared', code: 'NOT_SHAREABLE' });
+    }
 
     const { data: recipe, error } = await supabase
       .from('saved_recipes')
       .select('*')
       .eq('id', id)
-      .single();
+      .eq('user_id', userId)
+      .maybeSingle();
 
-    if (error || !recipe) {
-      console.log(`[SavedRecipes] Public recipe not found: ${id}`);
+    if (error) throw error;
+    if (!recipe) {
+      return res.status(404).json({ success: false, error: 'Recipe not found' });
+    }
+    if (!recipeShare.isShareable(recipe)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Add at least one ingredient and one step before sharing',
+        code: 'NOT_SHAREABLE',
+      });
+    }
+
+    const now = new Date().toISOString();
+    let slug = recipe.share_slug;
+    let sharedAt = recipe.visibility === 'public' && recipe.shared_at ? recipe.shared_at : now;
+
+    if (!slug) {
+      // Two devices tapping Share at once race on the unique index; the loser
+      // re-reads and takes the winner's slug.
+      for (let attempt = 0; attempt < 2 && !slug; attempt++) {
+        const candidate = recipeShare.mintSlug(recipe.title);
+        const { error: writeError } = await supabase
+          .from('saved_recipes')
+          .update({ share_slug: candidate, visibility: 'public', shared_at: now, updated_at: now })
+          .eq('id', id)
+          .eq('user_id', userId)
+          .is('share_slug', null);
+
+        if (!writeError) {
+          slug = candidate;
+        } else if (writeError.code === '23505') {
+          continue; // token collision (astronomically rare) — mint again
+        } else {
+          throw writeError;
+        }
+
+        if (slug) {
+          // .is('share_slug', null) matched nothing if another request won.
+          const { data: fresh } = await supabase
+            .from('saved_recipes')
+            .select('share_slug, shared_at')
+            .eq('id', id)
+            .single();
+          slug = fresh?.share_slug || slug;
+          sharedAt = fresh?.shared_at || now;
+        }
+      }
+      if (!slug) throw new Error('Could not mint a share slug');
+    } else if (recipe.visibility !== 'public') {
+      const { error: writeError } = await supabase
+        .from('saved_recipes')
+        .update({ visibility: 'public', shared_at: now, updated_at: now })
+        .eq('id', id)
+        .eq('user_id', userId);
+      if (writeError) throw writeError;
+      sharedAt = now;
+    }
+
+    // Best-effort: re-host an expiring CDN image so the preview card survives.
+    const image = await recipeShare.ensureDurableImage({ ...recipe, share_slug: slug });
+
+    console.log(`[SavedRecipes] Shared ${id} as /r/${slug} for user ${userId}`);
+    res.json({
+      success: true,
+      slug,
+      url: recipeShare.buildShareUrl(slug),
+      shared_at: sharedAt,
+      visibility: 'public',
+      image: image || recipe.image,
+    });
+  } catch (error) {
+    console.error('[SavedRecipes] Share error:', error);
+    res.status(500).json({ success: false, error: 'Failed to share recipe' });
+  }
+});
+
+// DELETE /api/saved-recipes/:id/share - Turn sharing off. Keeps the slug.
+router.delete('/:id/share', authMiddleware.authenticateToken, shareMutationLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
+    const { id } = req.params;
+
+    if (!recipeShare.isUuid(id)) {
+      return res.status(404).json({ success: false, error: 'Recipe not found' });
+    }
+
+    const { data, error } = await supabase
+      .from('saved_recipes')
+      .update({ visibility: 'private', shared_at: null, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select('id')
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) {
+      return res.status(404).json({ success: false, error: 'Recipe not found' });
+    }
+
+    console.log(`[SavedRecipes] Unshared ${id} for user ${userId}`);
+    res.json({ success: true, visibility: 'private' });
+  } catch (error) {
+    console.error('[SavedRecipes] Unshare error:', error);
+    res.status(500).json({ success: false, error: 'Failed to stop sharing' });
+  }
+});
+
+// GET /api/saved-recipes/:id/public - Public recipe view (NO AUTH REQUIRED)
+// Used by the Messenger/Instagram bots' "Open in Trackabite" links and by the
+// mobile app for community-shelf recipes that aren't the viewer's own.
+//
+// Gated by SOURCE, not by auth: rows imported from public platforms (and
+// rows the owner explicitly shared or admins curated) are readable by id;
+// manual / voice / scanned / ai_generated recipes are not. 404 either way —
+// don't confirm that a private row exists.
+router.get('/:id/public', publicShareLimiter, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!recipeShare.isUuid(id)) {
       return res.status(404).json({ error: 'Recipe not found' });
     }
 
-    console.log(`[SavedRecipes] Public recipe found: ${recipe.title}`);
+    const { data: recipe, error } = await supabase
+      .from('saved_recipes')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
 
-    // Return recipe data (exclude user_id for privacy)
-    res.json({
-      id: recipe.id,
-      title: recipe.title,
-      summary: recipe.summary,
-      image: recipe.image,
-      extendedIngredients: recipe.extendedIngredients,
-      analyzedInstructions: recipe.analyzedInstructions,
-      readyInMinutes: recipe.readyInMinutes,
-      servings: recipe.servings,
-      source_author: recipe.source_author,
-      source_type: recipe.source_type,
-      source_url: recipe.source_url,
-      nutrition: recipe.nutrition,
-      vegetarian: recipe.vegetarian,
-      vegan: recipe.vegan,
-      glutenFree: recipe.glutenFree,
-      dairyFree: recipe.dairyFree,
-      cuisines: recipe.cuisines,
-      dishTypes: recipe.dishTypes
-    });
+    if (error) throw error;
+    if (!recipe || !recipeShare.isPubliclyReadable(recipe)) {
+      console.log(`[SavedRecipes] Public recipe refused/not found: ${id}`);
+      return res.status(404).json({ error: 'Recipe not found' });
+    }
+
+    res.json(recipeShare.toPublicRecipe(recipe));
 
   } catch (error) {
     console.error('[SavedRecipes] Public recipe error:', error);

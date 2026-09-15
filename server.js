@@ -48,6 +48,7 @@ const appVersionRoutes = require('./routes/appVersion');
 const adminAnalyticsRoutes = require('./routes/adminAnalytics');
 const adminFeedbackRoutes = require('./routes/adminFeedback');
 const adminPromosRoutes = require('./routes/adminPromos');
+const adminInfluencersRoutes = require('./routes/adminInfluencers');
 const blogRoutes = require('./routes/blogRoutes');
 
 const app = express();
@@ -152,6 +153,7 @@ app.use('/api/app-version', appVersionRoutes); // public — mobile version gate
 app.use('/api/admin/analytics', adminAnalyticsRoutes); // admin only — backs trackabite.app/admin/analytics
 app.use('/api/admin/feedback', adminFeedbackRoutes); // admin only — backs trackabite.app/admin/feedback
 app.use('/api/admin/promos', adminPromosRoutes); // admin only — backs trackabite.app/admin/promos
+app.use('/api/admin/influencers', adminInfluencersRoutes); // admin only — backs trackabite.app/admin/influencers
 app.use('/api/blog', blogRoutes); // public blog + sitemap; admin writes gated inside the router
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)
@@ -1593,6 +1595,7 @@ const accountDeletionScheduler = require('./services/accountDeletionScheduler');
 const streakScheduler = require('./services/streakScheduler');
 const importJobSweeper = require('./services/importJobSweeper');
 const iapReconcileScheduler = require('./services/iapReconcileScheduler');
+const influencerOutreachScheduler = require('./services/influencerOutreach/scheduler');
 
 // Import PostHog for analytics
 const { getPostHogClient } = require('./config/posthog');
@@ -1657,4 +1660,8 @@ app.listen(PORT, () => {
   console.log('\n🧹 Starting import job sweeper...');
   importJobSweeper.start();
   console.log('🧹 Import job sweeper is running (on boot + every 5 min)');
+
+  // Influencer outreach: follow-up emails, reply scan, session digest, sheet mirror
+  console.log('\n📣 Starting influencer outreach scheduler...');
+  influencerOutreachScheduler.start();
 }); 

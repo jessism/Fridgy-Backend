@@ -12,24 +12,43 @@ const { sendEmailTouch, createDmTask } = require('./sendTouch');
 const nowIso = () => new Date().toISOString();
 const addDays = (d, days) => new Date(new Date(d).getTime() + days * 86400000).toISOString();
 
-/** The batch currently taking approvals (or being warmed up). Creates one if none. */
-async function currentOpenBatch(create = true) {
+/** Calendar date in the outreach timezone, e.g. '2026-09-16'. */
+const sessionDay = (iso = Date.now()) =>
+  new Date(iso).toLocaleDateString('en-CA', { timeZone: config.TIMEZONE });
+
+const openedToday = (batch) => Boolean(batch) && sessionDay(batch.opened_at) === sessionDay();
+
+/** Every batch still being reviewed or warmed up, oldest first. */
+async function openBatches() {
   const sb = getServiceClient();
   const { data, error } = await sb
     .from('influencer_batches')
     .select('*')
     .in('status', ['reviewing', 'warmup_open'])
-    .order('opened_at', { ascending: false })
-    .limit(1);
+    .order('opened_at', { ascending: true });
   if (error) throw error;
-  if (data.length) return data[0];
-  if (!create) return null;
-  const { data: created, error: e2 } = await sb
+  return data;
+}
+
+/**
+ * The batch taking today's approvals. One batch per session: a batch opened on
+ * an earlier day is left alone — it is still mid warm-up and will be closed on
+ * its own — and a fresh batch is started for today, so "Done warming up for
+ * all" never mixes creators warmed for three days with ones approved minutes ago.
+ */
+async function currentOpenBatch(create = true) {
+  const batches = await openBatches();
+  const latest = batches[batches.length - 1] || null;
+  if (openedToday(latest)) return latest;
+  if (!create) return latest;
+
+  const sb = getServiceClient();
+  const { data: created, error } = await sb
     .from('influencer_batches')
     .insert({ status: 'reviewing', target: config.batchSize })
     .select('*')
     .single();
-  if (e2) throw e2;
+  if (error) throw error;
   return created;
 }
 
@@ -210,6 +229,7 @@ async function markReplied(id, channel = 'dm') {
 }
 
 module.exports = {
-  currentOpenBatch, getInfluencer, update, approve, hold, reject,
+  currentOpenBatch, openBatches, openedToday, sessionDay,
+  getInfluencer, update, approve, hold, reject,
   warmupDone, batchWarmupDone, dmSent, runFollowups, markReplied, addDays,
 };

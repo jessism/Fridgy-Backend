@@ -38,24 +38,32 @@ const fail = (res, e, fallback) => {
 router.get('/today', async (req, res) => {
   try {
     const sb = getServiceClient();
-    const [{ data: statusRows, error: e1 }, batch] = await Promise.all([
+    const [{ data: statusRows, error: e1 }, batches] = await Promise.all([
       sb.from('influencers').select('status'),
-      sm.currentOpenBatch(false),
+      sm.openBatches(),
     ]);
     if (e1) throw e1;
     const counts = {};
     for (const r of statusRows || []) counts[r.status] = (counts[r.status] || 0) + 1;
 
-    let batchCreators = [];
-    if (batch) {
+    // Every open batch, each with its creators. More than one exists whenever a
+    // batch approved in an earlier session has not been closed yet; the UI shows
+    // those separately from the one being approved into today.
+    let batchesWithCreators = [];
+    if (batches.length) {
       const { data, error } = await sb
         .from('influencers')
         .select('*, influencer_posts(*)')
-        .eq('batch_id', batch.id)
+        .in('batch_id', batches.map((b) => b.id))
         .order('approved_at');
       if (error) throw error;
-      batchCreators = data;
+      batchesWithCreators = batches.map((b) => ({
+        ...b,
+        opened_today: sm.openedToday(b),
+        creators: data.filter((c) => c.batch_id === b.id),
+      }));
     }
+    const batch = batchesWithCreators[batchesWithCreators.length - 1] || null;
 
     const { data: dmTouches, error: e3 } = await sb
       .from('influencer_touches')
@@ -83,7 +91,8 @@ router.get('/today', async (req, res) => {
       success: true,
       data: {
         counts,
-        batch: batch ? { ...batch, creators: batchCreators } : null,
+        batch,
+        batches: batchesWithCreators,
         dmTasks: dmTouches.filter((t) => ['dm_needed', 'followup_needed'].includes(t.influencers.status)),
         replies,
         failedEmails: failedEmails || [],

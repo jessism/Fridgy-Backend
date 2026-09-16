@@ -66,8 +66,23 @@ async function hold(id, note) {
   return update(id, { status: 'hold', hold_note: note || null });
 }
 
-async function reject(id) {
-  return update(id, { status: 'rejected', batch_id: null });
+/**
+ * Reject, optionally with a reason. The reason is what the discovery pipeline
+ * reads back as a learned exclusion, so similar profiles score low next run.
+ */
+async function reject(id, reason) {
+  const patch = { status: 'rejected', batch_id: null, rejected_at: nowIso() };
+  const trimmed = (reason || '').trim();
+  if (trimmed) patch.rejection_reason = trimmed.slice(0, 500);
+  try {
+    return await update(id, patch);
+  } catch (e) {
+    // 42703 = migration 090 not applied yet. Reject anyway rather than block the
+    // review; the reason is lost, which is better than a stuck creator.
+    if (e.code !== '42703') throw e;
+    console.warn('[Outreach] rejection_reason column missing (apply migration 090); rejecting without it');
+    return update(id, { status: 'rejected', batch_id: null });
+  }
 }
 
 /**

@@ -26,7 +26,7 @@ const STATUSES = [
   'pending_approval', 'warmup_needed', 'dm_needed', 'contacted', 'followup_needed',
   'replied', 'signed', 'declined', 'no_response', 'rejected', 'hold', 'opted_out', 'bounced',
 ];
-const EDITABLE = ['draft_dm', 'draft_email_subject', 'draft_email', 'notes', 'hold_note', 'agreed_fee', 'email', 'promo_code', 'tracking_link'];
+const EDITABLE = ['draft_dm', 'draft_email_subject', 'draft_email', 'notes', 'hold_note', 'agreed_fee', 'email', 'promo_code', 'tracking_link', 'rejection_reason'];
 
 const fail = (res, e, fallback) => {
   const status = e.status || 500;
@@ -104,7 +104,7 @@ router.get('/', async (req, res) => {
     const sb = getServiceClient();
     let q = sb
       .from('influencers')
-      .select('id, batch_id, platform, handle, profile_url, display_name, followers, engagement_rate, email, category, score, why, recommended_fee, agreed_fee, other_platforms, status, discovered_at, approved_at, contacted_at, next_touch_at, touches_sent, replied_at, email_error, draft_dm')
+      .select('id, batch_id, platform, handle, profile_url, display_name, followers, engagement_rate, email, category, score, why, recommended_fee, agreed_fee, other_platforms, status, discovered_at, approved_at, contacted_at, next_touch_at, touches_sent, replied_at, email_error, draft_dm, rejection_reason')
       .order('discovered_at', { ascending: false })
       .limit(500);
     const status = String(req.query.status || '');
@@ -156,7 +156,7 @@ router.patch('/:id', async (req, res) => {
       switch (body.status) {
         case 'warmup_needed': result = await sm.approve(id); break;
         case 'hold': result = await sm.hold(id, body.hold_note); break;
-        case 'rejected': result = await sm.reject(id); break;
+        case 'rejected': result = await sm.reject(id, body.rejection_reason); break;
         case 'replied': result = await sm.markReplied(id, body.reply_channel || 'dm'); break;
         case 'signed':
         case 'declined':

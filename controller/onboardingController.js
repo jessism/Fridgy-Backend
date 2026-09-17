@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { trackEvent } = require('../config/posthog');
 const { getServiceClient } = require('../config/supabase');
 
 // JWT secret
@@ -772,42 +771,9 @@ const onboardingController = {
       // Also fetch subscription for response data
       const subscription = await stripe.subscriptions.retrieve(subscriptionId);
 
-      // 🎯 TRACK "Trial Start" EVENT IN POSTHOG (Onboarding Flow)
-      // Only fires here because we've verified:
-      // 1. SetupIntent/PaymentIntent status === 'succeeded'
-      // 2. Subscription exists in Stripe
-      // 3. Payment is confirmed
-      if (subscription.status === 'trialing' && subscription.trial_end) {
-        console.log('[ConfirmPayment] 📊 Tracking Trial Start event for onboarding user');
-
-        // Get user from session to track event
-        const { data: sessionUser } = await supabase
-          .from('onboarding_sessions')
-          .select('user_id')
-          .eq('session_id', sessionId)
-          .single();
-
-        if (sessionUser && sessionUser.user_id) {
-          const trialEndDate = new Date(subscription.trial_end * 1000);
-
-          await trackEvent(sessionUser.user_id, 'Trial Start', {
-            subscription_id: subscription.id,
-            stripe_customer_id: subscription.customer,
-            trial_end_date: trialEndDate.toISOString(),
-            trial_duration_days: 7,
-            payment_verified: true,
-            has_payment_method: subscription.default_payment_method != null,
-            user_journey: 'onboarding', // This is onboarding flow
-            subscription_status: subscription.status,
-            session_id: sessionId,
-            event_source: 'onboarding_payment_confirmation'
-          });
-
-          console.log('[ConfirmPayment] ✅ Trial Start event tracked successfully');
-        } else {
-          console.warn('[ConfirmPayment] Could not track Trial Start - user_id not found in session');
-        }
-      }
+      // "Trial Start" is not tracked here. The card is confirmed before the
+      // account exists, so there is no user to attribute it to yet; signup
+      // tracks it when it links this session (authController.signup).
 
       res.json({
         success: true,

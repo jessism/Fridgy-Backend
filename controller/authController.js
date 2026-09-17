@@ -5,6 +5,7 @@ const authService = require('../services/authService');
 // const { createDefaultRecipe } = require('../services/defaultRecipe'); // DISABLED: Not adding default recipe to new users
 const emailService = require('../services/emailService');
 const { getServiceClient } = require('../config/supabase');
+const { trackEvent } = require('../config/posthog');
 
 const supabase = getServiceClient();
 
@@ -207,6 +208,29 @@ const authController = {
               });
 
               console.log('[Signup] Successfully linked onboarding payment to user:', newUser.id);
+
+              // Trial Start for the web onboarding funnel is tracked here, not at
+              // confirm-payment: the card is confirmed before the account exists,
+              // so this is the first moment there is a user to attribute it to.
+              if (subscription.status === 'trialing' && subscription.trial_end) {
+                try {
+                  await trackEvent(newUser.id, 'Trial Start', {
+                    subscription_id: subscription.id,
+                    stripe_customer_id: subscription.customer,
+                    trial_end_date: new Date(subscription.trial_end * 1000).toISOString(),
+                    trial_duration_days: 7,
+                    payment_verified: true,
+                    has_payment_method: subscription.default_payment_method != null,
+                    user_journey: 'onboarding',
+                    subscription_status: subscription.status,
+                    session_id: onboardingSessionId,
+                    event_source: 'onboarding_signup_link'
+                  });
+                } catch (trackError) {
+                  console.error('[Signup] Failed to track Trial Start:', trackError.message);
+                  // Analytics must never fail a signup
+                }
+              }
 
               // Send trial start email
               try {

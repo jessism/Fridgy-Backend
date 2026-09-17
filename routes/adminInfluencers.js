@@ -15,7 +15,7 @@ const { requireAdmin } = require('../middleware/adminAuth');
 const { getServiceClient } = require('../config/supabase');
 const config = require('../services/influencerOutreach/config');
 const sm = require('../services/influencerOutreach/stateMachine');
-const { retryEmailTouch } = require('../services/influencerOutreach/sendTouch');
+const { sendPreparedTouch } = require('../services/influencerOutreach/sendTouch');
 const scheduler = require('../services/influencerOutreach/scheduler');
 const mailer = require('../services/influencerOutreach/mailer');
 
@@ -82,10 +82,16 @@ router.get('/today', async (req, res) => {
       .order('replied_at', { ascending: false });
     if (e4) throw e4;
 
-    const { data: failedEmails } = await sb
+    // Emails drafted and waiting for Send (plus any that failed), newest last.
+    const { data: emailTouches, error: e5 } = await sb
       .from('influencer_touches')
-      .select('id, step, error, influencer_id, influencers!inner(handle)')
-      .eq('channel', 'email').is('sent_at', null).not('error', 'is', null);
+      .select('*, influencers!inner(id, handle, platform, profile_url, display_name, status, email)')
+      .eq('channel', 'email')
+      .is('sent_at', null)
+      .order('created_at');
+    if (e5) throw e5;
+    const emailTasks = (emailTouches || []).filter((t) =>
+      ['dm_needed', 'contacted', 'followup_needed'].includes(t.influencers.status));
 
     res.json({
       success: true,
@@ -94,12 +100,13 @@ router.get('/today', async (req, res) => {
         batch,
         batches: batchesWithCreators,
         dmTasks: dmTouches.filter((t) => ['dm_needed', 'followup_needed'].includes(t.influencers.status)),
+        emailTasks,
         replies,
-        failedEmails: failedEmails || [],
         config: {
           batchSize: config.batchSize, warmupLikes: config.warmupLikes, warmupComments: config.warmupComments,
           followupsDays: config.followupsDays, dmOnTouches: config.dmOnTouches,
           emailEnabled: mailer.isEnabled(), emailConfigured: mailer.isConfigured(),
+          fromName: config.fromName, fromEmail: process.env.GMAIL_SENDER || null,
         },
       },
     });
@@ -226,16 +233,42 @@ router.post('/:id/posts/:postId', async (req, res) => {
   }
 });
 
-router.post('/touches/:touchId/retry', async (req, res) => {
+/** Send a drafted email (or retry one that failed). Same path for both. */
+const sendEmailHandler = async (req, res) => {
+  try {
+    res.json({ success: true, data: await sendPreparedTouch(req.params.touchId, 'human') });
+  } catch (e) {
+    fail(res, e, 'Sending the email failed');
+  }
+};
+router.post('/touches/:touchId/send', sendEmailHandler);
+router.post('/touches/:touchId/retry', sendEmailHandler);
+
+/** Send every drafted email waiting for review, in order. */
+router.post('/emails/send-all', async (req, res) => {
   try {
     const sb = getServiceClient();
-    const { data: touch, error } = await sb.from('influencer_touches').select('*, influencers(*)').eq('id', req.params.touchId).maybeSingle();
+    const { data: pendingEmails, error } = await sb
+      .from('influencer_touches')
+      .select('id, influencers!inner(status, email)')
+      .eq('channel', 'email')
+      .is('sent_at', null)
+      .order('created_at');
     if (error) throw error;
-    if (!touch) return res.status(404).json({ success: false, error: 'Touch not found' });
-    const data = await retryEmailTouch(touch, touch.influencers);
-    res.json({ success: true, data });
+
+    const results = [];
+    for (const t of pendingEmails || []) {
+      if (!t.influencers.email || !['dm_needed', 'contacted', 'followup_needed'].includes(t.influencers.status)) continue;
+      try {
+        await sendPreparedTouch(t.id, 'human');
+        results.push({ id: t.id, sent: true });
+      } catch (e) {
+        results.push({ id: t.id, sent: false, error: e.message });
+      }
+    }
+    res.json({ success: true, data: { sent: results.filter((r) => r.sent).length, failed: results.filter((r) => !r.sent) } });
   } catch (e) {
-    fail(res, e, 'Retry failed');
+    fail(res, e, 'Sending the emails failed');
   }
 });
 

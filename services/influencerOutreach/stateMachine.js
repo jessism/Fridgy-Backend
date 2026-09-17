@@ -7,7 +7,7 @@
  */
 const { getServiceClient } = require('../../config/supabase');
 const config = require('./config');
-const { sendEmailTouch, createDmTask } = require('./sendTouch');
+const { prepareEmailTouch, sendEmailTouch, createDmTask } = require('./sendTouch');
 
 const nowIso = () => new Date().toISOString();
 const addDays = (d, days) => new Date(new Date(d).getTime() + days * 86400000).toISOString();
@@ -105,8 +105,9 @@ async function reject(id, reason) {
 }
 
 /**
- * Warm-up done for one creator: send email touch 1 now (if any), create the
- * DM task, move to dm_needed.
+ * Warm-up done for one creator: draft email touch 1 (if they have an address)
+ * and queue the DM task, then move to dm_needed. Nothing is sent here — the
+ * first email waits for Send on the dashboard.
  */
 async function warmupDone(id) {
   const inf = await getInfluencer(id);
@@ -114,14 +115,9 @@ async function warmupDone(id) {
   if (inf.status !== 'warmup_needed') {
     throw Object.assign(new Error(`Cannot finish warm-up from status ${inf.status}`), { status: 409 });
   }
-  const emailTouch = await sendEmailTouch(inf, 1);
+  const emailTouch = await prepareEmailTouch(inf, 1);
   const dmTouch = config.dmOnTouches.includes(1) ? await createDmTask(inf, 1) : null;
-  const patch = { status: 'dm_needed', warmup_done_at: nowIso() };
-  if (emailTouch?.sent_at) {
-    patch.contacted_at = emailTouch.sent_at;
-    patch.last_touch_at = emailTouch.sent_at;
-  }
-  const updated = await update(id, patch);
+  const updated = await update(id, { status: 'dm_needed', warmup_done_at: nowIso() });
   return { influencer: updated, emailTouch, dmTouch };
 }
 
@@ -169,7 +165,8 @@ async function dmSent(id) {
     patch.status = 'contacted';
     patch.touches_sent = Math.max(inf.touches_sent || 0, 1);
     patch.contacted_at = inf.contacted_at || nowIso();
-    patch.next_touch_at = addDays(nowIso(), config.followupsDays[0]);
+    // The email may already have started the clock; first touch of either channel wins.
+    patch.next_touch_at = inf.next_touch_at || addDays(nowIso(), config.followupsDays[0]);
   } else if (inf.status === 'followup_needed') {
     patch.status = 'contacted';
   }

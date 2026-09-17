@@ -11,13 +11,18 @@ const cron = require('node-cron');
 const { getServiceClient } = require('../../config/supabase');
 const config = require('./config');
 const { runFollowups } = require('./stateMachine');
-const { retryEmailTouch } = require('./sendTouch');
+const { sendPreparedTouch } = require('./sendTouch');
 const replyScan = require('./replyScan');
 const sheetMirror = require('./sheetMirror');
 const mailer = require('./mailer');
 
 const TAG = '[Outreach]';
 
+/**
+ * Retry follow-up emails that failed to send (step 2+ only). Touch 1 is never
+ * auto-sent: it waits for Send on the dashboard, so a failed first email stays
+ * pending there instead of going out unattended overnight.
+ */
 async function retryFailedEmails() {
   const sb = getServiceClient();
   const { data: failed, error } = await sb
@@ -26,13 +31,14 @@ async function retryFailedEmails() {
     .eq('channel', 'email')
     .is('sent_at', null)
     .not('error', 'is', null)
+    .gt('step', 1)
     .limit(20);
   if (error) throw error;
   let ok = 0;
   for (const t of failed || []) {
     const inf = t.influencers;
     if (!inf || !inf.email || ['rejected', 'opted_out', 'bounced', 'replied', 'signed', 'declined'].includes(inf.status)) continue;
-    try { await retryEmailTouch(t, inf); ok += 1; } catch (e) { /* stays errored, visible on the dashboard */ }
+    try { await sendPreparedTouch(t.id, 'auto'); ok += 1; } catch (e) { /* stays errored, visible on the dashboard */ }
   }
   return { failed: (failed || []).length, resent: ok };
 }

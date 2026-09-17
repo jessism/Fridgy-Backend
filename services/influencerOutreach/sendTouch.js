@@ -1,9 +1,12 @@
 /**
  * Build and send touch N (1 = first contact, 2–4 = follow-ups) for one creator.
  *
- * Touch 1 uses the approved draft on the influencer row. Follow-ups are
- * generated with Gemini (OpenRouter) from prompts/followup.md, threaded onto
- * the first email via In-Reply-To so replies match.
+ * Touch 1 is *prepared* when warm-up finishes and sent only when Jessie presses
+ * Send on the dashboard, so the first email to a creator is always seen before
+ * it leaves. Follow-ups are generated with Gemini (OpenRouter) from
+ * prompts/followup.md and sent by the evening cron without a click; they are
+ * short nudges on a thread Jessie already approved, threaded onto the first
+ * email via In-Reply-To so replies match.
  *
  * Every attempt writes an influencer_touches row; failures land in `error`
  * and on influencers.email_error so the dashboard can show a retry.
@@ -11,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getServiceClient } = require('../../config/supabase');
+const config = require('./config');
 const mailer = require('./mailer');
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -81,73 +85,103 @@ async function buildEmail(inf, step) {
   return { subject: FOLLOWUP_SUBJECTS[step], body };
 }
 
+/** The first email's Message-ID, so follow-ups thread onto it. */
+async function threadRoot(sb, influencerId, step) {
+  if (step <= 1) return null;
+  const { data } = await sb
+    .from('influencer_touches')
+    .select('message_id')
+    .eq('influencer_id', influencerId)
+    .eq('channel', 'email')
+    .eq('step', 1)
+    .not('message_id', 'is', null)
+    .maybeSingle();
+  return data?.message_id || null;
+}
+
 /**
- * Send the email for `step`. Returns the touch row (sent or errored).
- * If the creator has no email, records nothing and returns null.
+ * Write the email for `step` as a PENDING touch — drafted, nothing sent. The
+ * dashboard shows it for review and sends it with sendPreparedTouch.
+ * Returns null when the creator has no email address.
  */
-async function sendEmailTouch(inf, step) {
+async function prepareEmailTouch(inf, step) {
   if (!inf.email) return null;
   const sb = getServiceClient();
-
-  // First email's Message-ID threads the follow-ups.
-  let inReplyTo = null;
-  if (step > 1) {
-    const { data: first } = await sb
-      .from('influencer_touches')
-      .select('message_id')
-      .eq('influencer_id', inf.id)
-      .eq('channel', 'email')
-      .eq('step', 1)
-      .not('message_id', 'is', null)
-      .maybeSingle();
-    inReplyTo = first?.message_id || null;
-  }
-
-  let subject; let body;
   try {
-    ({ subject, body } = await buildEmail(inf, step));
+    const { subject, body } = await buildEmail(inf, step);
+    return await recordTouch(sb, inf.id, step, 'email', {
+      subject, body, scheduled_for: new Date().toISOString(),
+    });
   } catch (e) {
     const row = await recordTouch(sb, inf.id, step, 'email', { subject: null, body: null, error: `build: ${e.message}` });
     await sb.from('influencers').update({ email_error: e.message }).eq('id', inf.id);
     return row;
   }
-
-  try {
-    const { messageId } = await mailer.sendCreatorEmail({ to: inf.email, subject, text: body, inReplyTo });
-    const row = await recordTouch(sb, inf.id, step, 'email', {
-      subject, body, sent_at: new Date().toISOString(), sent_by: 'auto', message_id: messageId,
-    });
-    await sb.from('influencers').update({ email_error: null }).eq('id', inf.id);
-    return row;
-  } catch (e) {
-    const row = await recordTouch(sb, inf.id, step, 'email', { subject, body, error: e.message });
-    await sb.from('influencers').update({ email_error: e.message }).eq('id', inf.id);
-    return row;
-  }
 }
 
-/** Retry an errored email touch in place (used by the retry button + nightly sweep). */
-async function retryEmailTouch(touch, inf) {
+/**
+ * Send a prepared (or previously failed) email touch. Rebuilds the body if the
+ * draft never got written. Throws on failure, leaving the error on the row so
+ * the dashboard can offer a retry.
+ */
+async function sendPreparedTouch(touchId, sentBy = 'human') {
   const sb = getServiceClient();
-  let subject = touch.subject; let body = touch.body;
+  const { data: touch, error } = await sb
+    .from('influencer_touches')
+    .select('*, influencers(*)')
+    .eq('id', touchId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!touch) throw Object.assign(new Error('Touch not found'), { status: 404 });
+  if (touch.sent_at) throw Object.assign(new Error('That email was already sent'), { status: 409 });
+
+  const inf = touch.influencers;
+  if (!inf?.email) throw Object.assign(new Error('Creator has no email address'), { status: 409 });
+
+  let subject = touch.subject;
+  let body = touch.body;
   try {
     if (!body) ({ subject, body } = await buildEmail(inf, touch.step));
-    let inReplyTo = null;
-    if (touch.step > 1) {
-      const { data: first } = await sb.from('influencer_touches').select('message_id')
-        .eq('influencer_id', inf.id).eq('channel', 'email').eq('step', 1).not('message_id', 'is', null).maybeSingle();
-      inReplyTo = first?.message_id || null;
-    }
+    const inReplyTo = await threadRoot(sb, inf.id, touch.step);
     const { messageId } = await mailer.sendCreatorEmail({ to: inf.email, subject, text: body, inReplyTo });
-    const { data } = await sb.from('influencer_touches')
-      .update({ subject, body, sent_at: new Date().toISOString(), sent_by: 'auto', message_id: messageId, error: null })
+    const sentAt = new Date().toISOString();
+
+    const { data: saved } = await sb.from('influencer_touches')
+      .update({ subject, body, sent_at: sentAt, sent_by: sentBy, message_id: messageId, error: null })
       .eq('id', touch.id).select('*').single();
-    await sb.from('influencers').update({ email_error: null }).eq('id', inf.id);
-    return data;
+
+    // First contact starts the follow-up clock, whichever channel goes first.
+    const patch = { email_error: null, last_touch_at: sentAt };
+    if (touch.step === 1) {
+      if (!inf.contacted_at) patch.contacted_at = sentAt;
+      if (!inf.touches_sent) patch.touches_sent = 1;
+      if (!inf.next_touch_at) {
+        patch.next_touch_at = new Date(Date.now() + config.followupsDays[0] * 86400000).toISOString();
+      }
+    }
+    await sb.from('influencers').update(patch).eq('id', inf.id);
+    return saved;
   } catch (e) {
     await sb.from('influencer_touches').update({ subject, body, error: e.message }).eq('id', touch.id);
     await sb.from('influencers').update({ email_error: e.message }).eq('id', inf.id);
     throw e;
+  }
+}
+
+/**
+ * Prepare and immediately send — used by the evening cron for follow-ups, which
+ * do not wait for a click. Returns the touch row (sent or errored), or null when
+ * the creator has no email.
+ */
+async function sendEmailTouch(inf, step) {
+  const prepared = await prepareEmailTouch(inf, step);
+  if (!prepared || prepared.error) return prepared;
+  try {
+    return await sendPreparedTouch(prepared.id, 'auto');
+  } catch (e) {
+    const sb = getServiceClient();
+    const { data } = await sb.from('influencer_touches').select('*').eq('id', prepared.id).maybeSingle();
+    return data;
   }
 }
 
@@ -172,4 +206,4 @@ async function recordTouch(sb, influencerId, step, channel, fields) {
   return data;
 }
 
-module.exports = { sendEmailTouch, retryEmailTouch, createDmTask, firstName };
+module.exports = { prepareEmailTouch, sendPreparedTouch, sendEmailTouch, createDmTask, firstName };

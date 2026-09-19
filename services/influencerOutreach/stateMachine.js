@@ -7,7 +7,7 @@
  */
 const { getServiceClient } = require('../../config/supabase');
 const config = require('./config');
-const { prepareEmailTouch, sendEmailTouch, createDmTask } = require('./sendTouch');
+const { prepareEmailTouch, createDmTask, advanceSchedule, settleStatus } = require('./sendTouch');
 
 const nowIso = () => new Date().toISOString();
 const addDays = (d, days) => new Date(new Date(d).getTime() + days * 86400000).toISOString();
@@ -158,25 +158,23 @@ async function dmSent(id) {
   const touch = pending[0];
   if (!touch) throw Object.assign(new Error('No DM waiting to be sent'), { status: 409 });
 
-  await sb.from('influencer_touches').update({ sent_at: nowIso(), sent_by: 'human' }).eq('id', touch.id);
+  const sentAt = nowIso();
+  await sb.from('influencer_touches').update({ sent_at: sentAt, sent_by: 'human' }).eq('id', touch.id);
 
-  const patch = { last_touch_at: nowIso() };
-  if (touch.step === 1) {
-    patch.status = 'contacted';
-    patch.touches_sent = Math.max(inf.touches_sent || 0, 1);
-    patch.contacted_at = inf.contacted_at || nowIso();
-    // The email may already have started the clock; first touch of either channel wins.
-    patch.next_touch_at = inf.next_touch_at || addDays(nowIso(), config.followupsDays[0]);
-  } else if (inf.status === 'followup_needed') {
-    patch.status = 'contacted';
-  }
-  return update(id, patch);
+  return update(id, {
+    ...advanceSchedule(inf, touch.step, sentAt),
+    ...(await settleStatus(sb, inf)),
+  });
 }
 
 /**
- * Nightly: creators whose next touch is due. Sends the follow-up email,
- * queues the DM task when configured, advances the counters. After the last
- * gap following touch 4 → no_response.
+ * Nightly: creators whose next touch is due. Drafts the follow-up email and
+ * queues the DM task; neither is sent here — both wait on the dashboard for a
+ * click, so every message is seen and editable first.
+ *
+ * The clock is driven by sends, not drafts (see advanceSchedule), so a creator
+ * who still owes a send is skipped rather than having a second draft stacked
+ * behind the first. After the last gap following touch 4 → no_response.
  */
 async function runFollowups() {
   const sb = getServiceClient();
@@ -188,7 +186,10 @@ async function runFollowups() {
     .lte('next_touch_at', now);
   if (error) throw error;
 
-  const summary = { sent: 0, dmTasks: 0, noResponse: 0, errors: 0 };
+  const { data: pendingRows } = await sb.from('influencer_touches').select('influencer_id').is('sent_at', null);
+  const awaitingSend = new Set((pendingRows || []).map((r) => r.influencer_id));
+
+  const summary = { drafted: 0, dmTasks: 0, noResponse: 0, skipped: 0, errors: 0 };
   for (const inf of due) {
     try {
       const sent = inf.touches_sent || 0;
@@ -197,22 +198,30 @@ async function runFollowups() {
         summary.noResponse += 1;
         continue;
       }
-      // A creator still waiting on a human DM for the previous step gets the
-      // next email anyway; the DM task simply stays in the queue.
-      const step = sent + 1;
-      const emailTouch = await sendEmailTouch(inf, step);
-      if (emailTouch?.sent_at) summary.sent += 1;
-      if (emailTouch && !emailTouch.sent_at) summary.errors += 1;
+      if (awaitingSend.has(inf.id)) {
+        summary.skipped += 1;
+        continue;
+      }
 
-      const patch = { touches_sent: step, last_touch_at: now };
+      const step = sent + 1;
+      const emailTouch = await prepareEmailTouch(inf, step);
+      if (emailTouch?.error) summary.errors += 1;
+      else if (emailTouch) summary.drafted += 1;
+
+      let dmTouch = null;
       if (config.dmOnTouches.includes(step)) {
-        await createDmTask(inf, step);
-        patch.status = 'followup_needed';
+        dmTouch = await createDmTask(inf, step);
         summary.dmTasks += 1;
       }
-      const gap = step < 4 ? config.followupsDays[step - 1] : config.followupsDays[config.followupsDays.length - 1];
-      patch.next_touch_at = addDays(now, gap);
-      await update(inf.id, patch);
+
+      // Nothing to send on this step (no email address, DM not configured for it):
+      // move the clock on so the creator still reaches no_response.
+      if (!emailTouch && !dmTouch) {
+        await update(inf.id, advanceSchedule(inf, step, now));
+        summary.skipped += 1;
+      } else {
+        await update(inf.id, { status: 'followup_needed' });
+      }
     } catch (e) {
       console.error('[Outreach] follow-up failed for', inf.handle, e.message);
       summary.errors += 1;

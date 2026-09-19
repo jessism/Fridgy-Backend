@@ -1,12 +1,11 @@
 /**
- * Build and send touch N (1 = first contact, 2–4 = follow-ups) for one creator.
+ * Build touch N (1 = first contact, 2–4 = follow-ups) for one creator.
  *
- * Touch 1 is *prepared* when warm-up finishes and sent only when Jessie presses
- * Send on the dashboard, so the first email to a creator is always seen before
- * it leaves. Follow-ups are generated with Gemini (OpenRouter) from
- * prompts/followup.md and sent by the evening cron without a click; they are
- * short nudges on a thread Jessie already approved, threaded onto the first
- * email via In-Reply-To so replies match.
+ * Nothing is ever sent without a click: touch 1 is prepared when warm-up
+ * finishes, follow-ups are prepared by the evening cron when they fall due, and
+ * both sit on the dashboard as editable drafts until Send is pressed. Follow-up
+ * bodies are generated with Gemini (OpenRouter) from prompts/followup.md and
+ * threaded onto the first email via In-Reply-To so replies match.
  *
  * Every attempt writes an influencer_touches row; failures land in `error`
  * and on influencers.email_error so the dashboard can show a retry.
@@ -85,6 +84,36 @@ async function buildEmail(inf, step) {
   return { subject: FOLLOWUP_SUBJECTS[step], body };
 }
 
+/**
+ * A touch only counts once it is actually sent, and the next one is scheduled
+ * from that moment. Drafting does nothing to the clock, so an unsent follow-up
+ * can never stack another one behind it. Idempotent per step: whichever channel
+ * goes out first (email or DM) advances it, the second is a no-op.
+ */
+function advanceSchedule(inf, step, sentAt) {
+  const patch = { last_touch_at: sentAt };
+  if (!inf.contacted_at) patch.contacted_at = sentAt;
+  if ((inf.touches_sent || 0) >= step) return patch;
+
+  const gaps = config.followupsDays;
+  const gap = gaps[Math.min(step - 1, gaps.length - 1)];
+  patch.touches_sent = step;
+  patch.next_touch_at = new Date(new Date(sentAt).getTime() + gap * 86400000).toISOString();
+  return patch;
+}
+
+/** Back to plain 'contacted' once nothing is left for a human to send. */
+async function settleStatus(sb, inf) {
+  if (!['dm_needed', 'followup_needed'].includes(inf.status)) return {};
+  const { count, error } = await sb
+    .from('influencer_touches')
+    .select('id', { count: 'exact', head: true })
+    .eq('influencer_id', inf.id)
+    .is('sent_at', null);
+  if (error) throw error;
+  return count ? {} : { status: 'contacted' };
+}
+
 /** The first email's Message-ID, so follow-ups thread onto it. */
 async function threadRoot(sb, influencerId, step) {
   if (step <= 1) return null;
@@ -150,38 +179,16 @@ async function sendPreparedTouch(touchId, sentBy = 'human') {
       .update({ subject, body, sent_at: sentAt, sent_by: sentBy, message_id: messageId, error: null })
       .eq('id', touch.id).select('*').single();
 
-    // First contact starts the follow-up clock, whichever channel goes first.
-    const patch = { email_error: null, last_touch_at: sentAt };
-    if (touch.step === 1) {
-      if (!inf.contacted_at) patch.contacted_at = sentAt;
-      if (!inf.touches_sent) patch.touches_sent = 1;
-      if (!inf.next_touch_at) {
-        patch.next_touch_at = new Date(Date.now() + config.followupsDays[0] * 86400000).toISOString();
-      }
-    }
-    await sb.from('influencers').update(patch).eq('id', inf.id);
+    await sb.from('influencers').update({
+      email_error: null,
+      ...advanceSchedule(inf, touch.step, sentAt),
+      ...(await settleStatus(sb, inf)),
+    }).eq('id', inf.id);
     return saved;
   } catch (e) {
     await sb.from('influencer_touches').update({ subject, body, error: e.message }).eq('id', touch.id);
     await sb.from('influencers').update({ email_error: e.message }).eq('id', inf.id);
     throw e;
-  }
-}
-
-/**
- * Prepare and immediately send — used by the evening cron for follow-ups, which
- * do not wait for a click. Returns the touch row (sent or errored), or null when
- * the creator has no email.
- */
-async function sendEmailTouch(inf, step) {
-  const prepared = await prepareEmailTouch(inf, step);
-  if (!prepared || prepared.error) return prepared;
-  try {
-    return await sendPreparedTouch(prepared.id, 'auto');
-  } catch (e) {
-    const sb = getServiceClient();
-    const { data } = await sb.from('influencer_touches').select('*').eq('id', prepared.id).maybeSingle();
-    return data;
   }
 }
 
@@ -206,4 +213,4 @@ async function recordTouch(sb, influencerId, step, channel, fields) {
   return data;
 }
 
-module.exports = { prepareEmailTouch, sendPreparedTouch, sendEmailTouch, createDmTask, firstName };
+module.exports = { prepareEmailTouch, sendPreparedTouch, createDmTask, advanceSchedule, settleStatus, firstName };

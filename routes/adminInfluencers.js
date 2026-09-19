@@ -276,7 +276,6 @@ router.post('/emails/send-all', async (req, res) => {
 router.post('/jobs/:job', async (req, res) => {
   const jobs = {
     followups: () => scheduler.runFollowups(),
-    retries: () => scheduler.retryFailedEmails(),
     digest: () => scheduler.sendDigest(),
     scan: () => scheduler.scan(),
     mirror: () => scheduler.mirror(),

@@ -236,6 +236,40 @@ router.post('/:id/posts/:postId', async (req, res) => {
   }
 });
 
+/**
+ * Edit a drafted email before it goes out. Only the pending touch is editable —
+ * a sent message is history. This is what Send actually transmits, so edits
+ * here (not the creator's template fields) are what reach the creator.
+ */
+router.patch('/touches/:touchId', async (req, res) => {
+  try {
+    const sb = getServiceClient();
+    const { data: touch, error } = await sb
+      .from('influencer_touches')
+      .select('id, sent_at, channel')
+      .eq('id', req.params.touchId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!touch) return res.status(404).json({ success: false, error: 'Touch not found' });
+    if (touch.sent_at) return res.status(409).json({ success: false, error: 'That message was already sent' });
+
+    const patch = { edited: true };
+    if (req.body.subject !== undefined) patch.subject = String(req.body.subject).slice(0, 300);
+    if (req.body.body !== undefined) patch.body = String(req.body.body).slice(0, 20000);
+    if (patch.subject === undefined && patch.body === undefined) {
+      return res.status(400).json({ success: false, error: 'Nothing to update' });
+    }
+    // A saved edit clears a previous send failure; the retry starts clean.
+    patch.error = null;
+
+    const { data, error: e2 } = await sb.from('influencer_touches').update(patch).eq('id', touch.id).select('*').single();
+    if (e2) throw e2;
+    res.json({ success: true, data });
+  } catch (e) {
+    fail(res, e, 'Failed to save the draft');
+  }
+});
+
 /** Send a drafted email (or retry one that failed). Same path for both. */
 const sendEmailHandler = async (req, res) => {
   try {

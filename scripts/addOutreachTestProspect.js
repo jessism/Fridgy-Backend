@@ -29,21 +29,30 @@ const flag = (name) => {
 const NAME = 'Test';
 const PERSONAL_LINE = 'I love how your weeknight dinners always look doable on a Tuesday, especially the sheet-pan ones.';
 
+// Mirrors trackabite-outreach/templates/email.txt — keep the two in step.
 const EMAIL_SUBJECT = 'Paid collab with Trackabite?';
-const EMAIL_BODY = `Hi ${NAME},
+const EMAIL_BODY = `Hey ${NAME}!
 
-${PERSONAL_LINE}
+I'm Jessie -- a foodie.
 
-Quick one: I'm Jessie, and I'm building a small iOS app called Trackabite. It helps busy folks keep track of what food they have at home and figure out what to cook, so less ends up in the bin. I think it could fit really naturally into your content.
+I just found your A Busy Kitchen and went down a bit of a rabbit hole 😅 I love how you make weeknight cooking feel doable for people with packed schedules. You have clearly earned your audience's trust, and it shows in the comments.
 
-Collab-wise, it's super chill: just your normal video with a natural mention of the app. There's a flat fee per video, plus bonuses for installs and paid users that come through your link.
+I'm building a small app called Trackabite.
 
-If that sounds interesting, reply here and I'll send over a short brief with the details.
+It's a food inventory app that helps busy cooks track what they have, figure out what to cook, stop wasting groceries, and cook better. (The exact problem your followers and I deal with every week.)
 
-Have a great day!
+I think your audience would genuinely get value from this app. And if it clicks, it could be a really easy way for you to also earn from something that would actually help them.
 
-Jessie
-Trackabite`;
+Would you be open to a small paid collab? I'm thinking just one short video on your IG + a mention in your community. But I'm open to any ideas.
+
+If you're interested, I'd love to share more details of what I'm thinking.
+
+Either way, keep doing what you're doing. You're rocking it. ♥️
+
+Looking forward to hearing from you.
+
+Best,
+Jessie`;
 
 const DM_BODY = `Paid collab?
 

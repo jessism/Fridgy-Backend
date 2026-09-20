@@ -27,8 +27,32 @@ function isConfigured() {
   return Boolean(process.env.GMAIL_SENDER && process.env.GMAIL_APP_PASSWORD);
 }
 
+// A kill switch that silently ignores "TRUE" or a value someone pasted with
+// quotes is worse than a lenient one: the failure is an inert button with no
+// explanation. Anything clearly affirmative counts.
+const AFFIRMATIVE = new Set(['true', '1', 'yes', 'on', 'enabled']);
+const flagValue = () => String(process.env.OUTREACH_EMAIL_ENABLED ?? '').trim().replace(/^["']|["']$/g, '');
+const isFlagOn = () => AFFIRMATIVE.has(flagValue().toLowerCase());
+
 function isEnabled() {
-  return process.env.OUTREACH_EMAIL_ENABLED === 'true' && isConfigured();
+  return isFlagOn() && isConfigured();
+}
+
+/** null when sending is ready, otherwise exactly what is missing. Never a secret. */
+function statusReason() {
+  const missing = [];
+  if (!process.env.GMAIL_SENDER) missing.push('GMAIL_SENDER');
+  if (!process.env.GMAIL_APP_PASSWORD) missing.push('GMAIL_APP_PASSWORD');
+  if (missing.length) {
+    return `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not set on the server`;
+  }
+  if (!isFlagOn()) {
+    const raw = flagValue();
+    return raw
+      ? `OUTREACH_EMAIL_ENABLED is set to "${raw.slice(0, 20)}" — it needs to be true`
+      : 'OUTREACH_EMAIL_ENABLED is not set — add it with the value true';
+  }
+  return null;
 }
 
 /** Creator emails sent today (UTC), for the daily cap. */
@@ -51,8 +75,8 @@ async function sentTodayCount() {
  * Throws with a clear message when disabled, unconfigured, or over cap.
  */
 async function sendCreatorEmail({ to, subject, text, inReplyTo }) {
-  if (!isConfigured()) throw new Error('Outreach email not configured (GMAIL_SENDER / GMAIL_APP_PASSWORD)');
-  if (!isEnabled()) throw new Error('Outreach email disabled (OUTREACH_EMAIL_ENABLED != true)');
+  const blocked = statusReason();
+  if (blocked) throw new Error(`Cannot send: ${blocked}`);
 
   const sent = await sentTodayCount();
   if (sent >= config.emailDailyCap) throw new Error(`Daily creator email cap reached (${config.emailDailyCap})`);
@@ -86,4 +110,4 @@ async function sendInternal({ subject, text }) {
   return info.messageId;
 }
 
-module.exports = { sendCreatorEmail, sendInternal, isConfigured, isEnabled, sentTodayCount };
+module.exports = { sendCreatorEmail, sendInternal, isConfigured, isEnabled, statusReason, sentTodayCount };

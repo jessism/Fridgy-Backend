@@ -105,7 +105,7 @@ router.get('/today', async (req, res) => {
         config: {
           batchSize: config.batchSize, warmupLikes: config.warmupLikes, warmupComments: config.warmupComments,
           followupsDays: config.followupsDays, dmOnTouches: config.dmOnTouches,
-          emailEnabled: mailer.isEnabled(), emailConfigured: mailer.isConfigured(),
+          emailEnabled: mailer.isEnabled(), emailConfigured: mailer.isConfigured(), emailReason: mailer.statusReason(),
           fromName: config.fromName, fromEmail: process.env.GMAIL_SENDER || null,
           sheetUrl: config.sheetUrl,
         },

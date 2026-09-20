@@ -10,17 +10,46 @@ const nodemailer = require('nodemailer');
 const { getServiceClient } = require('../../config/supabase');
 const config = require('./config');
 
-let transport = null;
-function getTransport() {
-  if (!transport) {
-    transport = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      auth: { user: process.env.GMAIL_SENDER, pass: process.env.GMAIL_APP_PASSWORD },
-    });
+/**
+ * Gmail SMTP, tried on 465 then 587.
+ *
+ * Timeouts are short on purpose: nodemailer defaults to two minutes, so a
+ * blocked port left the dashboard's Send button spinning with no feedback at
+ * all. Failing in seconds with a real message is far more useful.
+ */
+const SMTP_PORTS = [
+  { port: 465, secure: true },
+  { port: 587, secure: false, requireTLS: true },
+];
+
+const makeTransport = ({ port, secure, requireTLS }) => nodemailer.createTransport({
+  host: 'smtp.gmail.com',
+  port,
+  secure,
+  requireTLS,
+  auth: { user: process.env.GMAIL_SENDER, pass: process.env.GMAIL_APP_PASSWORD },
+  connectionTimeout: 15000,
+  greetingTimeout: 10000,
+  socketTimeout: 20000,
+});
+
+/** Send over whichever port is reachable; the last error wins if none are. */
+async function smtpSend(message) {
+  let lastError;
+  for (const opts of SMTP_PORTS) {
+    try {
+      return await makeTransport(opts).sendMail(message);
+    } catch (e) {
+      lastError = e;
+      const networkLevel = ['ETIMEDOUT', 'ESOCKET', 'ECONNECTION', 'ECONNREFUSED'].includes(e.code);
+      console.error(`[Outreach] SMTP :${opts.port} failed — ${e.code || 'error'}: ${e.message}`);
+      if (!networkLevel) break; // a rejected login will not fare better on another port
+    }
   }
-  return transport;
+  const hint = ['ETIMEDOUT', 'ESOCKET', 'ECONNECTION'].includes(lastError?.code)
+    ? ' (the host appears to block outbound SMTP — Railway does by default)'
+    : '';
+  throw new Error(`${lastError?.message || 'SMTP send failed'}${hint}`);
 }
 
 function isConfigured() {
@@ -83,7 +112,7 @@ async function sendCreatorEmail({ to, subject, text, inReplyTo }) {
 
   const from = `"${config.fromName}" <${process.env.GMAIL_SENDER}>`;
 
-  const info = await getTransport().sendMail({
+  const info = await smtpSend({
     from,
     to,
     replyTo: process.env.GMAIL_SENDER,
@@ -101,7 +130,7 @@ async function sendInternal({ subject, text }) {
     console.log('[Outreach] notify skipped (mail not configured):', subject);
     return null;
   }
-  const info = await getTransport().sendMail({
+  const info = await smtpSend({
     from: `"Trackabite outreach" <${process.env.GMAIL_SENDER}>`,
     to,
     subject,

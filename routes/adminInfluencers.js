@@ -275,7 +275,11 @@ const sendEmailHandler = async (req, res) => {
   try {
     res.json({ success: true, data: await sendPreparedTouch(req.params.touchId, 'human') });
   } catch (e) {
-    fail(res, e, 'Sending the email failed');
+    // A delivery failure is operational information, not an internal error:
+    // pass the real reason through so the dashboard can show it.
+    const status = e.status || 502;
+    if (!e.status) console.error('[AdminInfluencers] send failed:', e.message);
+    res.status(status).json({ success: false, error: e.message });
   }
 };
 router.post('/touches/:touchId/send', sendEmailHandler);

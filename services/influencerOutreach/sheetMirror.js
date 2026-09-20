@@ -15,7 +15,8 @@ const PIPELINE_HEADERS = [
   'Username', 'Profile Link', 'Platform', 'Followers', 'Bio', 'Category', 'Score', 'Reason',
   'Website/Linktree', 'Draft Message', 'Followed?', 'Interacted?', 'DM Sent?', 'Response?', 'Notes', 'Found Date',
   'Status', 'Email', 'Recommended Fee', 'Agreed Fee', 'Approved', 'Warm-up done', 'Touches sent',
-  'Last touch', 'Next touch', 'Replied', 'Outcome', 'Batch', 'Updated (mirror is one-way; edits here are ignored)',
+  'Last touch', 'Next touch', 'Replied', 'Outcome', 'Reason', 'Batch',
+  'Updated (mirror is one-way; edits here are ignored)',
 ];
 const TOUCH_HEADERS = ['Sent at', 'Username', 'Step', 'Channel', 'Sent by', 'Subject', 'Message ID'];
 const RUN_HEADERS = ['Started', 'Platform', 'Hashtags', 'Candidates', 'Added', 'Apify runs', 'Error'];
@@ -54,7 +55,8 @@ function pipelineRow(inf) {
     inf.score ?? '', inf.why || '', inf.external_url || '', inf.draft_dm || '',
     yes(inf.warmup_done_at), yes(inf.warmup_done_at), yes(inf.touches_sent >= 1), yes(inf.replied_at), inf.notes || '', d(inf.discovered_at),
     inf.status, inf.email || '', inf.recommended_fee ?? '', inf.agreed_fee ?? '', d(inf.approved_at), d(inf.warmup_done_at),
-    inf.touches_sent ?? 0, d(inf.last_touch_at), d(inf.next_touch_at), d(inf.replied_at), inf.outcome || '', inf.batch_id ?? '',
+    inf.touches_sent ?? 0, d(inf.last_touch_at), d(inf.next_touch_at), d(inf.replied_at), inf.outcome || '',
+    inf.rejection_reason || '', inf.batch_id ?? '',
     new Date().toISOString(),
   ];
 }

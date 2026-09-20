@@ -24,7 +24,7 @@ router.use(authenticateToken, requireAdmin);
 
 const STATUSES = [
   'pending_approval', 'warmup_needed', 'dm_needed', 'contacted', 'followup_needed',
-  'replied', 'signed', 'declined', 'no_response', 'rejected', 'hold', 'opted_out', 'bounced',
+  'replied', 'signed', 'declined', 'no_response', 'rejected', 'hold', 'opted_out', 'bounced', 'removed',
 ];
 const EDITABLE = ['draft_dm', 'draft_email_subject', 'draft_email', 'notes', 'hold_note', 'agreed_fee', 'email', 'promo_code', 'tracking_link', 'rejection_reason'];
 
@@ -107,6 +107,7 @@ router.get('/today', async (req, res) => {
           followupsDays: config.followupsDays, dmOnTouches: config.dmOnTouches,
           emailEnabled: mailer.isEnabled(), emailConfigured: mailer.isConfigured(),
           fromName: config.fromName, fromEmail: process.env.GMAIL_SENDER || null,
+          sheetUrl: config.sheetUrl,
         },
       },
     });
@@ -173,6 +174,7 @@ router.patch('/:id', async (req, res) => {
         case 'warmup_needed': result = await sm.approve(id); break;
         case 'hold': result = await sm.hold(id, body.hold_note); break;
         case 'rejected': result = await sm.reject(id, body.rejection_reason); break;
+        case 'removed': result = await sm.removeFromPipeline(id, body.rejection_reason); break;
         case 'replied': result = await sm.markReplied(id, body.reply_channel || 'dm'); break;
         case 'signed':
         case 'declined':

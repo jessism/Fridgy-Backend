@@ -81,6 +81,25 @@ async function approve(id) {
   return update(id, { status: 'warmup_needed', batch_id: batch.id, approved_at: nowIso(), hold_note: null });
 }
 
+/**
+ * Drop a creator out of the pipeline entirely — deleted account, went private,
+ * asked to be left alone. Unlike reject this says nothing about fit, so the
+ * reason is stored but never fed back into scoring. Anything still queued for
+ * them disappears from Today, because those lists only include live statuses.
+ */
+async function removeFromPipeline(id, reason) {
+  const patch = {
+    status: 'removed',
+    next_touch_at: null,
+    batch_id: null,
+    outcome: 'removed',
+    rejected_at: nowIso(),
+  };
+  const trimmed = (reason || '').trim();
+  if (trimmed) patch.rejection_reason = trimmed.slice(0, 500);
+  return update(id, patch);
+}
+
 async function hold(id, note) {
   return update(id, { status: 'hold', hold_note: note || null });
 }
@@ -236,6 +255,6 @@ async function markReplied(id, channel = 'dm') {
 
 module.exports = {
   currentOpenBatch, openBatches, openedToday, sessionDay,
-  getInfluencer, update, approve, hold, reject,
+  getInfluencer, update, approve, hold, reject, removeFromPipeline,
   warmupDone, batchWarmupDone, dmSent, runFollowups, markReplied, addDays,
 };

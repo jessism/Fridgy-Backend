@@ -39,4 +39,11 @@ module.exports = {
   fromName: 'Jessie at Trackabite',
 
   dashboardUrl: process.env.OUTREACH_DASHBOARD_URL || 'https://trackabite.app/admin/influencers',
+
+  // The archive sheet the nightly mirror writes to. Null when unset, and the
+  // dashboard simply omits the link.
+  get sheetUrl() {
+    const id = process.env.OUTREACH_SHEET_ID;
+    return id ? `https://docs.google.com/spreadsheets/d/${id}/edit` : null;
+  },
 };

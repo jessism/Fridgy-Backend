@@ -175,6 +175,7 @@ router.patch('/:id', async (req, res) => {
         case 'hold': result = await sm.hold(id, body.hold_note); break;
         case 'rejected': result = await sm.reject(id, body.rejection_reason); break;
         case 'removed': result = await sm.removeFromPipeline(id, body.rejection_reason); break;
+        case 'restore': result = await sm.restore(id); break;
         case 'replied': result = await sm.markReplied(id, body.reply_channel || 'dm'); break;
         case 'signed':
         case 'declined':

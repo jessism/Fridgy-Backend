@@ -102,13 +102,18 @@ function advanceSchedule(inf, step, sentAt) {
   return patch;
 }
 
-/** Back to plain 'contacted' once nothing is left for a human to send. */
+/**
+ * Back to plain 'contacted' once no DM is owed. Only DMs count: they are the
+ * hand-sent channel the status names, and an email still waiting to be sent
+ * already surfaces in its own queue.
+ */
 async function settleStatus(sb, inf) {
   if (!['dm_needed', 'followup_needed'].includes(inf.status)) return {};
   const { count, error } = await sb
     .from('influencer_touches')
     .select('id', { count: 'exact', head: true })
     .eq('influencer_id', inf.id)
+    .eq('channel', 'dm')
     .is('sent_at', null);
   if (error) throw error;
   return count ? {} : { status: 'contacted' };

@@ -100,6 +100,46 @@ async function removeFromPipeline(id, reason) {
   return update(id, patch);
 }
 
+/**
+ * Undo a removal or rejection. Puts the creator back where their own record
+ * says they were rather than guessing: someone already contacted resumes as
+ * contacted with the follow-up clock intact, anything still queued reappears in
+ * Today, and a creator who was never approved returns to the review queue.
+ */
+async function restore(id) {
+  const inf = await getInfluencer(id);
+  if (!inf) throw Object.assign(new Error('Not found'), { status: 404 });
+
+  const sb = getServiceClient();
+  const { data: touches, error } = await sb
+    .from('influencer_touches')
+    .select('step, channel, sent_at')
+    .eq('influencer_id', id);
+  if (error) throw error;
+
+  const patch = { rejection_reason: null, rejected_at: null, outcome: null };
+  const unsent = (touches || []).filter((t) => !t.sent_at);
+  const everSent = (inf.touches_sent || 0) >= 1 || (touches || []).some((t) => t.sent_at);
+
+  if (everSent) {
+    // Only an unsent DM changes the status; an unsent email shows up in its own
+    // queue and 'contacted' already includes it there.
+    const owedDm = unsent.filter((t) => t.channel === 'dm').sort((a, b) => a.step - b.step)[0];
+    patch.status = owedDm ? (owedDm.step === 1 ? 'dm_needed' : 'followup_needed') : 'contacted';
+    if (!inf.next_touch_at) {
+      const step = Math.max(inf.touches_sent || 1, 1);
+      const gaps = config.followupsDays;
+      const from = inf.last_touch_at || inf.contacted_at || nowIso();
+      patch.next_touch_at = addDays(from, gaps[Math.min(step - 1, gaps.length - 1)]);
+    }
+  } else {
+    patch.status = 'pending_approval';
+    patch.batch_id = null;
+    patch.approved_at = null;
+  }
+  return update(id, patch);
+}
+
 async function hold(id, note) {
   return update(id, { status: 'hold', hold_note: note || null });
 }
@@ -255,6 +295,6 @@ async function markReplied(id, channel = 'dm') {
 
 module.exports = {
   currentOpenBatch, openBatches, openedToday, sessionDay,
-  getInfluencer, update, approve, hold, reject, removeFromPipeline,
+  getInfluencer, update, approve, hold, reject, removeFromPipeline, restore,
   warmupDone, batchWarmupDone, dmSent, runFollowups, markReplied, addDays,
 };

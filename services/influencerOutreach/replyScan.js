@@ -1,30 +1,68 @@
 /**
- * Scan the outreach mailbox (IMAP) for replies, bounces and STOP requests.
+ * Scan the outreach mailbox for replies, bounces and STOP requests.
  *
- * Matching, in order: In-Reply-To / References against stored Message-IDs;
- * then the From address against influencers.email. A body or subject
- * containing a standalone "STOP" → opted_out. Mailer-daemon messages that
- * mention a creator's address → bounced.
+ * Reads over the Gmail HTTPS API rather than IMAP: Railway blocks IMAP just as
+ * it blocks SMTP, so imapflow could never connect from production. Same service
+ * account and impersonation as the sender (mailer.js), with the gmail.readonly
+ * scope.
  *
- * Runs every 30 min when GMAIL_SENDER / GMAIL_APP_PASSWORD are set. Looks
- * back 21 days; idempotent because it only moves creators forward.
+ * Matching, in order: In-Reply-To / References against stored Message-IDs; then
+ * the From address against influencers.email. A body or subject containing a
+ * standalone "STOP" → opted_out. Mailer-daemon messages that mention a
+ * creator's address → bounced.
+ *
+ * Runs every 30 minutes. Looks back 21 days; idempotent because it only moves
+ * creators forward.
  */
-const { ImapFlow } = require('imapflow');
+const { google } = require('googleapis');
 const { getServiceClient } = require('../../config/supabase');
 const { update } = require('./stateMachine');
 
 const LOOKBACK_DAYS = 21;
+const MAX_MESSAGES = 200;
 const STOP_RE = /(^|\W)(stop|unsubscribe)(\W|$)/i;
+const GMAIL_READ_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
-function extractAddress(addr) {
-  return (addr || '').toLowerCase().replace(/.*<([^>]+)>.*/, '$1').trim();
+function extractAddress(value) {
+  return String(value || '').toLowerCase().replace(/.*<([^>]+)>.*/, '$1').trim();
+}
+
+function gmailClient() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw || !process.env.GMAIL_SENDER) return null;
+  let creds;
+  try {
+    creds = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const auth = new google.auth.JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: [GMAIL_READ_SCOPE],
+    subject: process.env.GMAIL_SENDER,
+  });
+  return google.gmail({ version: 'v1', auth });
+}
+
+const header = (message, name) =>
+  (message.payload?.headers || []).find((h) => h.name.toLowerCase() === name)?.value || '';
+
+/** Plain-text body, walking the MIME parts Gmail returns. */
+function plainText(payload, depth = 0) {
+  if (!payload || depth > 6) return '';
+  if (payload.mimeType === 'text/plain' && payload.body?.data) {
+    return Buffer.from(payload.body.data, 'base64').toString('utf8');
+  }
+  return (payload.parts || []).map((p) => plainText(p, depth + 1)).join('\n');
 }
 
 async function scan() {
-  if (!process.env.GMAIL_SENDER || !process.env.GMAIL_APP_PASSWORD) return { skipped: 'not configured' };
+  const gmail = gmailClient();
+  if (!gmail) return { skipped: 'Gmail API not configured (GMAIL_SENDER + GOOGLE_SERVICE_ACCOUNT_JSON)' };
   const sb = getServiceClient();
 
-  // Creators we might hear from: anything contacted and not yet closed.
+  // Creators we might hear from: contacted and not yet closed.
   const { data: contacted, error } = await sb
     .from('influencers')
     .select('id, handle, email, status, contacted_at')
@@ -42,71 +80,66 @@ async function scan() {
   const byMessageId = new Map((touches || []).map((t) => [t.message_id, t.influencer_id]));
   const byId = new Map(contacted.map((c) => [c.id, c]));
 
-  const client = new ImapFlow({
-    host: 'imap.gmail.com',
-    port: 993,
-    secure: true,
-    auth: { user: process.env.GMAIL_SENDER, pass: process.env.GMAIL_APP_PASSWORD },
-    logger: false,
+  const summary = { candidates: contacted.length, scanned: 0, replied: 0, optedOut: 0, bounced: 0 };
+
+  const list = await gmail.users.messages.list({
+    userId: 'me',
+    q: `newer_than:${LOOKBACK_DAYS}d -from:me`,
+    maxResults: MAX_MESSAGES,
   });
 
-  const summary = { candidates: contacted.length, replied: 0, optedOut: 0, bounced: 0, scanned: 0 };
-  await client.connect();
-  try {
-    const lock = await client.getMailboxLock('INBOX');
-    try {
-      const since = new Date(Date.now() - LOOKBACK_DAYS * 86400000);
-      for await (const msg of client.fetch({ since }, { envelope: true, headers: ['in-reply-to', 'references'], bodyParts: ['1'] })) {
-        summary.scanned += 1;
-        const env = msg.envelope || {};
-        const from = extractAddress(env.from?.[0]?.address);
-        const headers = (msg.headers || Buffer.alloc(0)).toString();
-        const refs = `${headers}`.match(/<[^>]+>/g) || [];
-        const subject = env.subject || '';
-        const textPart = msg.bodyParts?.get('1')?.toString('utf8') || '';
+  for (const ref of list.data.messages || []) {
+    const { data: message } = await gmail.users.messages.get({ userId: 'me', id: ref.id, format: 'full' });
+    summary.scanned += 1;
 
-        let inf = null;
-        for (const ref of refs) {
-          const id = byMessageId.get(ref);
-          if (id) { inf = byId.get(id); break; }
-        }
-        if (!inf && from && byEmail.has(from)) inf = byEmail.get(from);
+    const from = extractAddress(header(message, 'from'));
+    const subject = header(message, 'subject');
+    const refs = `${header(message, 'in-reply-to')} ${header(message, 'references')}`.match(/<[^>]+>/g) || [];
+    const receivedAt = Number(message.internalDate) || Date.now();
 
-        // Bounces come from mailer-daemon and mention the failed address in the body.
-        if (!inf && /mailer-daemon|postmaster/i.test(from)) {
-          for (const [email, c] of byEmail) {
-            if (textPart.toLowerCase().includes(email)) { inf = c; break; }
-          }
-          if (inf && inf.status !== 'bounced') {
-            await update(inf.id, { status: 'bounced', next_touch_at: null, email_error: 'bounced' });
-            inf.status = 'bounced';
-            summary.bounced += 1;
-          }
-          continue;
-        }
-        if (!inf) continue;
-
-        // Only messages received after we first contacted them count as replies.
-        if (inf.contacted_at && env.date && new Date(env.date) < new Date(inf.contacted_at)) continue;
-
-        if (STOP_RE.test(subject) || STOP_RE.test(textPart.slice(0, 2000))) {
-          if (inf.status !== 'opted_out') {
-            await update(inf.id, { status: 'opted_out', next_touch_at: null, replied_at: new Date().toISOString(), reply_channel: 'email' });
-            inf.status = 'opted_out';
-            summary.optedOut += 1;
-          }
-        } else if (['dm_needed', 'contacted', 'followup_needed'].includes(inf.status)) {
-          await update(inf.id, { status: 'replied', replied_at: new Date().toISOString(), reply_channel: 'email', next_touch_at: null });
-          inf.status = 'replied';
-          summary.replied += 1;
-        }
-      }
-    } finally {
-      lock.release();
+    let inf = null;
+    for (const id of refs) {
+      const influencerId = byMessageId.get(id);
+      if (influencerId) { inf = byId.get(influencerId); break; }
     }
-  } finally {
-    await client.logout().catch(() => {});
+    if (!inf && from && byEmail.has(from)) inf = byEmail.get(from);
+
+    // Bounces come from mailer-daemon and name the failed address in the body.
+    if (!inf && /mailer-daemon|postmaster/i.test(from)) {
+      const body = plainText(message.payload).toLowerCase();
+      for (const [email, creator] of byEmail) {
+        if (body.includes(email)) { inf = creator; break; }
+      }
+      if (inf && inf.status !== 'bounced') {
+        await update(inf.id, { status: 'bounced', next_touch_at: null, email_error: 'bounced' });
+        inf.status = 'bounced';
+        summary.bounced += 1;
+      }
+      continue;
+    }
+    if (!inf) continue;
+
+    // Only messages received after we first wrote to them count as replies.
+    if (inf.contacted_at && receivedAt < new Date(inf.contacted_at).getTime()) continue;
+
+    const body = plainText(message.payload).slice(0, 2000);
+    if (STOP_RE.test(subject) || STOP_RE.test(body)) {
+      if (inf.status !== 'opted_out') {
+        await update(inf.id, {
+          status: 'opted_out', next_touch_at: null, replied_at: new Date().toISOString(), reply_channel: 'email',
+        });
+        inf.status = 'opted_out';
+        summary.optedOut += 1;
+      }
+    } else if (['dm_needed', 'contacted', 'followup_needed'].includes(inf.status)) {
+      await update(inf.id, {
+        status: 'replied', replied_at: new Date().toISOString(), reply_channel: 'email', next_touch_at: null,
+      });
+      inf.status = 'replied';
+      summary.replied += 1;
+    }
   }
+
   return summary;
 }
 

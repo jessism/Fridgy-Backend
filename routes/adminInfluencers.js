@@ -326,7 +326,10 @@ router.post('/jobs/:job', async (req, res) => {
   try {
     res.json({ success: true, data: (await job()) ?? { ok: true } });
   } catch (e) {
-    fail(res, e, `Job ${req.params.job} failed`);
+    // The real reason, not "Job scan failed" — that generic message is how a
+    // blocked IMAP port stayed invisible for a week.
+    console.error(`[AdminInfluencers] job ${req.params.job} failed:`, e.message);
+    res.status(502).json({ success: false, error: `${req.params.job}: ${e.message}` });
   }
 });
 

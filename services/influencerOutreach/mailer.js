@@ -1,14 +1,85 @@
 /**
- * Creator-facing email: Gmail SMTP from jessie@trackabite.app via nodemailer.
+ * Creator-facing email, sent as the GMAIL_SENDER mailbox.
+ *
+ * Two transports. The Gmail HTTPS API is used wherever a service account is
+ * configured — Railway blocks outbound SMTP, and the API also files the message
+ * in the mailbox's own Sent folder. SMTP with an app password remains for hosts
+ * that allow it (local development).
  *
  * NOT Postmark. Postmark's terms ban cold outreach and a violation could
  * suspend the app's transactional mail. This transport is only for outreach.
  *
- * Env: GMAIL_SENDER, GMAIL_APP_PASSWORD, OUTREACH_EMAIL_ENABLED ('true' to send).
+ * Env: GMAIL_SENDER, OUTREACH_EMAIL_ENABLED ('true' to send), then either
+ * GOOGLE_SERVICE_ACCOUNT_JSON (Gmail API, needs domain-wide delegation for the
+ * gmail.send scope) or GMAIL_APP_PASSWORD (SMTP). OUTREACH_MAIL_TRANSPORT
+ * forces one.
  */
+const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const MailComposer = require('nodemailer/lib/mail-composer');
+const { google } = require('googleapis');
 const { getServiceClient } = require('../../config/supabase');
 const config = require('./config');
+
+const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+
+function serviceAccount() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw) return null;
+  try {
+    const creds = JSON.parse(raw);
+    return creds.client_email && creds.private_key ? creds : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which way mail leaves the box.
+ *
+ * Railway blocks outbound SMTP (465 and 587 both time out), so on a host like
+ * that the only route to Gmail is its HTTPS API. The API also puts the message
+ * in the mailbox's own Sent folder, which SMTP does not.
+ * Override with OUTREACH_MAIL_TRANSPORT=smtp|gmail_api.
+ */
+function transportName() {
+  const explicit = String(process.env.OUTREACH_MAIL_TRANSPORT || '').trim().toLowerCase();
+  if (explicit === 'smtp' || explicit === 'gmail_api') return explicit;
+  return serviceAccount() ? 'gmail_api' : 'smtp';
+}
+
+/** Send through the Gmail API as GMAIL_SENDER, via domain-wide delegation. */
+async function gmailApiSend(message) {
+  const creds = serviceAccount();
+  const auth = new google.auth.JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: [GMAIL_SEND_SCOPE],
+    subject: process.env.GMAIL_SENDER, // impersonate the mailbox
+  });
+
+  // Own the Message-ID so replies can be threaded back to this touch.
+  const messageId = `<${crypto.randomUUID()}@trackabite.app>`;
+  const raw = await new MailComposer({ ...message, messageId }).compile().build();
+
+  try {
+    const gmail = google.gmail({ version: 'v1', auth });
+    await gmail.users.messages.send({ userId: 'me', requestBody: { raw: raw.toString('base64url') } });
+    return { messageId };
+  } catch (e) {
+    const detail = e?.response?.data?.error_description || e?.response?.data?.error?.message || e.message;
+    if (/unauthorized_client|Client is unauthorized/i.test(String(detail))) {
+      throw new Error(
+        `Gmail rejected the service account: grant domain-wide delegation to client ID ${creds.client_id} `
+        + `with the scope ${GMAIL_SEND_SCOPE} (Admin console → Security → Access and data control → API controls)`,
+      );
+    }
+    if (/Precondition check failed|Delegation denied|failedPrecondition/i.test(String(detail))) {
+      throw new Error(`Gmail refused to send as ${process.env.GMAIL_SENDER} — check that mailbox exists and delegation covers it (${detail})`);
+    }
+    throw new Error(detail);
+  }
+}
 
 /**
  * Gmail SMTP, tried on 465 then 587.
@@ -53,7 +124,13 @@ async function smtpSend(message) {
 }
 
 function isConfigured() {
-  return Boolean(process.env.GMAIL_SENDER && process.env.GMAIL_APP_PASSWORD);
+  if (!process.env.GMAIL_SENDER) return false;
+  return transportName() === 'gmail_api' ? Boolean(serviceAccount()) : Boolean(process.env.GMAIL_APP_PASSWORD);
+}
+
+/** One place that decides how a message actually leaves. */
+async function deliver(message) {
+  return transportName() === 'gmail_api' ? gmailApiSend(message) : smtpSend(message);
 }
 
 // A kill switch that silently ignores "TRUE" or a value someone pasted with
@@ -71,7 +148,11 @@ function isEnabled() {
 function statusReason() {
   const missing = [];
   if (!process.env.GMAIL_SENDER) missing.push('GMAIL_SENDER');
-  if (!process.env.GMAIL_APP_PASSWORD) missing.push('GMAIL_APP_PASSWORD');
+  if (transportName() === 'gmail_api') {
+    if (!serviceAccount()) missing.push('GOOGLE_SERVICE_ACCOUNT_JSON (needed to send through the Gmail API)');
+  } else if (!process.env.GMAIL_APP_PASSWORD) {
+    missing.push('GMAIL_APP_PASSWORD');
+  }
   if (missing.length) {
     return `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not set on the server`;
   }
@@ -112,7 +193,7 @@ async function sendCreatorEmail({ to, subject, text, inReplyTo }) {
 
   const from = `"${config.fromName}" <${process.env.GMAIL_SENDER}>`;
 
-  const info = await smtpSend({
+  const info = await deliver({
     from,
     to,
     replyTo: process.env.GMAIL_SENDER,
@@ -130,7 +211,7 @@ async function sendInternal({ subject, text }) {
     console.log('[Outreach] notify skipped (mail not configured):', subject);
     return null;
   }
-  const info = await smtpSend({
+  const info = await deliver({
     from: `"Trackabite outreach" <${process.env.GMAIL_SENDER}>`,
     to,
     subject,

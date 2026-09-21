@@ -33,21 +33,23 @@ const PERSONAL_LINE = 'I love how your weeknight dinners always look doable on a
 const EMAIL_SUBJECT = 'Paid collab with Trackabite?';
 const EMAIL_BODY = `Hey ${NAME}!
 
-I'm Jessie -- a foodie.
+I'm Jessie -- a 9-5 girly (and a part-time foodie).
 
-I just found your A Busy Kitchen and went down a bit of a rabbit hole 😅 I love how you make weeknight cooking feel doable for people with packed schedules. You have clearly earned your audience's trust, and it shows in the comments.
+I just came across your Instagram and went down a bit of a rabbit hole. I love how you make home cooking feel super doable for folks with packed schedules (basically me and everybody I know). Also, everything you made looked delicious (so scrolling through your Instagram while being hungry was probably a mistake).
 
-I'm building a small app called Trackabite.
+I wanted to reach out because I'm building a small app called Trackabite.
 
-It's a food inventory app that helps busy cooks track what they have, figure out what to cook, stop wasting groceries, and cook better. (The exact problem your followers and I deal with every week.)
+It's a food inventory app that helps you keep track of what's in your kitchen, save recipes you find online, figure out what to cook, and use up groceries before they go bad. Overall just make cooking a bit easier for everyday life.
 
-I think your audience would genuinely get value from this app. And if it clicks, it could be a really easy way for you to also earn from something that would actually help them.
+I'd love to get it in your hands and see what you think! And if it feels like something you'd use and enjoy sharing, would you be open to a paid collab?
 
-Would you be open to a small paid collab? I'm thinking just one short video on your IG + a mention in your community. But I'm open to any ideas.
+It could be a lovely way to earn from something you enjoy, while helping your followers make everyday cooking a little easier.
 
-If you're interested, I'd love to share more details of what I'm thinking.
+I'm thinking one short IG video showing how it fits into your routine, plus a mention to your community to start. But I'm open to any ideas. 😊
 
-Either way, keep doing what you're doing. You're rocking it. ♥️
+Interested? I'd be happy to send over the details of what I'm thinking, or hear your rates if you already have some. 😊
+
+Either way, keep doing what you're doing. You're rocking it.
 
 Looking forward to hearing from you.
 

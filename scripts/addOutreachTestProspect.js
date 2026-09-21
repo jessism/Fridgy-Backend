@@ -30,7 +30,7 @@ const NAME = 'Test';
 const PERSONAL_LINE = 'I love how your weeknight dinners always look doable on a Tuesday, especially the sheet-pan ones.';
 
 // Mirrors trackabite-outreach/templates/email.txt — keep the two in step.
-const EMAIL_SUBJECT = 'Paid collab with Trackabite?';
+const EMAIL_SUBJECT = `Hi ${NAME}, let's collab!`;
 const EMAIL_BODY = `Hey ${NAME}!
 
 I'm Jessie -- a 9-5 girly (and a part-time foodie).

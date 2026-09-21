@@ -1022,8 +1022,15 @@ Respond with ONLY the JSON object, no additional text. Output STRICT JSON: no co
 
 
 // Routes
+// The commit is what makes this useful after a push: "a server is up" is true
+// of the old build too, so waiting on a plain 200 proves nothing.
+const BOOTED_AT = new Date().toISOString();
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'Server is running!' });
+  res.json({
+    status: 'Server is running!',
+    commit: process.env.RAILWAY_GIT_COMMIT_SHA || null, // Railway sets this per deployment
+    startedAt: BOOTED_AT,
+  });
 });
 
 // AI Health Check endpoint

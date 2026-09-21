@@ -20,8 +20,42 @@ const { update } = require('./stateMachine');
 
 const LOOKBACK_DAYS = 21;
 const MAX_MESSAGES = 200;
-const STOP_RE = /(^|\W)(stop|unsubscribe)(\W|$)/i;
 const GMAIL_READ_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
+
+/**
+ * Everything the person actually typed, with the quoted original removed.
+ *
+ * This matters more than it looks: our own email contains the phrase "stop
+ * wasting groceries", so scanning a whole reply — which quotes us — flagged
+ * genuine replies as opt-outs and buried the creator for good.
+ */
+function newTextOnly(raw) {
+  const kept = [];
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    if (/^\s*>/.test(line)) break;                              // quoted block
+    if (/^\s*On .+wrote:\s*$/i.test(line)) break;               // Gmail attribution
+    if (/^\s*-{2,}\s*Original Message\s*-{2,}/i.test(line)) break;
+    if (/^\s*_{5,}\s*$/.test(line)) break;                      // Outlook divider
+    if (kept.length && /^\s*From:\s+\S+/i.test(line)) break;    // Outlook header block
+    kept.push(line);
+  }
+  return kept.join('\n').trim();
+}
+
+// Phrases that only ever mean "leave me alone".
+const EXPLICIT_OPT_OUT = /\b(unsubscribe|remove me|opt[-\s]?out|take me off|do ?n'?t (contact|email|message) me|stop (contacting|emailing|messaging) me|no longer (wish|want) to)\b/i;
+// A bare "stop" counts only as the whole point of a short message, never inside prose.
+const BARE_STOP = /^\s*(please\s+)?stop[\s.!]*$/i;
+const SHORT_REPLY = 60;
+
+/** Deliberately conservative: a missed opt-out is rude, a false one loses a creator silently. */
+function looksLikeOptOut(subject, newText) {
+  if (EXPLICIT_OPT_OUT.test(subject || '')) return true;
+  const text = (newText || '').trim();
+  if (!text) return false;
+  if (EXPLICIT_OPT_OUT.test(text)) return true;
+  return text.length <= SHORT_REPLY && BARE_STOP.test(text);
+}
 
 function extractAddress(value) {
   return String(value || '').toLowerCase().replace(/.*<([^>]+)>.*/, '$1').trim();
@@ -106,7 +140,7 @@ async function scan() {
 
     // Bounces come from mailer-daemon and name the failed address in the body.
     if (!inf && /mailer-daemon|postmaster/i.test(from)) {
-      const body = plainText(message.payload).toLowerCase();
+      const body = plainText(message.payload).toLowerCase(); // bounces quote nothing useful
       for (const [email, creator] of byEmail) {
         if (body.includes(email)) { inf = creator; break; }
       }
@@ -122,8 +156,8 @@ async function scan() {
     // Only messages received after we first wrote to them count as replies.
     if (inf.contacted_at && receivedAt < new Date(inf.contacted_at).getTime()) continue;
 
-    const body = plainText(message.payload).slice(0, 2000);
-    if (STOP_RE.test(subject) || STOP_RE.test(body)) {
+    const body = newTextOnly(plainText(message.payload)).slice(0, 2000);
+    if (looksLikeOptOut(subject, body)) {
       if (inf.status !== 'opted_out') {
         await update(inf.id, {
           status: 'opted_out', next_touch_at: null, replied_at: new Date().toISOString(), reply_channel: 'email',
@@ -143,4 +177,4 @@ async function scan() {
   return summary;
 }
 
-module.exports = { scan };
+module.exports = { scan, newTextOnly, looksLikeOptOut };

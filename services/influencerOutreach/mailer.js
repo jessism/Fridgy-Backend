@@ -123,6 +123,28 @@ async function smtpSend(message) {
   throw new Error(`${lastError?.message || 'SMTP send failed'}${hint}`);
 }
 
+const escapeHtml = (s) => String(s)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;');
+
+/**
+ * A plain-text body arrives in Gmail as a narrow, hard-wrapped column — it reads
+ * like machine output. Gmail's own compose sends HTML, which reflows to the
+ * reader's window, so mirror that markup: one div per paragraph, an empty div
+ * between them. No styling, tables, images or tracking; this should look like
+ * something a person typed, and anything fancier reads as bulk mail.
+ * The plain-text part still goes along for clients that prefer it.
+ */
+function textToGmailHtml(text) {
+  const paragraphs = String(text).trim().split(/\n{2,}/).map((block) => {
+    const withLinks = escapeHtml(block)
+      .replace(/(https?:\/\/[^\s<]+[^\s<.,)])/g, '<a href="$1">$1</a>');
+    return `<div>${withLinks.replace(/\n/g, '<br>')}</div>`;
+  });
+  return `<div dir="ltr">${paragraphs.join('<div><br></div>')}</div>`;
+}
+
 function isConfigured() {
   if (!process.env.GMAIL_SENDER) return false;
   return transportName() === 'gmail_api' ? Boolean(serviceAccount()) : Boolean(process.env.GMAIL_APP_PASSWORD);
@@ -196,9 +218,10 @@ async function sendCreatorEmail({ to, subject, text, inReplyTo }) {
   const info = await deliver({
     from,
     to,
-    replyTo: process.env.GMAIL_SENDER,
+    replyTo: process.env.OUTREACH_REPLY_TO || process.env.GMAIL_SENDER,
     subject,
     text: `${text.trimEnd()}\n`,
+    html: textToGmailHtml(text),
     ...(inReplyTo ? { inReplyTo, references: inReplyTo } : {}),
   });
   return { messageId: info.messageId };
@@ -220,4 +243,7 @@ async function sendInternal({ subject, text }) {
   return info.messageId;
 }
 
-module.exports = { sendCreatorEmail, sendInternal, isConfigured, isEnabled, statusReason, sentTodayCount };
+module.exports = {
+  sendCreatorEmail, sendInternal, isConfigured, isEnabled, statusReason, sentTodayCount,
+  textToGmailHtml, // exported for testing the rendering without sending
+};

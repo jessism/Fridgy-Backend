@@ -11,7 +11,7 @@ module.exports = {
 
   // Two evening sessions a week; each closes the last batch and opens the next.
   sessionDays: [1, 4],            // 1 = Monday, 4 = Thursday (cron weekday numbers)
-  batchSize: 10,
+  batchSize: 20,                // matches the size of a review list; soft cap, confirm past it
 
   // Warm-up per creator: like all posts, comment on `warmupComments` of them
   // (2 when the batch opens, 1 when it closes). Purely advisory in the UI.

@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const recipeService = require('../services/recipeService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
 const { getServiceClient } = require('../config/supabase');
+const { PUBLIC_SOURCES } = require('../services/recipeShareService');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -403,7 +404,7 @@ const recipeController = {
           'readyInMinutes, servings, source_author, source_type, source_url, ' +
           'cuisines, dishTypes, vegetarian, vegan, glutenFree, dairyFree, times_cooked, created_at'
         )
-        .in('source_type', ['instagram', 'web', 'popular'])
+        .in('source_type', PUBLIC_SOURCES)
         .like('image', '%supabase.co/storage/%')
         .order('created_at', { ascending: false })
         .limit(400);

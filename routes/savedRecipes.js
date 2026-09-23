@@ -414,52 +414,75 @@ router.get('/:id/public', publicShareLimiter, async (req, res) => {
 router.get('/', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id;
-    const { 
-      limit = 20, 
-      offset = 0, 
+    const {
+      limit,
+      offset = 0,
       filter = 'all',
       search = ''
     } = req.query;
-    
+
     console.log(`[SavedRecipes] Fetching recipes for user ${userId}, filter: ${filter}`);
-    
-    let query = supabase
-      .from('saved_recipes')
-      .select('*', { count: 'exact' })
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-    
-    // Apply filters
-    if (filter === 'favorites') {
-      query = query.eq('is_favorite', true);
-    } else if (filter === 'instagram') {
-      query = query.eq('source_type', 'instagram');
-    } else if (filter === 'scanned') {
-      query = query.eq('source_type', 'scanned');
-    } else if (filter === 'edited') {
-      query = query.eq('user_edited', true);
-    } else if (filter === 'imported') {
-      // Filter for imported recipes (exclude manual/uploaded)
-      query = query.neq('source_type', 'manual')
-                   .neq('import_method', 'manual')
-                   .neq('source_author', 'Me');
-    } else if (filter === 'uploaded') {
-      // Filter for uploaded/manual recipes
-      query = query.or('source_type.eq.manual,import_method.eq.manual,source_author.eq.Me,source_type.eq.scanned,source_type.eq.voice,source_type.eq.user_created');
+
+    const buildQuery = () => {
+      let query = supabase
+        .from('saved_recipes')
+        .select('*', { count: 'exact' })
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false });
+
+      // Apply filters
+      if (filter === 'favorites') {
+        query = query.eq('is_favorite', true);
+      } else if (filter === 'instagram') {
+        query = query.eq('source_type', 'instagram');
+      } else if (filter === 'scanned') {
+        query = query.eq('source_type', 'scanned');
+      } else if (filter === 'edited') {
+        query = query.eq('user_edited', true);
+      } else if (filter === 'imported') {
+        // Filter for imported recipes (exclude manual/uploaded)
+        query = query.neq('source_type', 'manual')
+                     .neq('import_method', 'manual')
+                     .neq('source_author', 'Me');
+      } else if (filter === 'uploaded') {
+        // Filter for uploaded/manual recipes
+        query = query.or('source_type.eq.manual,import_method.eq.manual,source_author.eq.Me,source_type.eq.scanned,source_type.eq.voice,source_type.eq.user_created');
+      }
+
+      // Search by title or tags
+      if (search) {
+        query = query.or(`title.ilike.%${search}%,cuisines.cs.{${search}},dishTypes.cs.{${search}}`);
+      }
+
+      return query;
+    };
+
+    let data;
+    let count;
+
+    if (limit !== undefined) {
+      // Caller asked for a page
+      const from = parseInt(offset);
+      const result = await buildQuery().range(from, from + parseInt(limit) - 1);
+      if (result.error) throw result.error;
+      data = result.data;
+      count = result.count;
+    } else {
+      // No limit: return every recipe. The Meals tab searches and filters
+      // client-side, so anything left out here can't be found in the app.
+      // Supabase caps a response at 1000 rows, so read in pages.
+      const PAGE_SIZE = 1000;
+      data = [];
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const result = await buildQuery().range(from, from + PAGE_SIZE - 1);
+        if (result.error) throw result.error;
+        data.push(...(result.data || []));
+        count = result.count;
+        if (!result.data || result.data.length < PAGE_SIZE) break;
+      }
     }
 
-    // Search by title or tags
-    if (search) {
-      query = query.or(`title.ilike.%${search}%,cuisines.cs.{${search}},dishTypes.cs.{${search}}`);
-    }
-    
-    // Apply pagination
-    query = query.range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
-    
-    const { data, error, count } = await query;
-    
-    if (error) throw error;
-    
     console.log(`[SavedRecipes] Found ${data?.length || 0} recipes`);
 
     // Debug: Log image URLs for uploaded/manual recipes
@@ -484,8 +507,8 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
     res.json({
       recipes: data || [],
       total: count || 0,
-      limit: parseInt(limit),
-      offset: parseInt(offset)
+      limit: limit !== undefined ? parseInt(limit) : data.length,
+      offset: limit !== undefined ? parseInt(offset) : 0
     });
     
   } catch (error) {

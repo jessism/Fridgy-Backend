@@ -2782,8 +2782,10 @@ Set confidence lower (0.60-0.80) since audio narration not available.`;
       if (!resolved) return null;
       const resolvedUrl = resolved.url;
 
+      // Ingredients stay as raw lines until the gates below pass, so a
+      // rejected candidate never costs an AI call
       const webRecipe = resolved.recipe
-        || await this.getRecipeAI().extractFromWebUrl(resolvedUrl, { skipWayback: true });
+        || await this.getRecipeAI().extractFromWebUrl(resolvedUrl, { skipWayback: true, structureIngredients: false });
       const webIngredients = webRecipe?.extendedIngredients?.length || 0;
       const webSteps = webRecipe?.analyzedInstructions?.[0]?.steps?.length || 0;
       if (!webIngredients || !webSteps) {
@@ -2799,6 +2801,8 @@ Set confidence lower (0.60-0.80) since audio narration not available.`;
       }
 
       console.log(`[MultiModal] ✅ Website recipe: "${webRecipe.title}" — ${webIngredients} ingredients, ${webSteps} steps (${Math.round(gateScore * 100)}% title match)`);
+      // Keeping it — now split "1 lb mild italian sausage" into amount / unit / name
+      await this.getRecipeAI().ensureStructuredIngredients(webRecipe, resolvedUrl);
       return { webRecipe, resolvedUrl };
     } catch (error) {
       console.log(`[MultiModal] Website extraction failed: ${error.message}`);

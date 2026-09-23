@@ -22,6 +22,7 @@ node test-ai-extraction.js           # Test AI food recognition
 node test-instagram-import.js        # Test Instagram recipe import
 node test-nutrition-analysis.js      # Test nutrition analysis
 node test-spoonacular-api.js         # Test Spoonacular API integration
+node test-ingredient-structuring.js  # Test JSON-LD ingredient line splitting (live model + stubs)
 ```
 
 ### Utility Scripts

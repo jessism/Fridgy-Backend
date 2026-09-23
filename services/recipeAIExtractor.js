@@ -100,10 +100,28 @@ class RecipeAIExtractor {
   /**
    * Extract recipe from web URL with automatic fallback to Wayback Machine if bot protection detected
    * @param {string} url - Web URL to extract recipe from
-   * @param {object} options - Options: { skipWayback: boolean }
+   * @param {object} options - Options: { skipWayback: boolean, structureIngredients: boolean }
    * @returns {object} - Extracted recipe in Spoonacular-compatible format
    */
   async extractFromWebUrl(url, options = {}) {
+    const recipe = await this._extractFromWebUrlWithFallbacks(url, options);
+    // JSON-LD hands us ingredient lines as plain text. Split them only once
+    // the result is final, so a bot-blocked page that Wayback then replaces
+    // is never paid for. Callers that gate the recipe afterwards pass
+    // structureIngredients: false and structure it once they know they keep it.
+    if (options.structureIngredients !== false) {
+      await this.ensureStructuredIngredients(recipe, url);
+    }
+    return recipe;
+  }
+
+  /**
+   * Direct fetch plus Wayback Machine fallbacks; ingredients left as raw lines
+   * @param {string} url - Web URL to extract recipe from
+   * @param {object} options - Options: { skipWayback: boolean }
+   * @returns {object} - Extracted recipe in Spoonacular-compatible format
+   */
+  async _extractFromWebUrlWithFallbacks(url, options = {}) {
     console.log('[RecipeAIExtractor] 🌐 Starting web URL extraction:', url);
 
     try {
@@ -448,6 +466,120 @@ class RecipeAIExtractor {
   }
 
   /**
+   * The shape a JSON-LD ingredient line has before it is structured: the
+   * whole line as the name, no amount, no unit.
+   */
+  rawIngredientLine(line, id) {
+    return { id, original: line, name: line, amount: null, unit: '' };
+  }
+
+  /**
+   * Are these ingredients still raw lines, with nothing split out yet?
+   */
+  ingredientsAreRawLines(ingredients) {
+    return Array.isArray(ingredients)
+      && ingredients.length > 0
+      && ingredients.every((ing) => ing && ing.amount == null && !ing.unit && !ing.nameEn);
+  }
+
+  /**
+   * Split raw ingredient lines into amount / unit / name / nameEn, in place.
+   * Idempotent: a recipe whose ingredients already carry amounts or nameEn
+   * (AI extraction output, or one structured earlier) is returned untouched,
+   * so it is safe to call from more than one place.
+   * @param {object} recipe - Spoonacular-shaped recipe, mutated in place
+   * @param {string} sourceUrl - for logging only
+   * @returns {object} - the same recipe
+   */
+  async ensureStructuredIngredients(recipe, sourceUrl = '') {
+    if (!recipe || !this.ingredientsAreRawLines(recipe.extendedIngredients)) return recipe;
+    const lines = recipe.extendedIngredients.map((ing) => ing.original || ing.name || '');
+    recipe.extendedIngredients = await this.structureIngredientLines(lines, sourceUrl);
+    return recipe;
+  }
+
+  /**
+   * Ask the model to split plain ingredient lines ("1 lb mild italian
+   * sausage") into { amount, unit, name, nameEn }. The result always has the
+   * same length and order as the input; a chunk the model gets wrong falls
+   * back to raw lines rather than inventing anything.
+   * @param {string[]} lines
+   * @param {string} sourceUrl - for logging only
+   * @returns {object[]}
+   */
+  async structureIngredientLines(lines, sourceUrl = '') {
+    const clean = (lines || []).map((l) => String(l ?? '').replace(/\s+/g, ' ').trim());
+    const raw = () => clean.map((line, idx) => this.rawIngredientLine(line, idx + 1));
+
+    if (!clean.length) return [];
+    // Nothing to split when no line carries a quantity
+    const hasQuantity = clean.some((l) => /^[\d¼½¾⅓⅔⅛⅜⅝⅞⅕⅖⅗⅘⅙⅚]/.test(l));
+    if (!hasQuantity) return raw();
+    if (!this.apiKey) {
+      console.log('[RecipeAIExtractor] No API key configured, leaving ingredient lines unstructured');
+      return raw();
+    }
+
+    const CHUNK = 25; // keeps each response well inside makeAPICall's max_tokens
+    const out = [];
+    for (let start = 0; start < clean.length; start += CHUNK) {
+      const chunk = clean.slice(start, start + CHUNK);
+      const structured = await this.structureIngredientChunk(chunk, sourceUrl);
+      structured.forEach((ing, i) => out.push({ ...ing, id: start + i + 1 }));
+    }
+    return out;
+  }
+
+  async structureIngredientChunk(chunk, sourceUrl) {
+    const fallback = () => chunk.map((line, idx) => this.rawIngredientLine(line, idx + 1));
+    const where = sourceUrl ? ` for ${sourceUrl}` : '';
+    const numbered = chunk.map((line, i) => `${i + 1}. ${line}`).join('\n');
+    const prompt = `Split each recipe ingredient line below into its parts. There are exactly ${chunk.length} lines.
+
+RULES:
+- Output exactly ${chunk.length} items, one per line, in the same order. Do not add, remove, merge, reorder or invent ingredients.
+- "amount": the quantity as a decimal number (1/2 → 0.5, 1 1/2 → 1.5, ½ → 0.5). A range takes the midpoint (1-2 → 1.5). If the line states no quantity (e.g. "salt to taste"), use null. Never guess 1.
+- "unit": the measurement word exactly as written (lb, cups, tbsp, cloves, cans...), or "" if there is none ("3 large eggs" → amount 3, unit "").
+- "name": the ingredient without the quantity and unit, keeping preparation words ("minced garlic", "chopped fresh spinach").
+- "nameEn": the base ingredient in plain English with no quantities or prep words ("garlic", "spinach"); if the name is already plain English, repeat it.
+
+LINES:
+${numbered}
+
+Return ONLY this JSON object, nothing else:
+{"ingredients": [{"amount": 1, "unit": "lb", "name": "mild italian sausage", "nameEn": "italian sausage"}, ...]}`;
+
+    let parsed;
+    try {
+      const response = await this.callAI(prompt);
+      parsed = JSON.parse(this.sanitizeFractions(response));
+    } catch (error) {
+      console.warn(`[RecipeAIExtractor] ⚠️ Ingredient structuring failed (${error.message}); keeping raw lines${where}`);
+      return fallback();
+    }
+
+    const items = Array.isArray(parsed) ? parsed : parsed?.ingredients;
+    if (!Array.isArray(items) || items.length !== chunk.length) {
+      console.warn(`[RecipeAIExtractor] ⚠️ Ingredient structuring returned ${items?.length ?? 'no'} items for ${chunk.length} lines; keeping raw lines${where}`);
+      return fallback();
+    }
+
+    return chunk.map((line, idx) => {
+      const item = items[idx] || {};
+      let amount = typeof item.amount === 'number' ? item.amount : parseFloat(item.amount);
+      if (!Number.isFinite(amount) || amount <= 0 || amount > 10000) amount = null;
+      return {
+        id: idx + 1,
+        original: line, // always the source text, never the model's
+        name: String(item.name || '').trim() || line,
+        nameEn: String(item.nameEn || '').trim() || null,
+        amount,
+        unit: String(item.unit || '').trim()
+      };
+    });
+  }
+
+  /**
    * Transform JSON-LD Recipe schema to Spoonacular-compatible format
    * @param {object} jsonld - JSON-LD Recipe object
    * @param {string} url - Source URL
@@ -464,14 +596,15 @@ class RecipeAIExtractor {
       return hours * 60 + minutes;
     };
 
-    // Extract ingredients
-    const ingredients = (jsonld.recipeIngredient || []).map((ing, idx) => ({
-      id: idx + 1,
-      original: ing,
-      name: ing.replace(/^[\d\s\/\-\.]+/, '').trim(), // Remove leading numbers/measurements
-      amount: null,
-      unit: ''
-    }));
+    // Extract ingredients as raw lines. Splitting "1 lb mild italian sausage"
+    // into amount / unit / name happens in ensureStructuredIngredients() once
+    // the recipe is known to be kept — see extractFromWebUrl and
+    // MultiModalExtractor.fetchLinkedWebsiteRecipe.
+    const ingredients = (jsonld.recipeIngredient || [])
+      .map((ing) => (typeof ing === 'string' ? ing : (ing?.name || ing?.text || '')))
+      .map((line) => String(line).replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .map((line, idx) => this.rawIngredientLine(line, idx + 1));
 
     // Extract instructions — flatten HowToSection wrappers (WP Recipe Maker,
     // Tasty Recipes, etc.) into a single flat step list. The app only renders

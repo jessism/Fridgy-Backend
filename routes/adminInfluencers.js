@@ -135,17 +135,22 @@ router.get('/', async (req, res) => {
     if (data.length) {
       const { data: sent, error: e2 } = await sb
         .from('influencer_touches')
-        .select('influencer_id, channel')
+        .select('influencer_id, channel, sent_at')
         .in('influencer_id', data.map((r) => r.id))
         .not('sent_at', 'is', null);
       if (e2) throw e2;
       const byInfluencer = new Map();
       for (const t of sent || []) {
-        if (!byInfluencer.has(t.influencer_id)) byInfluencer.set(t.influencer_id, new Set());
-        byInfluencer.get(t.influencer_id).add(t.channel);
+        const entry = byInfluencer.get(t.influencer_id) || { channels: new Set(), firstAt: null };
+        entry.channels.add(t.channel);
+        if (!entry.firstAt || t.sent_at < entry.firstAt) entry.firstAt = t.sent_at;
+        byInfluencer.set(t.influencer_id, entry);
       }
       for (const row of data) {
-        row.channelsSent = [...(byInfluencer.get(row.id) || [])].sort();
+        const entry = byInfluencer.get(row.id);
+        row.channelsSent = entry ? [...entry.channels].sort() : [];
+        // The first message that actually went out, whichever channel it was.
+        row.firstContactAt = entry?.firstAt || null;
       }
     }
 

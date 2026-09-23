@@ -129,6 +129,26 @@ router.get('/', async (req, res) => {
     else if (status === 'in_progress') q = q.in('status', ['warmup_needed', 'dm_needed', 'contacted', 'followup_needed']);
     const { data, error } = await q;
     if (error) throw error;
+
+    // Which channels actually reached each creator, so "contacted" can say
+    // whether that was a DM, an email, or both.
+    if (data.length) {
+      const { data: sent, error: e2 } = await sb
+        .from('influencer_touches')
+        .select('influencer_id, channel')
+        .in('influencer_id', data.map((r) => r.id))
+        .not('sent_at', 'is', null);
+      if (e2) throw e2;
+      const byInfluencer = new Map();
+      for (const t of sent || []) {
+        if (!byInfluencer.has(t.influencer_id)) byInfluencer.set(t.influencer_id, new Set());
+        byInfluencer.get(t.influencer_id).add(t.channel);
+      }
+      for (const row of data) {
+        row.channelsSent = [...(byInfluencer.get(row.id) || [])].sort();
+      }
+    }
+
     res.json({ success: true, data });
   } catch (e) {
     fail(res, e, 'Failed to load influencers');

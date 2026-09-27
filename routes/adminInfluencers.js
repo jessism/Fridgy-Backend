@@ -93,6 +93,20 @@ router.get('/today', async (req, res) => {
     const emailTasks = (emailTouches || []).filter((t) =>
       ['dm_needed', 'contacted', 'followup_needed'].includes(t.influencers.status));
 
+    // Due for a touch with nothing drafted for them. Normally empty: runFollowups
+    // drafts these nightly and skips anyone still owing a send, so a non-empty
+    // list means the job has not run. Same shape of decision as runFollowups, so
+    // the two cannot disagree about who is waiting.
+    const { data: dueRows, error: e6 } = await sb
+      .from('influencers')
+      .select('id, handle, platform, profile_url, display_name, status, next_touch_at, touches_sent')
+      .in('status', ['contacted', 'followup_needed'])
+      .lte('next_touch_at', new Date().toISOString())
+      .order('next_touch_at');
+    if (e6) throw e6;
+    const awaitingSend = new Set([...(dmTouches || []), ...(emailTouches || [])].map((t) => t.influencer_id));
+    const dueNotDrafted = (dueRows || []).filter((r) => !awaitingSend.has(r.id));
+
     res.json({
       success: true,
       data: {
@@ -101,6 +115,7 @@ router.get('/today', async (req, res) => {
         batches: batchesWithCreators,
         dmTasks: dmTouches.filter((t) => ['dm_needed', 'followup_needed'].includes(t.influencers.status)),
         emailTasks,
+        dueNotDrafted,
         replies,
         config: {
           batchSize: config.batchSize, warmupLikes: config.warmupLikes, warmupComments: config.warmupComments,

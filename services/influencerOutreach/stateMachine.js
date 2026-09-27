@@ -140,8 +140,13 @@ async function restore(id) {
   return update(id, patch);
 }
 
+/**
+ * Park someone you're unsure about. Reversible: approving later puts them in
+ * whichever batch is open then, which is why the current one is released here —
+ * holding mid-warm-up would otherwise leave them counted in tonight's batch.
+ */
 async function hold(id, note) {
-  return update(id, { status: 'hold', hold_note: note || null });
+  return update(id, { status: 'hold', hold_note: note || null, batch_id: null });
 }
 
 /**

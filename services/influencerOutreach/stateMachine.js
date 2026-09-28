@@ -73,6 +73,25 @@ async function approve(id) {
   if (!['pending_approval', 'hold'].includes(inf.status)) {
     throw Object.assign(new Error(`Cannot approve from status ${inf.status}`), { status: 409 });
   }
+  // Held after their warm-up was already done: resume where they left off rather
+  // than sending them round warm-up again, which would re-present finished work
+  // and open a batch for one creator who is past needing one. Which stage that
+  // is comes from what they still owe, the same rule restore() uses.
+  if (inf.warmup_done_at) {
+    const sb = getServiceClient();
+    const { data: owed, error } = await sb
+      .from('influencer_touches')
+      .select('step')
+      .eq('influencer_id', id)
+      .eq('channel', 'dm')
+      .is('sent_at', null)
+      .order('step')
+      .limit(1);
+    if (error) throw error;
+    const step = owed[0]?.step;
+    const status = step ? (step === 1 ? 'dm_needed' : 'followup_needed') : 'contacted';
+    return update(id, { status, hold_note: null });
+  }
   const batch = await currentOpenBatch(true);
   const sb = getServiceClient();
   if (batch.status === 'reviewing') {

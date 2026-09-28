@@ -141,6 +141,10 @@ async function threadRoot(sb, influencerId, step) {
 async function prepareEmailTouch(inf, step) {
   if (!inf.email) return null;
   const sb = getServiceClient();
+  // Checked before buildEmail so a re-entry never pays for a second follow-up
+  // body from the model just to throw it away.
+  const waiting = await existingUnsent(sb, inf.id, step, 'email');
+  if (waiting) return waiting;
   try {
     const { subject, body } = await buildEmail(inf, step);
     return await recordTouch(sb, inf.id, step, 'email', {
@@ -208,7 +212,30 @@ function followupDm(inf) {
   return `Hey ${firstName(inf)}, just floating this back up in case it got buried. Still keen to send you the brief for a paid Trackabite collab if you're interested. No worries at all if it's not for you. ❤️`;
 }
 
+/**
+ * A draft already written and still waiting to be sent, for this exact step and
+ * channel. One creator can pass a drafting point twice — held at the DM stage
+ * and approved again, a double-clicked "Done warming up" — and a second row
+ * would put the same message in the queue twice, with two chances to send it.
+ */
+async function existingUnsent(sb, influencerId, step, channel) {
+  const { data, error } = await sb
+    .from('influencer_touches')
+    .select('*')
+    .eq('influencer_id', influencerId)
+    .eq('step', step)
+    .eq('channel', channel)
+    .is('sent_at', null)
+    .order('created_at')
+    .limit(1);
+  if (error) throw error;
+  return data[0] || null;
+}
+
+/** Returns the waiting draft untouched if there is one — never a second copy. */
 async function recordTouch(sb, influencerId, step, channel, fields) {
+  const waiting = await existingUnsent(sb, influencerId, step, channel);
+  if (waiting) return waiting;
   const { data, error } = await sb
     .from('influencer_touches')
     .insert({ influencer_id: influencerId, step, channel, ...fields })

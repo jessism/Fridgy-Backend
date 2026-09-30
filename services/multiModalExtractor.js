@@ -635,28 +635,33 @@ RETURN COMPREHENSIVE JSON:
    */
   async callAI(prompt, mediaContent = [], modelOverride = null) {
     const useModel = modelOverride || this.primaryModel;
+    // Callers send one of two shapes: a raw { type: 'image'|'video', url }
+    // (stepFrameService) that we wrap here, or a finished OpenRouter part
+    // { type: 'image_url', image_url: { url } } (synthesize / audio-visual /
+    // keyframes) that must pass through untouched. Wrapping a finished part
+    // again read media.url (undefined) and, since Sept 2026, OpenRouter
+    // rejects the whole request with a 400 instead of dropping the image.
+    const imageParts = mediaContent.map(media => {
+      if (media.type === 'image_url' && media.image_url) {
+        return media;
+      }
+      return {
+        type: 'image_url',
+        image_url: {
+          url: media.url,
+          detail: media.type === 'video' ? 'high' : 'auto'
+        }
+      };
+    });
+    const validParts = imageParts.filter(part => typeof part.image_url?.url === 'string' && part.image_url.url.length > 0);
+    if (validParts.length < imageParts.length) {
+      console.warn(`[MultiModal] Dropped ${imageParts.length - validParts.length} image part(s) with no url before calling OpenRouter`);
+    }
     const messages = [{
       role: 'user',
       content: [
         { type: 'text', text: prompt },
-        ...mediaContent.map(media => {
-          if (media.type === 'video') {
-            return {
-              type: 'image_url',
-              image_url: {
-                url: media.url,
-                detail: 'high'
-              }
-            };
-          }
-          return {
-            type: 'image_url',
-            image_url: {
-              url: media.url,
-              detail: 'auto'
-            }
-          };
-        })
+        ...validParts
       ]
     }];
 
@@ -2350,11 +2355,15 @@ VERIFY BEFORE RETURNING:
     } catch (error) {
       console.error('[MultiModal] Audio-visual extraction failed:', error.message);
 
-      // Fallback to keyframes-only if audio fails (silent video, Google down, or any audio error)
-      const isAudioFailure = error.message.includes('silent') ||
-                             error.message.includes('Audio file too small') ||
-                             error.message.includes('503') ||
-                             error.message.includes('transcript');
+      // Fallback to keyframes-only if audio fails (silent video, Google down, or any audio error).
+      // Case-insensitive: the quality gate throws 'Transcript does not appear...' with a
+      // capital T, which a plain includes('transcript') never matched, so music-only reels
+      // failed outright instead of falling back to the frames.
+      const failureMessage = (error.message || '').toLowerCase();
+      const isAudioFailure = failureMessage.includes('silent') ||
+                             failureMessage.includes('audio file too small') ||
+                             failureMessage.includes('503') ||
+                             failureMessage.includes('transcript');
       if (isAudioFailure) {
         console.warn('[MultiModal] Audio unavailable - falling back to keyframes-only with vision');
         const framesData = await this.videoProcessor.extractFramesFromLocalVideo(

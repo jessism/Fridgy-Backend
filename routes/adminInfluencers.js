@@ -24,7 +24,7 @@ router.use(authenticateToken, requireAdmin);
 
 const STATUSES = [
   'pending_approval', 'warmup_needed', 'dm_needed', 'contacted', 'followup_needed',
-  'replied', 'signed', 'declined', 'no_response', 'rejected', 'hold', 'opted_out', 'bounced', 'removed',
+  'replied', 'brief_sent', 'signed', 'declined', 'no_response', 'rejected', 'hold', 'opted_out', 'bounced', 'removed',
 ];
 const EDITABLE = ['draft_dm', 'draft_email_subject', 'draft_email', 'notes', 'hold_note', 'agreed_fee', 'email', 'promo_code', 'tracking_link', 'rejection_reason'];
 
@@ -136,7 +136,7 @@ router.get('/', async (req, res) => {
     const sb = getServiceClient();
     let q = sb
       .from('influencers')
-      .select('id, batch_id, platform, handle, profile_url, display_name, followers, engagement_rate, email, category, score, why, recommended_fee, agreed_fee, other_platforms, status, discovered_at, approved_at, contacted_at, next_touch_at, touches_sent, replied_at, email_error, draft_dm, rejection_reason')
+      .select('id, batch_id, platform, handle, profile_url, display_name, followers, engagement_rate, email, category, score, why, recommended_fee, agreed_fee, other_platforms, status, discovered_at, approved_at, contacted_at, next_touch_at, touches_sent, replied_at, brief_sent_at, email_error, draft_dm, rejection_reason')
       .order('discovered_at', { ascending: false })
       .limit(500);
     const status = String(req.query.status || '');
@@ -217,6 +217,7 @@ router.patch('/:id', async (req, res) => {
         case 'removed': result = await sm.removeFromPipeline(id, body.rejection_reason); break;
         case 'restore': result = await sm.restore(id); break;
         case 'replied': result = await sm.markReplied(id, body.reply_channel || 'dm'); break;
+        case 'brief_sent': result = await sm.briefSent(id); break;
         case 'signed':
         case 'declined':
         case 'opted_out':

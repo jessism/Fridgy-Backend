@@ -317,8 +317,28 @@ async function markReplied(id, channel = 'dm') {
   return update(id, { status: 'replied', replied_at: nowIso(), reply_channel: channel, next_touch_at: null });
 }
 
+/**
+ * The brief went out. A reply is not a deal — between "they wrote back" and
+ * "they signed" sits the part that takes the work, and this separates the
+ * creators still waiting on Jessie from the ones now waiting on her.
+ * next_touch_at stays null: the automated follow-up sequence ended at the reply.
+ */
+async function briefSent(id) {
+  const inf = await getInfluencer(id);
+  if (!inf) throw Object.assign(new Error('Not found'), { status: 404 });
+  try {
+    return await update(id, { status: 'brief_sent', brief_sent_at: nowIso(), next_touch_at: null });
+  } catch (e) {
+    // 42703/23514 = migration 093 not applied yet. Record the status anyway
+    // rather than block the dashboard; the timestamp is the losable part.
+    if (e.code !== '42703' && e.code !== '23514') throw e;
+    console.warn('[Outreach] brief_sent needs migration 093; leaving status unchanged');
+    throw Object.assign(new Error('Apply migration 093 to use “Sent brief”'), { status: 409 });
+  }
+}
+
 module.exports = {
   currentOpenBatch, openBatches, openedToday, sessionDay,
   getInfluencer, update, approve, hold, reject, removeFromPipeline, restore,
-  warmupDone, batchWarmupDone, dmSent, runFollowups, markReplied, addDays,
+  warmupDone, batchWarmupDone, dmSent, runFollowups, markReplied, briefSent, addDays,
 };

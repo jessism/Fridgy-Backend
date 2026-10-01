@@ -622,6 +622,16 @@ async function processAsyncImport(jobId, userId, url, sourceType) {
       throw new Error('Extraction returned no recipe');
     }
 
+    // A title and a thumbnail is not a recipe. When extraction fell back to a
+    // caption with nothing in it, the model still returns a shell; saving that
+    // tells the user "Recipe ready!" for an empty card.
+    const ingredientCount = extractedRecipe.extendedIngredients?.length || 0;
+    const stepCount = extractedRecipe.analyzedInstructions?.[0]?.steps?.length || 0;
+    if (ingredientCount === 0 && stepCount < 2) {
+      console.warn(`[AsyncImport] Job ${jobId}: extraction produced no ingredients and ${stepCount} step(s) — not saving`);
+      throw new Error("We couldn't pull the ingredients or steps out of this post. If the recipe is spoken or shown in the video, try again; if it's only in the creator's bio or blog, open that link instead.");
+    }
+
     console.log(`[AsyncImport] Job ${jobId}: ${sourceType} extraction successful in ${elapsed()} — "${extractedRecipe.title}"`);
 
     // Save recipe to database

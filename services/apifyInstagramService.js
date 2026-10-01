@@ -578,8 +578,16 @@ class ApifyInstagramService {
         .single();
 
       if (data) {
+        const cached = JSON.parse(data.data);
+        // The post is cached for 24h but the CDN video link inside it expires
+        // much sooner. Serving a stale link makes the extractor drop the video
+        // and build a "recipe" from the caption alone, so re-scrape instead.
+        if (cached.videoUrl && cached.videoUrlExpiry && Date.now() > cached.videoUrlExpiry) {
+          console.log('[ApifyInstagram] Cache hit but the video link has expired — re-scraping:', url);
+          return null;
+        }
         console.log('[ApifyInstagram] Cache hit for URL:', url);
-        return JSON.parse(data.data);
+        return cached;
       }
     } catch (error) {
       // Cache miss is expected, not an error

@@ -104,6 +104,10 @@ class ApifyInstagramService {
 
       // Parse and enhance results
       const parsedData = this.parseApifyResponse(results.data);
+      if (!parsedData.success) {
+        // Nothing to cache or charge for — the post could not be read
+        return parsedData;
+      }
 
       // NEW: Extract author comments (optional enhancement - graceful if fails)
       let authorComments = [];
@@ -216,6 +220,14 @@ class ApifyInstagramService {
             }
           );
 
+          if (!Array.isArray(itemsResponse.data) || itemsResponse.data.length === 0) {
+            console.warn('[ApifyInstagram] Actor succeeded but returned no items');
+            return {
+              success: false,
+              error: this.describeApifyError('no_items', 'Empty dataset')
+            };
+          }
+
           return {
             success: true,
             data: itemsResponse.data[0] // First item
@@ -258,6 +270,18 @@ class ApifyInstagramService {
     };
   }
 
+  /**
+   * User-facing wording for an Apify error item. Instagram withholds some
+   * posts from logged-out scrapers; say so instead of blaming the caption.
+   */
+  describeApifyError(code, description) {
+    const restricted = code === 'restricted_page' || /age-restricted/i.test(description || '');
+    if (restricted) {
+      return "Instagram marks this post as age-restricted, so we can't read it. Try a different post from the same creator.";
+    }
+    return "We couldn't read this Instagram post. It may be private or deleted.";
+  }
+
   parseApifyResponse(data) {
     console.log('[ApifyInstagram] Raw response data:', JSON.stringify(data, null, 2));
 
@@ -265,6 +289,20 @@ class ApifyInstagramService {
       return {
         success: false,
         error: 'No data received from Apify'
+      };
+    }
+
+    // Apify reports a post it could not read as a normal item with an
+    // `error` field (restricted_page, no_items, not_found...). Treating that
+    // as a successful empty scrape sent "no caption" to the model and cached
+    // the blank for 24h, so the user saw a made-up "no recipe in the caption".
+    if (data.error) {
+      console.warn('[ApifyInstagram] Apify could not read the post:', data.error, data.errorDescription || '');
+      return {
+        success: false,
+        error: this.describeApifyError(data.error, data.errorDescription),
+        apifyError: data.error,
+        apifyDescription: data.errorDescription || null
       };
     }
 

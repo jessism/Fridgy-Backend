@@ -149,6 +149,22 @@ class MultiModalExtractor {
         apifyData.videoUrl = null;
       }
 
+      // Nothing to extract from: no caption, no video, no images. Asking the
+      // model anyway gets a made-up reason ("No recipe information found in
+      // the provided caption") that then reaches the user as if it were ours.
+      const hasAnyContent = (apifyData.caption && apifyData.caption.trim().length > 0)
+        || apifyData.videoUrl
+        || (Array.isArray(apifyData.images) && apifyData.images.length > 0);
+      if (!hasAnyContent) {
+        console.warn('[MultiModal] Scrape returned no caption, video or images — nothing to extract');
+        return {
+          success: false,
+          error: "We couldn't read any content from this post.",
+          extractionMethod: 'multi-modal',
+          processingTime: Date.now() - startTime
+        };
+      }
+
       // WEBSITE-FIRST: when the creator links their recipe, their written
       // recipe outranks any AI interpretation of the video. Priority:
       // caption-complete (author's verbatim caption) > linked website (recipe
@@ -751,6 +767,17 @@ RETURN COMPREHENSIVE JSON:
       console.log('[MultiModal] AI Response (first 500 chars):', response?.substring(0, 500));
       const result = JSON.parse(response);
 
+      // A model that was not told the envelope shape may answer with the
+      // recipe at the top level ({ recipeName, extendedIngredients, ... }).
+      // That is still a recipe — wrap it rather than fail the import.
+      if (!result.recipe && (Array.isArray(result.extendedIngredients) || Array.isArray(result.analyzedInstructions))) {
+        console.log('[MultiModal] AI response had a bare recipe at the top level — wrapping it');
+        const { success, confidence, ...bare } = result;
+        const recipe = { ...bare, title: bare.title || bare.recipeName || bare.name || 'Untitled Recipe' };
+        delete recipe.recipeName;
+        return this.parseAIResponse(JSON.stringify({ success: success !== false, confidence, recipe }));
+      }
+
       // Ensure required fields
       if (!result.recipe) {
         console.log('[MultiModal] WARNING: AI response missing recipe field');
@@ -1116,9 +1143,11 @@ Return this JSON:
         // OPTION 1: Text-based fallback (if caption has recipe content)
         if (apifyData.transcript || apifyData.caption?.length > 100) {
           console.log('[MultiModal] Using text-based fallback');
+          // synthesizeWithOpenRouter reads caption.text and images.images;
+          // passing the raw string/array told the model "No caption available"
           return await this.synthesizeWithOpenRouter({
-            caption: apifyData.caption || '',
-            images: apifyData.images || [],
+            caption: { text: apifyData.caption || '' },
+            images: { images: apifyData.images || [] },
             metadata: { ...apifyData, transcript: apifyData.transcript }
           }, modelOverride);
         }
@@ -2363,7 +2392,8 @@ VERIFY BEFORE RETURNING:
       const isAudioFailure = failureMessage.includes('silent') ||
                              failureMessage.includes('audio file too small') ||
                              failureMessage.includes('503') ||
-                             failureMessage.includes('transcript');
+                             failureMessage.includes('transcript') ||
+                             failureMessage.includes('audio-visual content'); // model found no recipe in the narration
       if (isAudioFailure) {
         console.warn('[MultiModal] Audio unavailable - falling back to keyframes-only with vision');
         const framesData = await this.videoProcessor.extractFramesFromLocalVideo(
@@ -2384,20 +2414,14 @@ VERIFY BEFORE RETURNING:
    * @throws {Error} If transcript doesn't contain recipe content
    */
   validateTranscriptQuality(transcript) {
-    const text = transcript.text.toLowerCase();
-    const cookingKeywords = [
-      'cook', 'heat', 'add', 'mix', 'stir', 'cup', 'tablespoon',
-      'teaspoon', 'ounce', 'gram', 'minutes', 'degrees', 'bake',
-      'boil', 'fry', 'sauté', 'ingredient', 'recipe'
-    ];
-
-    const keywordCount = cookingKeywords.filter(kw => text.includes(kw)).length;
-
-    if (keywordCount < 3) {
-      throw new Error('Transcript does not appear to contain recipe content');
-    }
-
-    if (transcript.text.length < 50) {
+    // Only reject a transcript that is effectively empty. A keyword checklist
+    // used to live here (cup, tablespoon, stir...) and rejected real narrations
+    // that name ingredients without measurement words — "add lemongrass,
+    // garlic, ginger, fish sauce..." scored 1/18. The model judges whether the
+    // narration is a recipe; if it is not, the audio-visual call fails and we
+    // fall back to the keyframes.
+    const text = (transcript?.text || '').trim();
+    if (text.length < 50) {
       throw new Error('Transcript too short to extract recipe');
     }
 
@@ -2457,6 +2481,20 @@ Use the ${frameCount} keyframes for:
 - If ingredient name unclear in audio → use visual to clarify
 - If cooking technique mentioned but not clear → use visual to confirm
 
+${this.requiredRecipeJsonBlock(duration, {
+  ingredientSource: 'audio transcript',
+  stepSource: 'audio narration',
+  titleSource: 'audio OR video title'
+})}`;
+  }
+
+  /**
+   * The JSON envelope every video prompt must ask for. parseAIResponse()
+   * requires a top-level "recipe"; a prompt that only says "standard JSON"
+   * got a bare recipe back and threw it away as "missing recipe field".
+   */
+  requiredRecipeJsonBlock(duration, { ingredientSource, stepSource, titleSource }) {
+    return `
 ═══════════════════════════════════════════════════════════════
 📊 REQUIRED JSON RESPONSE
 ═══════════════════════════════════════════════════════════════
@@ -2465,11 +2503,11 @@ Use the ${frameCount} keyframes for:
   "success": true,
   "confidence": 0.0-1.0,
   "recipe": {
-    "title": "Recipe name from audio OR video title",
+    "title": "Recipe name from ${titleSource}",
     "summary": "2-3 sentence description of the dish",
     "extendedIngredients": [
       {
-        "original": "Exact text from audio transcript (e.g., '2 tablespoons olive oil')",
+        "original": "Exact text from ${ingredientSource} (e.g., '2 tablespoons olive oil')",
         "name": "olive oil",
         "nameEn": "the base ingredient in plain English (e.g. 'potato', 'pork belly', 'soy sauce'); if the name is already English, repeat it here",
         "amount": 2.0,
@@ -2480,8 +2518,8 @@ Use the ${frameCount} keyframes for:
       {
         "name": "",
         "steps": [
-          {"number": 1, "step": "First step from audio narration"},
-          {"number": 2, "step": "Second step from audio..."}
+          {"number": 1, "step": "First step from ${stepSource}"},
+          {"number": 2, "step": "Second step from ${stepSource}..."}
         ]
       }
     ],
@@ -2493,7 +2531,7 @@ Use the ${frameCount} keyframes for:
     "dairyFree": false
   },
   "audioVisualAnalysis": {
-    "transcriptQuality": "clear/moderate/poor",
+    "transcriptQuality": "clear/moderate/poor/none",
     "ingredientsMentioned": true/false,
     "stepsMentioned": true/false,
     "visualVerification": "matches/partial/unclear",
@@ -2560,7 +2598,7 @@ Use the ${frameCount} keyframes for:
     const result = this.parseAIResponse(response);
 
     if (!result.success) {
-      throw new Error('Failed to extract recipe from keyframes');
+      throw new Error("Couldn't find a recipe in this video, and the caption doesn't include one. Try a post where the creator writes the recipe out.");
     }
 
     return {
@@ -2598,8 +2636,14 @@ Analyze the ${frameCount} keyframes to extract:
 - Techniques demonstrated
 - Final dish presentation
 
-Return recipe in standard JSON format with extendedIngredients and analyzedInstructions.
-Set confidence lower (0.60-0.80) since audio narration not available.`;
+Read any on-screen text (ingredient lists, quantities, step captions) — creators often
+put the whole recipe in overlays. Set confidence lower (0.60-0.80) since audio narration
+is not available.
+${this.requiredRecipeJsonBlock(duration, {
+  ingredientSource: 'on-screen text or what is visible in the frames',
+  stepSource: 'the frames',
+  titleSource: 'on-screen text OR the dish shown'
+})}`;
   }
 
   // ==========================================================================

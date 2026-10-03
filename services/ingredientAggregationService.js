@@ -6,6 +6,32 @@
 const unitConversionService = require('./unitConversionService');
 const categoryService = require('./categoryService');
 
+// Rough grams per millilitre, for adding a weight to a volume of the same
+// ingredient (10 g of butter + 2 tbsp of butter). Anything not listed counts
+// 1 ml as 1 g. A shopping estimate, not a kitchen conversion.
+const DENSITIES = [
+  [/\b(butter|margarine)\b/, 0.96],
+  [/\boil\b/, 0.92],
+  [/\bflour\b/, 0.53],
+  [/\bsugar\b/, 0.85],
+  [/\b(honey|syrup|molasses)\b/, 1.4],
+  [/\brice\b/, 0.85],
+  [/\bsalt\b/, 1.2],
+];
+
+const METRIC_UNITS = new Set([
+  'g', 'gram', 'grams', 'kg', 'kilogram', 'kilograms', 'mg',
+  'ml', 'milliliter', 'milliliters', 'millilitre', 'millilitres',
+  'l', 'liter', 'liters', 'litre', 'litres',
+]);
+
+// A source's quantity as a positive number, or null when it has none
+const sourceAmount = (quantity) => {
+  if (quantity === null || quantity === undefined || String(quantity).trim() === '') return null;
+  const amount = Number(quantity);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+};
+
 const ingredientAggregationService = {
   /**
    * Normalize an ingredient name for comparison
@@ -82,6 +108,113 @@ const ingredientAggregationService = {
   },
 
   /**
+   * Work out one best-effort total for an ingredient from each recipe's share.
+   * Meant for a shopper, so it always answers, even across units that don't
+   * truly convert:
+   *   - same kind of unit: added (500 g + 500 g = 1 kg)
+   *   - a bare count and a named count: the bare one takes the name (2 + 2 cloves = 4 cloves)
+   *   - a weight and a volume: the volume is turned into grams by rough density
+   *   - a count against a weight or volume: listed side by side (1 head + 2 cups)
+   *   - a share with no amount: the known total "+ some"
+   * @param {string} name - Ingredient name (picks the density)
+   * @param {Array} sources - [{ quantity, unit }] per recipe
+   * @returns {{ quantity: string|null, unit: string }} quantity is a plain number
+   *   when there is a single total; otherwise the whole label with unit ''
+   */
+  summarizeSources(name, sources) {
+    const round = (n) => unitConversionService.roundForDisplay(n);
+    let grams = 0;
+    let millilitres = 0;
+    let unknown = false;
+    const weightUnits = new Map(); // normalized unit -> unit as written
+    const volumeUnits = new Map();
+    const counts = new Map(); // singular unit -> { amount, unit }
+
+    for (const source of sources || []) {
+      const amount = sourceAmount(source.quantity);
+      if (amount === null) {
+        unknown = true;
+        continue;
+      }
+
+      const normalized = unitConversionService.normalizeUnit(source.unit);
+      const base = unitConversionService.getBaseUnitType(source.unit);
+
+      if (base === 'g') {
+        grams += unitConversionService.convertToStandard(amount, source.unit).amount;
+        if (!weightUnits.has(normalized)) weightUnits.set(normalized, source.unit);
+      } else if (base === 'ml') {
+        millilitres += unitConversionService.convertToStandard(amount, source.unit).amount;
+        if (!volumeUnits.has(normalized)) volumeUnits.set(normalized, source.unit);
+      } else {
+        const key = normalized.replace(/s$/, '');
+        const entry = counts.get(key);
+        if (entry) {
+          entry.amount += amount;
+        } else {
+          counts.set(key, { amount, unit: source.unit || '' });
+        }
+      }
+    }
+
+    // "2" and "2 cloves" are both cloves
+    const named = [...counts.keys()].filter(key => key !== '');
+    if (counts.has('') && named.length === 1) {
+      counts.get(named[0]).amount += counts.get('').amount;
+      counts.delete('');
+    }
+
+    // A weight and a volume: everything becomes grams
+    let estimated = false;
+    if (grams > 0 && millilitres > 0) {
+      const lowered = (name || '').toLowerCase();
+      const density = (DENSITIES.find(([pattern]) => pattern.test(lowered)) || [null, 1])[1];
+      // Whole grams: decimals would suggest a precision the estimate lacks
+      grams = Math.round(grams + millilitres * density);
+      millilitres = 0;
+      estimated = true;
+    }
+
+    // One unit stays as written, metric stays metric (kg / L from 1000);
+    // anything else goes through the shared display conversion
+    const measure = (total, base, units, big, factor) => {
+      const allMetric = [...units.keys()].every(unit => METRIC_UNITS.has(unit));
+      if (units.size === 1 && !estimated && !allMetric) {
+        const [normalized, written] = [...units.entries()][0];
+        const perUnit = unitConversionService.convertToStandard(1, normalized).amount;
+        return { amount: round(total / perUnit), unit: written };
+      }
+      if (allMetric) {
+        return total >= factor
+          ? { amount: round(total / factor), unit: big }
+          : { amount: round(total), unit: base };
+      }
+      const display = unitConversionService.convertForDisplay(total, base);
+      return { amount: display.amount, unit: display.unit };
+    };
+
+    const parts = [];
+    if (grams > 0) parts.push(measure(grams, 'g', weightUnits, 'kg', 1000));
+    if (millilitres > 0) parts.push(measure(millilitres, 'ml', volumeUnits, 'L', 1000));
+    for (const entry of counts.values()) {
+      parts.push({ amount: round(entry.amount), unit: entry.unit });
+    }
+
+    if (parts.length === 0) {
+      // No recipe gave an amount: keep the unit only if they all agree on it
+      const units = new Set((sources || []).map(source => unitConversionService.normalizeUnit(source.unit)));
+      return { quantity: null, unit: units.size === 1 ? ((sources || [])[0]?.unit || '') : '' };
+    }
+
+    if (parts.length === 1 && !unknown) {
+      return { quantity: String(parts[0].amount), unit: parts[0].unit };
+    }
+
+    const label = parts.map(part => `${part.amount}${part.unit ? ' ' + part.unit : ''}`).join(' + ');
+    return { quantity: unknown ? `${label} + some` : label, unit: '' };
+  },
+
+  /**
    * Aggregate ingredients from multiple recipes
    * @param {Array} recipes - Array of recipe objects with extendedIngredients
    *   (plus id, title and image when the caller wants per-recipe sources)
@@ -132,11 +265,17 @@ const ingredientAggregationService = {
               if (existing.unit === unit || (!existing.unit && !unit)) {
                 existing.amount = unitConversionService.roundForDisplay(existing.amount + amount);
               }
-              // If units are different and can't combine, keep the first one
-              // (rare edge case)
+              // If units are different and can't combine, the total comes
+              // from summarizeSources below
+              else {
+                existing.uncombined = true;
+              }
             }
+          } else {
+            // Incompatible units ("1 head" vs "2 cups"): the running amount
+            // can't take this one, so the total comes from summarizeSources below
+            existing.uncombined = true;
           }
-          // If units are incompatible, keep the original (don't combine "1 head" with "2 cups")
         } else {
           // New ingredient
           const stdResult = unitConversionService.convertToStandard(amount, unit);
@@ -181,14 +320,31 @@ const ingredientAggregationService = {
     const categories = await categoryService.categorizeItems(ingredientNames);
 
     // Build result with categories
-    const result = ingredientList.map(ing => ({
-      name: ing.name,
-      quantity: String(ing.amount),
-      unit: ing.unit,
-      display: ing.display,
-      category: categories[ing.name] || 'Other',
-      sources: ing.sources,
-    }));
+    const result = ingredientList.map(ing => {
+      let quantity = String(ing.amount);
+      let unit = ing.unit;
+      let display = ing.display;
+
+      // An amount was left out of the running total: give the shopper a
+      // best-effort total across every recipe's share instead
+      if (ing.uncombined && ing.sources.length > 0) {
+        const total = this.summarizeSources(ing.name, ing.sources);
+        if (total.quantity) {
+          quantity = total.quantity;
+          unit = total.unit;
+          display = `${quantity}${unit ? ' ' + unit : ''}`;
+        }
+      }
+
+      return {
+        name: ing.name,
+        quantity,
+        unit,
+        display,
+        category: categories[ing.name] || 'Other',
+        sources: ing.sources,
+      };
+    });
 
     // Group by category
     return this.groupByCategory(result);

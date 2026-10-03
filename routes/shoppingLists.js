@@ -3,6 +3,8 @@ const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const { checkShoppingListLimit, checkJoinedListLimit, incrementUsageCounter, decrementUsageCounter } = require('../middleware/checkLimits');
 const categoryService = require('../services/categoryService');
+const ingredientAggregationService = require('../services/ingredientAggregationService');
+const unitConversionService = require('../services/unitConversionService');
 const streakService = require('../services/streakService');
 const { getServiceClient } = require('../config/supabase');
 
@@ -50,6 +52,32 @@ const buildItemSource = (source, quantity, unit) => {
     quantity: quantity !== undefined && quantity !== null && quantity !== '' ? String(quantity) : null,
     unit: unit || null
   };
+};
+
+// Helper: Fold one recipe's share into a row's existing sources.
+// The same recipe added again with the same unit adds to its entry; anything
+// else becomes a new entry.
+const mergeItemSource = (sources, incoming) => {
+  const merged = sources.map(source => ({ ...source }));
+  const incomingUnit = unitConversionService.normalizeUnit(incoming.unit);
+  const same = merged.find(source =>
+    source.recipe_id === incoming.recipe_id &&
+    unitConversionService.normalizeUnit(source.unit) === incomingUnit
+  );
+
+  if (!same) {
+    merged.push(incoming);
+    return merged;
+  }
+
+  const sameAmount = Number(same.quantity);
+  const incomingAmount = Number(incoming.quantity);
+  if (same.quantity && incoming.quantity && Number.isFinite(sameAmount) && Number.isFinite(incomingAmount)) {
+    same.quantity = String(unitConversionService.roundForDisplay(sameAmount + incomingAmount));
+  } else if (!same.quantity && incoming.quantity) {
+    same.quantity = incoming.quantity;
+  }
+  return merged;
 };
 
 // GET /api/shopping-lists/public/:shareCode - Public view of a shared list (no auth)
@@ -605,6 +633,54 @@ router.post('/:id/items', authMiddleware.authenticateToken, async (req, res) => 
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    // An ingredient coming from a recipe joins the row another recipe already
+    // made for it, so the list shows one row with the total to buy. Rows that
+    // are checked off or were typed by hand are left alone.
+    const itemSource = buildItemSource(source, quantity, unit);
+    if (itemSource) {
+      const normalizedName = ingredientAggregationService.normalizeIngredientName(name);
+      const { data: openItems, error: openError } = await supabase
+        .from('shopping_list_items')
+        .select('*')
+        .eq('list_id', id)
+        .eq('is_checked', false)
+        .order('order_index', { ascending: true });
+
+      if (openError) throw openError;
+
+      const target = normalizedName && (openItems || []).find(existing =>
+        Array.isArray(existing.sources) && existing.sources.length > 0 &&
+        ingredientAggregationService.normalizeIngredientName(existing.name) === normalizedName
+      );
+
+      if (target) {
+        const sources = mergeItemSource(target.sources, itemSource);
+        const total = ingredientAggregationService.summarizeSources(target.name, sources);
+
+        const { data: mergedItem, error: mergeError } = await supabase
+          .from('shopping_list_items')
+          .update({ sources, quantity: total.quantity, unit: total.unit || null })
+          .eq('id', target.id)
+          .eq('list_id', id)
+          .select()
+          .single();
+
+        if (mergeError) throw mergeError;
+
+        await supabase
+          .from('shopping_list_activities')
+          .insert({
+            list_id: id,
+            user_id: userId,
+            user_name: userName,
+            action: 'added_item',
+            item_name: name
+          });
+
+        return res.json({ success: true, item: mergedItem, merged: true });
+      }
+    }
+
     // Shift all existing items down by 1 to make room at the top
     const { data: rpcData, error: rpcError } = await supabase.rpc('increment_order_indices', {
       list_id_param: id
@@ -662,7 +738,6 @@ router.post('/:id/items', authMiddleware.authenticateToken, async (req, res) => 
 
     // Only set `sources` when the item came from a recipe, so a manual add
     // falls back to the column default
-    const itemSource = buildItemSource(source, quantity, unit);
     if (itemSource) newItem.sources = [itemSource];
 
     const { data: item, error } = await supabase
@@ -710,6 +785,28 @@ router.put('/:id/items/:itemId', authMiddleware.authenticateToken, async (req, r
     if (unit !== undefined) updateData.unit = unit;
     if (category !== undefined) updateData.category = category;
     if (notes !== undefined) updateData.notes = notes;
+
+    // A row with one recipe behind it: its amount is that recipe's amount, so
+    // keep the two in step. Otherwise a later merge, which totals the sources,
+    // would undo the edit.
+    if (quantity !== undefined || unit !== undefined) {
+      const { data: current } = await supabase
+        .from('shopping_list_items')
+        .select('quantity, unit, sources')
+        .eq('id', itemId)
+        .eq('list_id', id)
+        .single();
+
+      if (current && Array.isArray(current.sources) && current.sources.length === 1) {
+        const newQuantity = quantity !== undefined ? quantity : current.quantity;
+        const newUnit = unit !== undefined ? unit : current.unit;
+        updateData.sources = [{
+          ...current.sources[0],
+          quantity: newQuantity !== null && newQuantity !== undefined && newQuantity !== '' ? String(newQuantity) : null,
+          unit: newUnit || null
+        }];
+      }
+    }
 
     const { data: item, error } = await supabase
       .from('shopping_list_items')

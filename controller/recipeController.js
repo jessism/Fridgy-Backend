@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const recipeService = require('../services/recipeService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
 const { getServiceClient } = require('../config/supabase');
-const { PUBLIC_SOURCES } = require('../services/recipeShareService');
+const { PUBLIC_SOURCES, publicView } = require('../services/recipeShareService');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -402,7 +402,8 @@ const recipeController = {
         .select(
           'id, title, summary, image, extendedIngredients, analyzedInstructions, ' +
           'readyInMinutes, servings, source_author, source_type, source_url, ' +
-          'cuisines, dishTypes, vegetarian, vegan, glutenFree, dairyFree, times_cooked, created_at'
+          'cuisines, dishTypes, vegetarian, vegan, glutenFree, dairyFree, times_cooked, created_at, ' +
+          'original_snapshot'
         )
         .in('source_type', PUBLIC_SOURCES)
         .like('image', '%supabase.co/storage/%')
@@ -420,7 +421,10 @@ const recipeController = {
       // popularity signal: POST /saved-recipes/:id/cook exists but no client
       // calls it, so every row reads 0. Save-count is the real signal, and it
       // costs nothing extra since we already group by this key to dedupe.
-      const usable = (data || []).filter((row) => {
+      // Strangers see the recipe as imported, not as its owner later edited it
+      // (migration 095). Overlay before filtering/deduping so the key and the
+      // card both reflect the original. publicView drops original_snapshot.
+      const usable = (data || []).map(publicView).filter((row) => {
         const ingredients = Array.isArray(row.extendedIngredients) ? row.extendedIngredients : [];
         const steps = Array.isArray(row.analyzedInstructions)
           ? row.analyzedInstructions.reduce((n, block) => n + (block?.steps?.length || 0), 0)

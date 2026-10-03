@@ -136,12 +136,17 @@ router.post('/adopt/:sourceId', authMiddleware.authenticateToken, async (req, re
       return res.status(403).json({ success: false, error: 'This recipe cannot be copied' });
     }
 
+    // Strangers get the recipe as it was imported, not as its owner has since
+    // edited it (migration 095). Everything below reads this view, so the
+    // dedupe key and the copied content agree with what the card showed.
+    const publicSource = recipeShare.publicView(source);
+
     // Already adopted? Return that row rather than piling up duplicates on
     // repeat taps. Matches the pool's dedupe key: source_url, else title+author.
     let existingQuery = supabase.from('saved_recipes').select('*').eq('user_id', userId);
-    existingQuery = source.source_url
-      ? existingQuery.eq('source_url', source.source_url)
-      : existingQuery.ilike('title', source.title || '');
+    existingQuery = publicSource.source_url
+      ? existingQuery.eq('source_url', publicSource.source_url)
+      : existingQuery.ilike('title', publicSource.title || '');
 
     const { data: existing } = await existingQuery.limit(1);
     if (existing && existing.length > 0) {
@@ -163,8 +168,11 @@ router.post('/adopt/:sourceId', authMiddleware.authenticateToken, async (req, re
       // The share link is the original owner's too (unique index on share_slug
       // would reject the copy outright).
       share_slug: _shareSlug, shared_at: _sharedAt,
+      // publicView already drops original_snapshot; listed so a future change
+      // to that helper can't quietly hand the owner's pre-edit copy along.
+      original_snapshot: _snapshot,
       ...content
-    } = source;
+    } = publicSource;
 
     const copy = {
       ...content,
@@ -402,7 +410,8 @@ router.get('/:id/public', publicShareLimiter, async (req, res) => {
       return res.status(404).json({ error: 'Recipe not found' });
     }
 
-    res.json(recipeShare.toPublicRecipe(recipe));
+    // Original content, not the owner's edits (migration 095).
+    res.json(recipeShare.toPublicRecipe(recipeShare.publicView(recipe)));
 
   } catch (error) {
     console.error('[SavedRecipes] Public recipe error:', error);
@@ -547,6 +556,34 @@ router.get('/:id', authMiddleware.authenticateToken, async (req, res) => {
   }
 });
 
+// First content edit of a PUBLIC-source row: tuck the pre-edit content into
+// original_snapshot so Popular Now / community / :id/public / adopt keep
+// showing the recipe as imported while the owner sees their edits (095).
+// Written once (only while the column is NULL); never for private sources.
+// Returns the snapshot to merge into the update, or null. A concurrent first
+// edit would just write the same pre-edit snapshot twice — harmless.
+async function snapshotBeforeEdit(id, userId, updates) {
+  if (!recipeShare.touchesContent(updates)) return null;
+
+  const { data: current, error } = await supabase
+    .from('saved_recipes')
+    .select([...recipeShare.SNAPSHOT_FIELDS, 'original_snapshot', 'source_type'].join(', '))
+    .eq('id', id)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) {
+    // Don't block the edit over the snapshot read; the update's own error
+    // handling covers a missing row.
+    console.error('[SavedRecipes] Snapshot read failed:', error);
+    return null;
+  }
+  if (!recipeShare.needsSnapshot(current)) return null;
+
+  console.log(`[SavedRecipes] Snapshotting original of ${id} before first edit`);
+  return recipeShare.buildOriginalSnapshot(current);
+}
+
 // PUT /api/saved-recipes/:id - Update recipe
 router.put('/:id', authMiddleware.authenticateToken, async (req, res) => {
   try {
@@ -575,6 +612,9 @@ router.put('/:id', authMiddleware.authenticateToken, async (req, res) => {
         updates[field] = body[field];
       }
     }
+
+    const snapshot = await snapshotBeforeEdit(id, userId, updates);
+    if (snapshot) updates.original_snapshot = snapshot;
 
     // Mark as user edited
     updates.user_edited = true;
@@ -650,7 +690,10 @@ router.patch('/:id', authMiddleware.authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'No valid fields to update' });
     }
 
-    console.log(`[SavedRecipes] Applying updates:`, updates);
+    const snapshot = await snapshotBeforeEdit(id, userId, updates);
+    if (snapshot) updates.original_snapshot = snapshot;
+
+    console.log(`[SavedRecipes] Applying updates:`, Object.keys(updates));
 
     const { data, error } = await supabase
       .from('saved_recipes')

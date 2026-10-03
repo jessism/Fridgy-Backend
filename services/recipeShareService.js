@@ -130,6 +130,64 @@ function toPublicRecipe(row, extras = {}) {
   return { ...out, ...extras };
 }
 
+// ===== Original snapshot (migration 095) =====
+//
+// Public surfaces (Popular Now, community pool, /:id/public, adopt) must show
+// a recipe as it was imported, not as its owner has since edited it. The first
+// time the owner of a PUBLIC-source row edits any of these fields, PUT/PATCH
+// copies the pre-edit values into saved_recipes.original_snapshot; after that
+// publicView() overlays them. Share links (/share/:slug) deliberately do NOT
+// use this — the owner chose to send their version.
+//
+// Superset of PUBLIC_FIELDS minus id/source_type (which never change meaning),
+// plus the owner-editable columns the adopt copy carries across.
+const SNAPSHOT_FIELDS = [
+  'title', 'summary', 'image', 'image_urls',
+  'extendedIngredients', 'analyzedInstructions',
+  'readyInMinutes', 'cookingMinutes', 'servings',
+  'source_author', 'source_url',
+  'nutrition', 'vegetarian', 'vegan', 'glutenFree', 'dairyFree',
+  'cuisines', 'dishTypes', 'diets', 'occasions', 'tags',
+];
+
+/** Does this update touch anything the public can see? */
+function touchesContent(updates) {
+  return !!updates && SNAPSHOT_FIELDS.some((key) => updates[key] !== undefined);
+}
+
+/** May this row ever need a snapshot? Private-source rows are never shown to strangers. */
+function needsSnapshot(row) {
+  return !!row && row.original_snapshot == null && PUBLIC_SOURCES.includes(row.source_type);
+}
+
+/** The pre-edit content to tuck away. Only defined fields, so a sparse row stays sparse. */
+function buildOriginalSnapshot(row) {
+  const snap = {};
+  for (const key of SNAPSHOT_FIELDS) {
+    if (row[key] !== undefined) snap[key] = row[key];
+  }
+  snap.snapshot_at = new Date().toISOString();
+  return snap;
+}
+
+/**
+ * What a stranger should see for this row: the snapshot overlaid on the live
+ * row when one exists, else the row as is. Pure. Never returns the snapshot
+ * itself. Image: the share-time re-host writes a durable URL back onto the
+ * LIVE row, so only prefer the snapshot's image when it is itself durable.
+ */
+function publicView(row) {
+  if (!row) return row;
+  const { original_snapshot: snap, ...live } = row;
+  if (!snap || typeof snap !== 'object') return live;
+  const out = { ...live };
+  for (const key of SNAPSHOT_FIELDS) {
+    if (snap[key] !== undefined) out[key] = snap[key];
+  }
+  if (!isDurableImage(snap.image)) out.image = live.image;
+  return out;
+}
+
 const isDurableImage = (url) =>
   typeof url === 'string' && url.includes('supabase.co/storage/');
 
@@ -241,6 +299,11 @@ module.exports = {
   isShareable,
   isPubliclyReadable,
   toPublicRecipe,
+  SNAPSHOT_FIELDS,
+  touchesContent,
+  needsSnapshot,
+  buildOriginalSnapshot,
+  publicView,
   ensureDurableImage,
   buildOgImage,
   lookupOwnerName,

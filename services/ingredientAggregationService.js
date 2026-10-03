@@ -51,8 +51,40 @@ const ingredientAggregationService = {
   },
 
   /**
+   * Record one recipe's share of an aggregated ingredient, so a merged row can
+   * still be shown under each dish with that dish's own quantity.
+   * The same recipe appearing again (planned twice) adds to its entry when the
+   * unit matches; otherwise it gets a second entry.
+   * @param {Array} sources - The ingredient's sources array (mutated)
+   * @param {Object} recipe - Recipe with id, title and optional image
+   * @param {number} amount - This occurrence's amount
+   * @param {string} unit - This occurrence's unit
+   */
+  recordSource(sources, recipe, amount, unit) {
+    if (recipe.id === undefined || recipe.id === null || !recipe.title) return;
+
+    const recipeId = String(recipe.id);
+    const sourceUnit = unit || null;
+    const existing = sources.find(s => s.recipe_id === recipeId && s.unit === sourceUnit);
+
+    if (existing) {
+      existing.quantity = String(unitConversionService.roundForDisplay(parseFloat(existing.quantity) + amount));
+      return;
+    }
+
+    sources.push({
+      recipe_id: recipeId,
+      title: recipe.title,
+      image: recipe.image || null,
+      quantity: String(unitConversionService.roundForDisplay(amount)),
+      unit: sourceUnit,
+    });
+  },
+
+  /**
    * Aggregate ingredients from multiple recipes
    * @param {Array} recipes - Array of recipe objects with extendedIngredients
+   *   (plus id, title and image when the caller wants per-recipe sources)
    * @returns {Promise<Object>} Aggregated ingredients grouped by category
    */
   async aggregateIngredients(recipes) {
@@ -78,6 +110,10 @@ const ingredientAggregationService = {
         const existing = ingredientMap.get(normalizedName);
 
         if (existing) {
+          // Recorded even when the units can't be combined below, so the dish
+          // still lists the ingredient
+          this.recordSource(existing.sources, recipe, amount, unit);
+
           // Try to combine with existing
           if (unitConversionService.canCombine(existing.unit, unit)) {
             const combined = unitConversionService.combineQuantities(
@@ -116,6 +152,9 @@ const ingredientAggregationService = {
             };
           }
 
+          const sources = [];
+          this.recordSource(sources, recipe, amount, unit);
+
           ingredientMap.set(normalizedName, {
             name: rawName,
             normalizedName,
@@ -123,6 +162,7 @@ const ingredientAggregationService = {
             unit: displayResult.unit,
             display: displayResult.display,
             original: ing.original,
+            sources,
           });
         }
       }
@@ -147,6 +187,7 @@ const ingredientAggregationService = {
       unit: ing.unit,
       display: ing.display,
       category: categories[ing.name] || 'Other',
+      sources: ing.sources,
     }));
 
     // Group by category

@@ -264,15 +264,20 @@ router.post('/generate-grocery-list',
     const recipes = mealPlans
       .map(plan => {
         // Prefer saved recipe, fall back to snapshot
-        if (plan.recipe?.extendedIngredients) {
+        // id and image ride along so each grocery item can record which
+        // recipe it came from; the id follows the same rule as the carousel
+        // metadata in 2b so the two agree
+        const recipe = plan.recipe?.extendedIngredients
+          ? plan.recipe
+          : plan.recipe_snapshot?.extendedIngredients
+          ? plan.recipe_snapshot
+          : null;
+        if (recipe) {
           return {
-            title: plan.recipe.title,
-            extendedIngredients: plan.recipe.extendedIngredients
-          };
-        } else if (plan.recipe_snapshot?.extendedIngredients) {
-          return {
-            title: plan.recipe_snapshot.title,
-            extendedIngredients: plan.recipe_snapshot.extendedIngredients
+            id: recipe.title ? (recipe.id || plan.recipe_id || `snapshot_${recipe.title}`) : null,
+            title: recipe.title,
+            image: recipe.image || null,
+            extendedIngredients: recipe.extendedIngredients
           };
         }
         return null;
@@ -386,7 +391,8 @@ router.post('/generate-grocery-list',
           added_by: userId,
           added_by_name: 'Meal Plan',
           order_index: index,
-          is_checked: false
+          is_checked: false,
+          sources: item.sources || []
         }));
 
         const { error: itemsError } = await supabase

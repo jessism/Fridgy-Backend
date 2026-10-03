@@ -28,6 +28,30 @@ const canUserModifyList = async (userId, listId) => {
   return data !== null;
 };
 
+// Helper: Build the `sources` entry that ties an item to the recipe it came from.
+// Accepts a client-sent recipe reference ({ recipe_id | id, title, image }) and
+// returns null when it is unusable, so callers can leave `sources` out entirely.
+const buildItemSource = (source, quantity, unit) => {
+  if (!source || typeof source !== 'object') return null;
+
+  const recipeId = source.recipe_id ?? source.id;
+  const title = typeof source.title === 'string' ? source.title.trim() : '';
+  if (recipeId === undefined || recipeId === null || recipeId === '' || !title) return null;
+
+  // A bad image is dropped rather than failing the add
+  const image = typeof source.image === 'string' && /^https?:\/\//i.test(source.image) && source.image.length <= 2048
+    ? source.image
+    : null;
+
+  return {
+    recipe_id: String(recipeId).slice(0, 255),
+    title: title.slice(0, 255),
+    image,
+    quantity: quantity !== undefined && quantity !== null && quantity !== '' ? String(quantity) : null,
+    unit: unit || null
+  };
+};
+
 // GET /api/shopping-lists/public/:shareCode - Public view of a shared list (no auth)
 router.get('/public/:shareCode', async (req, res) => {
   try {
@@ -405,17 +429,27 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
 
     // Add initial items if provided
     if (items && items.length > 0) {
-      const itemsToInsert = items.map((item, index) => ({
-        list_id: list.id,
-        name: item.name,
-        quantity: item.quantity,
-        unit: item.unit,
-        category: item.category || 'Other',
-        added_by: userId,
-        added_by_name: userName,
-        order_index: index,
-        is_checked: item.checked || false
-      }));
+      // A list created from one recipe (the web app's "add to new list") sends
+      // that recipe in settings.source_recipes; every initial item is from it.
+      const sourceRecipes = settings?.source_recipes;
+      const onlyRecipe = Array.isArray(sourceRecipes) && sourceRecipes.length === 1 ? sourceRecipes[0] : null;
+
+      const itemsToInsert = items.map((item, index) => {
+        const row = {
+          list_id: list.id,
+          name: item.name,
+          quantity: item.quantity,
+          unit: item.unit,
+          category: item.category || 'Other',
+          added_by: userId,
+          added_by_name: userName,
+          order_index: index,
+          is_checked: item.checked || false
+        };
+        const itemSource = buildItemSource(onlyRecipe, item.quantity, item.unit);
+        if (itemSource) row.sources = [itemSource];
+        return row;
+      });
 
       await supabase
         .from('shopping_list_items')
@@ -561,7 +595,7 @@ router.delete('/:id', authMiddleware.authenticateToken, async (req, res) => {
 router.post('/:id/items', authMiddleware.authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, quantity, unit, category, notes } = req.body;
+    const { name, quantity, unit, category, notes, source } = req.body;
     const userId = req.user.id;
     const userName = `${req.user.firstName || ''}`.trim() || req.user.email;
 
@@ -614,19 +648,26 @@ router.post('/:id/items', authMiddleware.authenticateToken, async (req, res) => 
     }
 
     // Add item
+    const newItem = {
+      list_id: id,
+      name,
+      quantity,
+      unit,
+      category: finalCategory,
+      notes,
+      added_by: userId,
+      added_by_name: userName,
+      order_index: orderIndex
+    };
+
+    // Only set `sources` when the item came from a recipe, so a manual add
+    // falls back to the column default
+    const itemSource = buildItemSource(source, quantity, unit);
+    if (itemSource) newItem.sources = [itemSource];
+
     const { data: item, error } = await supabase
       .from('shopping_list_items')
-      .insert({
-        list_id: id,
-        name,
-        quantity,
-        unit,
-        category: finalCategory,
-        notes,
-        added_by: userId,
-        added_by_name: userName,
-        order_index: orderIndex
-      })
+      .insert(newItem)
       .select()
       .single();
 

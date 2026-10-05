@@ -232,6 +232,14 @@ class RecipeAIExtractor {
 
       console.log('[RecipeAIExtractor] No JSON-LD found, falling back to AI extraction');
 
+      // A paywalled post only serves a teaser, so the AI would report "no
+      // recipe" and the user would be told to check a URL that is fine.
+      const paywall = this.detectPaywall(html);
+      if (paywall === 'blocked') {
+        console.warn('[RecipeAIExtractor] Paywalled page detected, skipping AI extraction');
+        throw this.buildPaywallError();
+      }
+
       // 3. Extract text content using cheerio for AI extraction
       const $ = cheerio.load(html);
 
@@ -252,6 +260,7 @@ class RecipeAIExtractor {
       // Validate sufficient content
       if (bodyText.length < 200) {
         console.error('[RecipeAIExtractor] Insufficient content extracted');
+        if (paywall) throw this.buildPaywallError();
         const error = new Error('Extracted content too short - page may not contain a recipe');
         error.code = 'INSUFFICIENT_CONTENT';
         error.userMessage = 'Could not find enough recipe content on this page. Please verify the URL contains a recipe.';
@@ -302,6 +311,7 @@ class RecipeAIExtractor {
 
       if (result.error) {
         console.error('[RecipeAIExtractor] AI returned error:', result.error);
+        if (paywall) throw this.buildPaywallError();
         const error = new Error(result.error);
         error.code = 'AI_NO_RECIPE';
         error.userMessage = 'No recipe found on this page. Please verify the URL contains a recipe.';
@@ -407,6 +417,53 @@ class RecipeAIExtractor {
       console.error(`[RecipeAIExtractor] ❌ Wayback Machine failed:`, error.message);
       throw error;
     }
+  }
+
+  /**
+   * Detect a subscriber-only page.
+   * @param {string} html - HTML content
+   * @returns {'blocked'|'marked'|null} - 'blocked' when the page rendered a
+   *   paywall in place of the content (Substack), 'marked' when it only
+   *   declares itself not free (schema.org isAccessibleForFree) — those sites
+   *   often still ship the full text, so the AI gets a try first.
+   */
+  detectPaywall(html) {
+    try {
+      const $ = cheerio.load(html);
+
+      if ($('[data-testid="paywall"], [data-component-name="Paywall"]').length > 0) {
+        return 'blocked';
+      }
+
+      const isNotFree = (node) => {
+        if (!node || typeof node !== 'object') return false;
+        if (Array.isArray(node)) return node.some(isNotFree);
+        const flag = node.isAccessibleForFree;
+        if (flag === false || String(flag).toLowerCase() === 'false') return true;
+        return isNotFree(node['@graph']);
+      };
+
+      const scripts = $('script[type="application/ld+json"]');
+      for (let i = 0; i < scripts.length; i++) {
+        try {
+          if (isNotFree(JSON.parse($(scripts[i]).html() || 'null'))) return 'marked';
+        } catch (e) {
+          continue;
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error('[RecipeAIExtractor] Paywall detection error:', error.message);
+      return null;
+    }
+  }
+
+  buildPaywallError() {
+    const error = new Error('Page is behind a paywall');
+    error.code = 'PAYWALLED';
+    error.userMessage = "The author made this post subscribers-only, so we can't import it. Try another recipe.";
+    return error;
   }
 
   /**

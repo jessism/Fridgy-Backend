@@ -6,6 +6,18 @@ const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
 
+// Creators who write the method as titled blocks ("Marinade", "Frying",
+// "Toss and serve", separated by blank lines) get one step per block, the way
+// they laid it out. Captions without per-block titles are unaffected.
+const TITLED_BLOCKS_RULE = `🔴 TITLED BLOCKS (only when the creator wrote them):
+If — and ONLY if — the caption's method is split into blocks AND each block has its own title (e.g. "Marinade", "Crispy coating", "Frying", "Toss and serve"). Usually blank lines separate the blocks, but some platforms strip line breaks, so a short title phrase written by the creator directly before its own block of method text counts too:
+- Return ONE step per titled block, in order: "<Title>: <every sentence of that block, word for word>"
+- Clean the title: "Method (marinade)" → "Marinade"; a sauce block titled "Garlic parmesan sauce" with a "Method" sub-heading → "Garlic parmesan sauce"
+- If a block lists ingredients and then only says something short like "Mix everything until well combined", name those ingredients with their amounts in the step: "Crispy coating: Combine 1½ cups all-purpose flour, 2 tbsp cornstarch, 1 tsp salt, 1 tsp black pepper, 1 tsp paprika and 1 tsp garlic powder. Mix everything until well combined."
+- If the creator numbered steps inside a block, keep one step per number and put the title on the first one
+- Put EVERY step in the single "analyzedInstructions" group — never return several groups
+If the method does NOT have a title per block (plain paragraphs, numbered lists, bullets), ignore this rule entirely and never invent titles.`;
+
 class MultiModalExtractor {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
@@ -878,12 +890,15 @@ CRITICAL RULES:
    - Numbered lists (1. 2. 3.) → each number = one step
    - Section headers like "Baking Method:", "Air Fryer Method:", "assemble:", "for the sauce:" → include ALL sections
    - Bullet points or dashes → each bullet = one step
-   - Paragraph-style instructions → split into individual steps
+   - Paragraph-style instructions with no block titles → split into individual steps
    - If caption has 15 steps, return 15 steps. Not 6.
+   - Exception: titled blocks — see the TITLED BLOCKS rule below
+
+${TITLED_BLOCKS_RULE}
 
 3. Extract nutrition if mentioned (calories, protein, carbs, fat)
 
-4. DO NOT summarize, condense, or merge steps. Each distinct action in the caption = one step.
+4. DO NOT summarize, condense, or merge steps. Each distinct action in the caption = one step (except titled blocks, above).
    - If there are multiple methods (e.g. "Baking Method" AND "Air Fryer Method"), include BOTH as separate steps
    - Sub-steps like "a. do X, b. do Y" should each be their own step
    - NEVER reduce 10 steps to 3 by combining them
@@ -1908,6 +1923,8 @@ Caption: "3. Prepare all the veggies and aromatics. Make sure to wash and rinse 
 
 If NO numbered steps exist, look for "Instructions:", "Directions:", bullets, or action sentences.
 
+${TITLED_BLOCKS_RULE}
+
 🔴 NUTRITION (if mentioned in caption):
 Look for: calories, protein, carbs, fat, macros, "per serving"
 
@@ -2140,6 +2157,8 @@ Caption: "3. Prepare all the veggies and aromatics. Make sure to wash and rinse 
 ❌ WRONG: Three steps: "Prepare veggies" + "Wash bok choy" + "Strain rice cakes"
 
 If NO numbered steps exist, look for "How to:", "Instructions:", or action sentences.
+
+${TITLED_BLOCKS_RULE}
 
 🔴 NUTRITION (if in caption):
 Extract calories, protein, carbs, fat if mentioned.

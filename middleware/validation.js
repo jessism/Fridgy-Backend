@@ -51,6 +51,64 @@ const validateShortcutImport = (req, res, next) => {
   next();
 };
 
+// Every client renders only analyzedInstructions[0].steps, so a recipe the
+// model split into several named sections showed just the first one. When a
+// creator writes titled blocks ("Marinade", "Frying", "Toss and serve"), each
+// block becomes ONE step led by its title. A long block (the creator numbered
+// many steps under one heading) keeps its steps, with the title on the first.
+// Untitled sections keep their steps exactly as they are.
+// A single untitled group, the normal case, is returned unchanged.
+const MERGE_MAX_STEPS = 6;
+const MERGE_MAX_CHARS = 600;
+const GENERIC_SECTION_TITLE = /^(method|methods|instructions?|directions?|steps?|how to make( it)?)$/i;
+const COOKING_TECHNIQUE_END = /(bak(e|ing)|air ?fry(er|ing)?|oven|stove ?top|slow cooker|instant pot|pressure cooker|grill(ing)?|fry(ing)?|microwave|sous vide)$/i;
+
+const cleanSectionTitle = (name) => {
+  let title = String(name || '').replace(/\s+/g, ' ').trim().replace(/[:\-–—]+$/, '').trim();
+  // "Method (marinade)" → "marinade"
+  const wrapped = title.match(/^(method|instructions?|directions?|steps?)\s*\((.+)\)$/i);
+  if (wrapped) title = wrapped[2].trim();
+  // "Garlic parmesan sauce Method" → "Garlic parmesan sauce", but keep
+  // alternatives like "Baking Method" / "Air Fryer Method".
+  const trailing = title.match(/^(.+?)\s+(method|instructions?|directions?|steps?)$/i);
+  if (trailing && !COOKING_TECHNIQUE_END.test(trailing[1])) title = trailing[1].trim();
+  if (!title || GENERIC_SECTION_TITLE.test(title)) return '';
+  return title.charAt(0).toUpperCase() + title.slice(1);
+};
+
+const joinSentences = (texts) => texts.reduce((acc, text) => {
+  if (!acc) return text;
+  return /[.!?…)"'”]$/.test(acc) ? `${acc} ${text}` : `${acc}. ${text}`;
+}, '');
+
+const mergeInstructionSections = (analyzedInstructions) => {
+  if (!Array.isArray(analyzedInstructions) || analyzedInstructions.length <= 1) {
+    return analyzedInstructions;
+  }
+
+  const sections = analyzedInstructions
+    .map((group) => ({
+      title: cleanSectionTitle(group?.name),
+      steps: (Array.isArray(group?.steps) ? group.steps : [])
+        .map((s) => ({ ...s, step: String(s?.step || '').replace(/\s+/g, ' ').trim() }))
+        .filter((s) => s.step),
+    }))
+    .filter((section) => section.steps.length > 0);
+
+  const steps = [];
+  for (const { title, steps: sectionSteps } of sections) {
+    const prefix = title ? `${title}: ` : '';
+    const totalChars = sectionSteps.reduce((sum, s) => sum + s.step.length, 0);
+    if (title && sectionSteps.length <= MERGE_MAX_STEPS && totalChars <= MERGE_MAX_CHARS) {
+      steps.push({ ...sectionSteps[0], step: prefix + joinSentences(sectionSteps.map((s) => s.step)) });
+    } else {
+      sectionSteps.forEach((s, i) => steps.push({ ...s, step: i === 0 ? prefix + s.step : s.step }));
+    }
+  }
+
+  return [{ name: '', steps: steps.map((s, i) => ({ ...s, number: i + 1 })) }];
+};
+
 const sanitizeRecipeData = (recipeData) => {
   // Determine source type from URL if not provided
   const sourceUrl = recipeData.source_url || recipeData.sourceUrl || '';
@@ -68,7 +126,7 @@ const sanitizeRecipeData = (recipeData) => {
       ? recipeData.extendedIngredients
       : [],
     analyzedInstructions: Array.isArray(recipeData.analyzedInstructions)
-      ? recipeData.analyzedInstructions
+      ? mergeInstructionSections(recipeData.analyzedInstructions)
       : [],
     readyInMinutes: parseInt(recipeData.readyInMinutes) || null,
     servings: parseInt(recipeData.servings) || 4,
@@ -87,5 +145,6 @@ const sanitizeRecipeData = (recipeData) => {
 
 module.exports = {
   validateShortcutImport,
-  sanitizeRecipeData
+  sanitizeRecipeData,
+  mergeInstructionSections
 };

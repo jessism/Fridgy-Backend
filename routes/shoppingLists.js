@@ -80,6 +80,24 @@ const mergeItemSource = (sources, incoming) => {
   return merged;
 };
 
+// Helper: Among a list's rows, the open recipe-made row this ingredient
+// belongs to. Checked rows and hand-typed rows (no sources) never match.
+const findOpenRecipeRow = (rows, normalizedName) => {
+  if (!normalizedName) return null;
+  return (rows || []).find(row =>
+    !row.is_checked &&
+    Array.isArray(row.sources) && row.sources.length > 0 &&
+    ingredientAggregationService.normalizeIngredientName(row.name) === normalizedName
+  ) || null;
+};
+
+// Helper: The order_index that puts a new row at the top without renumbering
+// anything. The reorder endpoint rewrites from 0, so negatives are fine.
+const nextTopOrderIndex = (rows) => {
+  if (!rows || rows.length === 0) return 0;
+  return Math.min(...rows.map(row => row.order_index || 0)) - 1;
+};
+
 // GET /api/shopping-lists/public/:shareCode - Public view of a shared list (no auth)
 router.get('/public/:shareCode', async (req, res) => {
   try {
@@ -648,10 +666,7 @@ router.post('/:id/items', authMiddleware.authenticateToken, async (req, res) => 
 
       if (openError) throw openError;
 
-      const target = normalizedName && (openItems || []).find(existing =>
-        Array.isArray(existing.sources) && existing.sources.length > 0 &&
-        ingredientAggregationService.normalizeIngredientName(existing.name) === normalizedName
-      );
+      const target = findOpenRecipeRow(openItems, normalizedName);
 
       if (target) {
         const sources = mergeItemSource(target.sources, itemSource);
@@ -681,35 +696,19 @@ router.post('/:id/items', authMiddleware.authenticateToken, async (req, res) => 
       }
     }
 
-    // Shift all existing items down by 1 to make room at the top
-    const { data: rpcData, error: rpcError } = await supabase.rpc('increment_order_indices', {
-      list_id_param: id
-    });
+    // Put the new item at the top by taking the slot below the current lowest
+    // index, instead of renumbering every row on every add. (The old path
+    // leaned on a database function that does not exist in the live schema and
+    // fell back to one update per existing row.)
+    const { data: topRow, error: topError } = await supabase
+      .from('shopping_list_items')
+      .select('order_index')
+      .eq('list_id', id)
+      .order('order_index', { ascending: true })
+      .limit(1);
 
-    if (rpcError) {
-      // If RPC doesn't exist, do it manually
-      if (rpcError.message?.includes('function') || rpcError.message?.includes('exist')) {
-        const { data: existingItems } = await supabase
-          .from('shopping_list_items')
-          .select('id, order_index')
-          .eq('list_id', id);
-
-        if (existingItems && existingItems.length > 0) {
-          const updates = existingItems.map(item =>
-            supabase
-              .from('shopping_list_items')
-              .update({ order_index: item.order_index + 1 })
-              .eq('id', item.id)
-          );
-          await Promise.all(updates);
-        }
-      } else {
-        throw rpcError;
-      }
-    }
-
-    // Add new item at the top (order_index = 0)
-    const orderIndex = 0;
+    if (topError) throw topError;
+    const orderIndex = nextTopOrderIndex(topRow);
 
     // Auto-categorize if no category provided or if 'Other'
     let finalCategory = category;
@@ -1294,6 +1293,184 @@ router.post('/:id/purchase-to-inventory', authMiddleware.authenticateToken, asyn
   } catch (error) {
     console.error('Error adding to inventory:', error);
     res.status(500).json({ error: 'Failed to add items to inventory' });
+  }
+});
+
+// POST /api/shopping-lists/:id/items/from-recipe - Add a whole recipe's
+// ingredients in ONE request. The phone used to send one request per
+// ingredient; each paid auth, access check, merge lookup and an order shift,
+// so a 26-ingredient recipe took tens of seconds. This pays those once and
+// applies the same merge rules as the single add.
+router.post('/:id/items/from-recipe', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { source, items } = req.body;
+    const userId = req.user.id;
+    const userName = `${req.user.firstName || ''}`.trim() || req.user.email;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+    if (items.length > 200) {
+      return res.status(400).json({ error: 'Too many items in one request' });
+    }
+
+    const hasAccess = await canUserModifyList(userId, id);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // One read serves both the merge matching (open recipe rows) and the
+    // order_index floor (all rows share the index space)
+    const { data: allRows, error: readError } = await supabase
+      .from('shopping_list_items')
+      .select('id, name, quantity, unit, is_checked, sources, order_index')
+      .eq('list_id', id);
+
+    if (readError) throw readError;
+
+    // Staged work: updates to existing rows, inserts of new ones. Later
+    // ingredients in the same request can merge into either, so both are
+    // keyed by normalized name.
+    const updatesByRowId = new Map(); // row id -> { row, sources }
+    const insertsByName = new Map();  // normalized name -> staged insert
+    const insertOrder = [];           // normalized names, first-seen order
+
+    for (const incoming of items) {
+      const name = typeof incoming?.name === 'string' ? incoming.name.trim() : '';
+      if (!name) continue;
+
+      const quantity = incoming.quantity;
+      const unit = incoming.unit;
+      const itemSource = buildItemSource(source, quantity, unit);
+      const normalizedName = ingredientAggregationService.normalizeIngredientName(name);
+
+      // 1. An open recipe-made row already on the list
+      const existingRow = itemSource ? findOpenRecipeRow(allRows, normalizedName) : null;
+      if (existingRow) {
+        const staged = updatesByRowId.get(existingRow.id) || { row: existingRow, sources: existingRow.sources };
+        staged.sources = mergeItemSource(staged.sources, itemSource);
+        updatesByRowId.set(existingRow.id, staged);
+        continue;
+      }
+
+      // 2. A row this same request already staged ("butter" twice in one recipe)
+      const stagedInsert = itemSource ? insertsByName.get(normalizedName) : null;
+      if (stagedInsert && stagedInsert.sources) {
+        stagedInsert.sources = mergeItemSource(stagedInsert.sources, itemSource);
+        // Same dish twice sums inside ONE source entry, so the entry count
+        // can stay 1 — remember that the raw quantity is no longer the total
+        stagedInsert.merged = true;
+        continue;
+      }
+
+      // 3. A new row. Keyword categorization only — same as the single add,
+      // and never the batched AI call, which has no place in this hot path.
+      let finalCategory = incoming.category;
+      if (!finalCategory || finalCategory === 'Other') {
+        finalCategory = categoryService.categorizeItem(name) || 'Other';
+      }
+
+      // A name that normalizes to nothing gets a key of its own, so two such
+      // oddities never merge with each other
+      const key = normalizedName || `__raw:${insertOrder.length}`;
+      insertsByName.set(key, {
+        name,
+        quantity,
+        unit,
+        category: finalCategory,
+        sources: itemSource ? [itemSource] : undefined,
+      });
+      insertOrder.push(key);
+    }
+
+    // A row with exactly one untouched contribution keeps the quantity as
+    // sent (same as the single add); anything merged gets the computed total
+    const finalizeQuantity = (staged) => {
+      const untouched = staged.sources.length === 1 && !staged.merged;
+      if (untouched) return { quantity: staged.quantity, unit: staged.unit };
+      const total = ingredientAggregationService.summarizeSources(staged.name, staged.sources);
+      return { quantity: total.quantity, unit: total.unit || null };
+    };
+
+    const results = { inserted: [], updated: [] };
+
+    // Apply updates to merged rows (distinct rows, safe in parallel)
+    if (updatesByRowId.size > 0) {
+      const updates = Array.from(updatesByRowId.values()).map(({ row, sources }) => {
+        const total = ingredientAggregationService.summarizeSources(row.name, sources);
+        return supabase
+          .from('shopping_list_items')
+          .update({ sources, quantity: total.quantity, unit: total.unit || null })
+          .eq('id', row.id)
+          .eq('list_id', id)
+          .select()
+          .single();
+      });
+      for (const { data, error } of await Promise.all(updates)) {
+        if (error) throw error;
+        results.updated.push(data);
+      }
+    }
+
+    // Bulk-insert the new rows above everything, in recipe order
+    const seenKeys = new Set();
+    const orderedInserts = insertOrder
+      .filter(key => (seenKeys.has(key) ? false : seenKeys.add(key)))
+      .map(key => insertsByName.get(key))
+      .filter(Boolean);
+    if (orderedInserts.length > 0) {
+      const base = allRows && allRows.length > 0
+        ? Math.min(...allRows.map(row => row.order_index || 0)) - orderedInserts.length
+        : 0;
+      const rowsToInsert = orderedInserts.map((staged, index) => {
+        const { quantity, unit } = staged.sources
+          ? finalizeQuantity(staged)
+          : { quantity: staged.quantity, unit: staged.unit };
+        const row = {
+          list_id: id,
+          name: staged.name,
+          quantity,
+          unit,
+          category: staged.category,
+          added_by: userId,
+          added_by_name: userName,
+          is_checked: false,
+          order_index: base + index,
+        };
+        if (staged.sources) row.sources = staged.sources;
+        return row;
+      });
+
+      const { data: insertedRows, error: insertError } = await supabase
+        .from('shopping_list_items')
+        .insert(rowsToInsert)
+        .select();
+
+      if (insertError) throw insertError;
+      results.inserted = insertedRows || [];
+    }
+
+    // One activity entry for the whole recipe, in the shape the batch
+    // endpoint already writes so the website's feed knows the action
+    await supabase
+      .from('shopping_list_activities')
+      .insert({
+        list_id: id,
+        user_id: userId,
+        user_name: userName,
+        action: 'batch_added_items',
+        metadata: {
+          inserted_count: results.inserted.length,
+          updated_count: results.updated.length,
+          total_items: items.length
+        }
+      });
+
+    res.json({ success: true, inserted: results.inserted, updated: results.updated });
+  } catch (error) {
+    console.error('Error adding recipe items:', error);
+    res.status(500).json({ error: 'Failed to add recipe items' });
   }
 });
 

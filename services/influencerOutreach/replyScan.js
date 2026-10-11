@@ -118,7 +118,9 @@ async function scan() {
 
   const list = await gmail.users.messages.list({
     userId: 'me',
-    q: `newer_than:${LOOKBACK_DAYS}d -from:me`,
+    // F5Bot alerts share this mailbox (Reddit monitor); without the exclusion
+    // their volume pushes real replies past MAX_MESSAGES.
+    q: `newer_than:${LOOKBACK_DAYS}d -from:me -from:f5bot.com`,
     maxResults: MAX_MESSAGES,
   });
 

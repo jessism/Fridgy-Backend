@@ -16,9 +16,9 @@ module.exports = {
   TIMEZONE,
   enabled: !['false', '0', 'no', 'off', 'disabled'].includes(flag),
 
-  // The mailbox F5Bot alerts land in. Deliberately NOT GMAIL_SENDER: the
-  // outreach reply scan lists that inbox capped at 200 messages and alert
-  // volume would crowd real creator replies out of its window.
+  // The mailbox F5Bot alerts land in. In production this is the same mailbox
+  // as GMAIL_SENDER, so influencerOutreach/replyScan.js excludes
+  // from:f5bot.com — keep that exclusion if either address changes.
   alertMailbox: process.env.REDDIT_ALERT_MAILBOX || 'hello@trackabite.app',
 
   cron: {

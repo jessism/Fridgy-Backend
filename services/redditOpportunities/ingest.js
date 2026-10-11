@@ -49,7 +49,17 @@ async function ingest() {
   if (!gmail) return { skipped: 'Gmail API not configured (GOOGLE_SERVICE_ACCOUNT_JSON)' };
   const sb = getServiceClient();
 
-  const summary = { emails: 0, hits: 0, inserted: 0 };
+  // Emails that already produced rows need not be fetched again. Purely an
+  // optimization — correctness still rests on the reddit_url upsert.
+  const since = new Date(Date.now() - 4 * 86400000).toISOString();
+  const { data: done, error: doneErr } = await sb
+    .from('reddit_opportunities')
+    .select('gmail_id:raw->>gmail_id')
+    .gte('created_at', since);
+  if (doneErr) throw doneErr;
+  const processed = new Set((done || []).map((r) => r.gmail_id).filter(Boolean));
+
+  const summary = { emails: 0, skipped: 0, hits: 0, inserted: 0 };
   let pageToken;
   do {
     const list = await gmail.users.messages.list({
@@ -61,6 +71,7 @@ async function ingest() {
     pageToken = list.data.nextPageToken;
 
     for (const ref of list.data.messages || []) {
+      if (processed.has(ref.id)) { summary.skipped += 1; continue; }
       const { data: message } = await gmail.users.messages.get({ userId: 'me', id: ref.id, format: 'full' });
       summary.emails += 1;
 

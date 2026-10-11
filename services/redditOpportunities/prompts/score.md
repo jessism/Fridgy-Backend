@@ -13,7 +13,7 @@ The Reddit hit (from a keyword alert — only partial context is available):
 - Excerpt: {{excerpt}}
 
 Score 0-100 how strong an opportunity this is for a genuinely helpful reply that can mention Trackabite:
-- 85-100: someone explicitly asking for an app/tool/way to do something Trackabite does (save recipes, track fridge contents, reduce food waste, plan meals) — or comparing competitor apps (ReciMe, Paprika, Crouton, AnyList, Samsung Food, Whisk, Flavorish).
+- 85-100: someone explicitly asking for an app/tool/way to do something Trackabite does (save or organize recipes, import recipes from TikTok/Instagram/websites, plan meals, track fridge contents) — or comparing recipe apps (ReciMe, Paprika, Crouton, AnyList, Samsung Food, Whisk, Flavorish).
 - 60-84: discussing a problem Trackabite solves, without asking for a tool.
 - 40-59: topic-adjacent; a reply could help but a product mention would feel forced.
 - 0-39: keyword matched but the thread is irrelevant, a joke, news, or promotion would be unwelcome.
@@ -24,7 +24,7 @@ Respond with JSON only:
 {
   "score": <0-100>,
   "reason": "<one sentence: why this score>",
-  "category": "<recipe_saving | food_waste | meal_planning | competitor | other>",
+  "category": "<recipe_saving | recipe_import | recipe_app | recipe_organizer | meal_planning | other>",
   "suggested_reply": <string or null>
 }
 

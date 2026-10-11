@@ -34,7 +34,7 @@ module.exports = {
     mirror: '0 2 * * *',          // Google Sheet archive
   },
 
-  // Email identity. GMAIL_SENDER is the mailbox (jessie@trackabite.app).
+  // Email identity. GMAIL_SENDER is the mailbox (hello@trackabite.app).
   // No footer is appended: the email body is exactly the draft.
   fromName: 'Jessie at Trackabite',
 

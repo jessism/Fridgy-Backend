@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS public.reddit_opportunities (
 
   score           SMALLINT CHECK (score IS NULL OR score BETWEEN 0 AND 100),
   score_reason    TEXT,
-  category        TEXT,                         -- recipe_saving | food_waste | meal_planning | competitor | other
+  category        TEXT,                         -- recipe_saving | recipe_import | recipe_app | recipe_organizer | meal_planning | other
   suggested_reply TEXT,                         -- drafted only for instant-alert scores
 
   status          TEXT NOT NULL DEFAULT 'new'
@@ -65,23 +65,29 @@ CREATE TRIGGER trg_reddit_templates_updated_at
   BEFORE UPDATE ON public.reddit_reply_templates
   FOR EACH ROW EXECUTE FUNCTION public.influencers_set_updated_at();
 
--- ── Starter templates (tone: help first, disclose being the founder, no hard sell) ──
+-- ── Starter templates, one per live F5Bot keyword (tone: help first, disclose
+--    being the founder, no hard sell). Replaced in the live table 2026-10-12;
+--    the original four (incl. Food waste / Competitor thread) are retired. ──
 INSERT INTO public.reddit_reply_templates (name, category, sort, body) VALUES
 (
-  'Recipe saving', 'recipe_saving', 1,
-  'I had the same problem — screenshots and saved TikToks everywhere and never finding anything again. I actually ended up building an app for this (Trackabite) that imports recipes from links/TikToks and keeps them searchable in one place. Happy to answer questions if useful — and if you''d rather not use an app, a simple Notes folder with a strict naming scheme honestly gets you 80% of the way.'
+  'Save recipes', 'recipe_saving', 1,
+  'I was the same — recipes scattered across screenshots, saved TikToks, bookmarks and a notes app, and I could never find the one I wanted. What finally worked was getting everything into one searchable place. I ended up building an app for exactly this (Trackabite, full disclosure it''s mine): you paste a link or share a TikTok/Instagram post and it saves the recipe cleanly. If you''d rather not use an app, one notes folder with a consistent naming scheme gets you most of the way.'
 ),
 (
-  'Food waste', 'food_waste', 2,
-  'What helped me most was keeping a live list of what''s actually in the fridge with rough expiry dates — most waste is just forgetting what''s in there. I built an app called Trackabite that does this (snap your groceries, it tracks them and suggests recipes for what''s expiring), but even a whiteboard on the fridge door works if you keep it honest.'
+  'Import recipes', 'recipe_import', 2,
+  'Importing from TikTok and Instagram is the hard part — most apps only handle normal recipe websites, because video recipes are buried in the caption or just spoken out loud. I built Trackabite partly because of this: share the post to it and it pulls the ingredients and steps into a proper recipe, and it works with regular recipe sites too. Free to try (5 imports a week on the free plan). Happy to help if you hit a post it can''t read.'
 ),
 (
-  'Meal planning', 'meal_planning', 3,
-  'A loop that works for me: plan the week from what''s already in the fridge first, then shop only the gaps. I built Trackabite to automate exactly that (fridge inventory → recipe suggestions → shopping list grouped by recipe), full disclosure it''s my app. The manual version — ten minutes on Sunday with the fridge open — also beats any app you won''t stick with.'
+  'Recipe app recommendation', 'recipe_app', 3,
+  'Depends what you want it for. Just storing recipes from websites: Paprika is a solid one-time purchase. Saving from TikTok/Instagram plus cooking from what''s already in your fridge: I built Trackabite for that, full disclosure. It imports recipes from social posts and links, tracks your groceries, and suggests what to cook before things go off. Free plan covers 5 imports a week, so it''s easy to try alongside whatever else you''re testing.'
 ),
 (
-  'Competitor thread', 'competitor', 4,
-  'Adding one more option since you''re comparing: I''m the founder of Trackabite, which does {{what_they_asked_for}} plus fridge/expiry tracking so recipes connect to what you actually have. Free tier covers {{free_tier_fact}}. The others mentioned here are solid too — depends if you want recipe storage only or the inventory side as well.'
+  'Recipe organizer', 'recipe_organizer', 4,
+  'The trick that made organizing stick for me: don''t build an elaborate category system up front. Get everything into one place first, then tag only what you actually cook. Folders by meal type plus a "made it, would make again" tag covers most of it. I built an app around that (Trackabite, it''s mine): it imports from links, TikTok and Instagram so getting the backlog in isn''t a chore. But the approach works in any app, or even a spreadsheet.'
+),
+(
+  'Meal planning app', 'meal_planning', 5,
+  'What made meal planning stick for me was planning from what''s already in the fridge first, then shopping only for the gaps — otherwise half the plan goes to waste. I built Trackabite to do that loop (full disclosure, it''s my app): it keeps track of your groceries, suggests recipes from them, and builds the shopping list grouped by recipe. The manual version, ten minutes on Sunday with the fridge open and a notepad, also beats any app you won''t stick with.'
 )
 ON CONFLICT (name) DO NOTHING;
 

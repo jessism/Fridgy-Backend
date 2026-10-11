@@ -49,6 +49,7 @@ const adminAnalyticsRoutes = require('./routes/adminAnalytics');
 const adminFeedbackRoutes = require('./routes/adminFeedback');
 const adminPromosRoutes = require('./routes/adminPromos');
 const adminInfluencersRoutes = require('./routes/adminInfluencers');
+const adminRedditRoutes = require('./routes/adminReddit');
 const blogRoutes = require('./routes/blogRoutes');
 
 const app = express();
@@ -159,6 +160,7 @@ app.use('/api/admin/analytics', adminAnalyticsRoutes); // admin only — backs t
 app.use('/api/admin/feedback', adminFeedbackRoutes); // admin only — backs trackabite.app/admin/feedback
 app.use('/api/admin/promos', adminPromosRoutes); // admin only — backs trackabite.app/admin/promos
 app.use('/api/admin/influencers', adminInfluencersRoutes); // admin only — backs trackabite.app/admin/influencers
+app.use('/api/admin/reddit', adminRedditRoutes); // admin only — backs trackabite.app/admin/reddit
 app.use('/api/blog', blogRoutes); // public blog + sitemap; admin writes gated inside the router
 
 // Image proxy endpoint for Instagram URLs (to bypass CORS)
@@ -1608,6 +1610,7 @@ const streakScheduler = require('./services/streakScheduler');
 const importJobSweeper = require('./services/importJobSweeper');
 const iapReconcileScheduler = require('./services/iapReconcileScheduler');
 const influencerOutreachScheduler = require('./services/influencerOutreach/scheduler');
+const redditOpportunitiesScheduler = require('./services/redditOpportunities/scheduler');
 
 // Import PostHog for analytics
 const { getPostHogClient } = require('./config/posthog');
@@ -1676,4 +1679,8 @@ app.listen(PORT, () => {
   // Influencer outreach: follow-up emails, reply scan, session digest, sheet mirror
   console.log('\n📣 Starting influencer outreach scheduler...');
   influencerOutreachScheduler.start();
+
+  // Reddit opportunities: F5Bot mailbox ingest + scoring + alert emails
+  console.log('\n👽 Starting Reddit opportunities scheduler...');
+  redditOpportunitiesScheduler.start();
 }); 

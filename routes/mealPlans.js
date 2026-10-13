@@ -236,7 +236,7 @@ router.post('/generate-grocery-list',
       .from('meal_plans')
       .select(`
         *,
-        recipe:saved_recipes(id, title, image, readyInMinutes, source_type, extendedIngredients)
+        recipe:saved_recipes(id, title, image, readyInMinutes, source_type, extendedIngredients, servings)
       `)
       .eq('user_id', userId)
       .gte('date', start_date)
@@ -267,7 +267,13 @@ router.post('/generate-grocery-list',
         // id and image ride along so each grocery item can record which
         // recipe it came from; the id follows the same rule as the carousel
         // metadata in 2b so the two agree
-        const recipe = plan.recipe?.extendedIngredients
+        // A meal customized on the plan-review screen carries its own
+        // servings and ingredients in the snapshot; that's what gets cooked,
+        // so it wins over the saved recipe it came from.
+        const customized = plan.recipe_snapshot?.customized && plan.recipe_snapshot?.extendedIngredients;
+        const recipe = customized
+          ? { ...plan.recipe_snapshot, id: plan.recipe?.id || plan.recipe_id }
+          : plan.recipe?.extendedIngredients
           ? plan.recipe
           : plan.recipe_snapshot?.extendedIngredients
           ? plan.recipe_snapshot
@@ -277,12 +283,24 @@ router.post('/generate-grocery-list',
             id: recipe.title ? (recipe.id || plan.recipe_id || `snapshot_${recipe.title}`) : null,
             title: recipe.title,
             image: recipe.image || null,
+            servings: Number(recipe.servings) > 0 ? Number(recipe.servings) : null,
             extendedIngredients: recipe.extendedIngredients
           };
         }
         return null;
       })
       .filter(r => r !== null && r.extendedIngredients?.length > 0);
+
+    // A dish planned twice is bought for both meals, so each grocery item's
+    // source carries the dish's servings summed across the plan
+    const servingsByRecipe = new Map();
+    recipes.forEach(r => {
+      if (r.id === null || !r.servings) return;
+      servingsByRecipe.set(r.id, (servingsByRecipe.get(r.id) || 0) + r.servings);
+    });
+    recipes.forEach(r => {
+      if (r.id !== null && servingsByRecipe.has(r.id)) r.servings = servingsByRecipe.get(r.id);
+    });
 
     console.log(`[MealPlans] Found ${recipes.length} recipes with ingredients`);
 
@@ -464,8 +482,11 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
       });
     }
 
-    // Verify recipe exists if recipe_id is provided (skip for popular recipes using snapshot)
-    if (recipe_id && !recipe_snapshot) {
+    // Verify the recipe is the user's whenever recipe_id is given. A snapshot
+    // used to skip this, which let any recipe_id through; customized meals
+    // now send both, and the client adopts foreign recipes first. A
+    // snapshot-only meal (no recipe_id) still skips it.
+    if (recipe_id) {
       const { data: recipeExists, error: recipeError } = await supabase
         .from('saved_recipes')
         .select('id')
@@ -723,7 +744,9 @@ router.post('/:id/complete', authMiddleware.authenticateToken, async (req, res) 
       user_id: userId,
       meal_type: plan.meal_type,
       meal_photo_url: plan.recipe?.image || plan.recipe_snapshot?.image || null,
-      ingredients_logged: plan.recipe?.extendedIngredients || [],
+      ingredients_logged: (plan.recipe_snapshot?.customized && plan.recipe_snapshot?.extendedIngredients)
+        || plan.recipe?.extendedIngredients
+        || [],
       logged_at: new Date().toISOString(),
       created_at: new Date().toISOString()
     };

@@ -31,7 +31,7 @@ const canUserModifyList = async (userId, listId) => {
 };
 
 // Helper: Build the `sources` entry that ties an item to the recipe it came from.
-// Accepts a client-sent recipe reference ({ recipe_id | id, title, image }) and
+// Accepts a client-sent recipe reference ({ recipe_id | id, title, image, servings }) and
 // returns null when it is unusable, so callers can leave `sources` out entirely.
 const buildItemSource = (source, quantity, unit) => {
   if (!source || typeof source !== 'object') return null;
@@ -45,19 +45,26 @@ const buildItemSource = (source, quantity, unit) => {
     ? source.image
     : null;
 
+  // How many servings the dish was added for; a bad value is dropped too
+  const servings = Number(source.servings);
+  const validServings = Number.isInteger(servings) && servings > 0 && servings <= 1000;
+
   return {
     recipe_id: String(recipeId).slice(0, 255),
     title: title.slice(0, 255),
     image,
     quantity: quantity !== undefined && quantity !== null && quantity !== '' ? String(quantity) : null,
-    unit: unit || null
+    unit: unit || null,
+    ...(validServings ? { servings } : {})
   };
 };
 
 // Helper: Fold one recipe's share into a row's existing sources.
 // The same recipe added again with the same unit adds to its entry; anything
-// else becomes a new entry.
-const mergeItemSource = (sources, incoming) => {
+// else becomes a new entry. `addServings` is false when the incoming share is
+// part of the same add (an ingredient listed twice in one recipe), so the
+// dish's servings aren't counted twice.
+const mergeItemSource = (sources, incoming, { addServings = true } = {}) => {
   const merged = sources.map(source => ({ ...source }));
   const incomingUnit = unitConversionService.normalizeUnit(incoming.unit);
   const same = merged.find(source =>
@@ -76,6 +83,12 @@ const mergeItemSource = (sources, incoming) => {
     same.quantity = String(unitConversionService.roundForDisplay(sameAmount + incomingAmount));
   } else if (!same.quantity && incoming.quantity) {
     same.quantity = incoming.quantity;
+  }
+
+  if (addServings && same.servings && incoming.servings) {
+    same.servings = same.servings + incoming.servings;
+  } else if (!same.servings && incoming.servings) {
+    same.servings = incoming.servings;
   }
   return merged;
 };
@@ -1348,8 +1361,10 @@ router.post('/:id/items/from-recipe', authMiddleware.authenticateToken, async (r
       // 1. An open recipe-made row already on the list
       const existingRow = itemSource ? findOpenRecipeRow(allRows, normalizedName) : null;
       if (existingRow) {
+        // Only this request's first share in a row adds the dish's servings
+        const alreadyStaged = updatesByRowId.has(existingRow.id);
         const staged = updatesByRowId.get(existingRow.id) || { row: existingRow, sources: existingRow.sources };
-        staged.sources = mergeItemSource(staged.sources, itemSource);
+        staged.sources = mergeItemSource(staged.sources, itemSource, { addServings: !alreadyStaged });
         updatesByRowId.set(existingRow.id, staged);
         continue;
       }
@@ -1357,7 +1372,7 @@ router.post('/:id/items/from-recipe', authMiddleware.authenticateToken, async (r
       // 2. A row this same request already staged ("butter" twice in one recipe)
       const stagedInsert = itemSource ? insertsByName.get(normalizedName) : null;
       if (stagedInsert && stagedInsert.sources) {
-        stagedInsert.sources = mergeItemSource(stagedInsert.sources, itemSource);
+        stagedInsert.sources = mergeItemSource(stagedInsert.sources, itemSource, { addServings: false });
         // Same dish twice sums inside ONE source entry, so the entry count
         // can stay 1 — remember that the raw quantity is no longer the total
         stagedInsert.merged = true;

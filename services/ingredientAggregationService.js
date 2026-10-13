@@ -82,7 +82,8 @@ const ingredientAggregationService = {
    * The same recipe appearing again (planned twice) adds to its entry when the
    * unit matches; otherwise it gets a second entry.
    * @param {Array} sources - The ingredient's sources array (mutated)
-   * @param {Object} recipe - Recipe with id, title and optional image
+   * @param {Object} recipe - Recipe with id, title and optional image and
+   *   servings (already the dish's total across the plan, so never summed here)
    * @param {number} amount - This occurrence's amount
    * @param {string} unit - This occurrence's unit
    */
@@ -104,6 +105,7 @@ const ingredientAggregationService = {
       image: recipe.image || null,
       quantity: String(unitConversionService.roundForDisplay(amount)),
       unit: sourceUnit,
+      ...(recipe.servings ? { servings: recipe.servings } : {}),
     });
   },
 

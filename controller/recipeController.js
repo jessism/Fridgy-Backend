@@ -3,6 +3,7 @@ const recipeService = require('../services/recipeService');
 const inventoryDeductionService = require('../services/inventoryDeductionService');
 const { getServiceClient } = require('../config/supabase');
 const { PUBLIC_SOURCES, publicView } = require('../services/recipeShareService');
+const subscriptionService = require('../services/subscriptionService');
 
 // JWT secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
@@ -32,7 +33,11 @@ let communityPoolCache = { recipes: null, expiresAt: 0 };
 // Popular Now cache — same list for every user, so one query per TTL serves
 // everyone. Per-instance; a restart just means one extra query.
 const POPULAR_TTL_MS = 6 * 60 * 60 * 1000;
+// Home's shelf and free users get the top 12; Pro can ask for 20 or 30 (the
+// plan-review Swap sheet). One list of 50 is fetched and cached, then sliced.
 const POPULAR_LIMIT = 12;
+const POPULAR_FETCH = 50;
+const POPULAR_ALLOWED = [12, 20, 30];
 let popularCache = { recipes: null, expiresAt: 0 };
 
 // Recipe Controller Functions
@@ -485,30 +490,49 @@ const recipeController = {
   async getPopularRecipes(req, res) {
     const requestId = Math.random().toString(36).substring(7);
 
+    // Resolved before the try so the stale fallback below serves the same size
+    let limit = POPULAR_LIMIT;
+    let limitedTo;
+
     try {
-      getUserIdFromToken(req);
+      const userId = getUserIdFromToken(req);
+
+      // More than the top 12 is Pro. A free caller gets the 12, never an error.
+      const asked = parseInt(req.query.limit, 10);
+      if (POPULAR_ALLOWED.includes(asked) && asked > POPULAR_LIMIT) {
+        let premium = false;
+        try {
+          premium = await subscriptionService.isPremium(userId);
+        } catch {
+          premium = false;
+        }
+        if (premium) limit = asked;
+        else limitedTo = POPULAR_LIMIT;
+      }
 
       if (popularCache.recipes && popularCache.expiresAt > Date.now()) {
+        const recipes = popularCache.recipes.slice(0, limit);
         return res.json({
           success: true,
-          recipes: popularCache.recipes,
-          count: popularCache.recipes.length,
+          recipes,
+          count: recipes.length,
           cached: true,
+          ...(limitedTo ? { limitedTo } : {}),
           requestId
         });
       }
 
       const supabase = getServiceClient();
       const { data, error } = await supabase
-        .rpc('popular_saved_recipes', { limit_n: POPULAR_LIMIT });
+        .rpc('popular_saved_recipes', { limit_n: POPULAR_FETCH });
 
       if (error) throw error;
 
-      const recipes = data || [];
-      popularCache = { recipes, expiresAt: Date.now() + POPULAR_TTL_MS };
-      console.log(`🔥 [${requestId}] Popular Now rebuilt: ${recipes.length} recipes`);
+      popularCache = { recipes: data || [], expiresAt: Date.now() + POPULAR_TTL_MS };
+      console.log(`🔥 [${requestId}] Popular Now rebuilt: ${popularCache.recipes.length} recipes`);
 
-      res.json({ success: true, recipes, count: recipes.length, cached: false, requestId });
+      const recipes = popularCache.recipes.slice(0, limit);
+      res.json({ success: true, recipes, count: recipes.length, cached: false, ...(limitedTo ? { limitedTo } : {}), requestId });
 
     } catch (error) {
       console.error(`❌ [${requestId}] Popular recipes error:`, error.message);
@@ -518,10 +542,11 @@ const recipeController = {
       // Serve the last good list rather than nothing — the shelf is decorative
       // and a stale leaderboard beats the client dropping to its bundled five.
       if (popularCache.recipes) {
+        const recipes = popularCache.recipes.slice(0, limit);
         return res.json({
           success: true,
-          recipes: popularCache.recipes,
-          count: popularCache.recipes.length,
+          recipes,
+          count: recipes.length,
           cached: true,
           stale: true,
           requestId

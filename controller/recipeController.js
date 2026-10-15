@@ -38,7 +38,37 @@ const POPULAR_TTL_MS = 6 * 60 * 60 * 1000;
 const POPULAR_LIMIT = 12;
 const POPULAR_FETCH = 50;
 const POPULAR_ALLOWED = [12, 20, 30];
+// ?shelf=1 (Home): the top rows this caller has NOT saved, so the shelf stays
+// full. 12 to show plus spare for the app to rotate the first three cards.
+const POPULAR_SHELF_SIZE = 24;
 let popularCache = { recipes: null, expiresAt: 0 };
+
+// Same key the app's dedupeKey and popular_saved_recipes() group on: source_url
+// when there is one, else title + author.
+const popularDedupeKey = (r) => {
+  const url = (r.source_url || '').trim().toLowerCase();
+  if (url) return url;
+  return `${(r.title || '').trim().toLowerCase()}|${(r.source_author || '').trim().toLowerCase()}`;
+};
+
+// Drop leaderboard rows the user already has, either adopted from the card
+// (adopted_from = the source row's id) or imported themselves (same key).
+// Any read failure returns the list unfiltered; the app filters again anyway.
+async function withoutOwnedPopular(recipes, userId, requestId) {
+  try {
+    const { data, error } = await getServiceClient()
+      .from('saved_recipes')
+      .select('adopted_from, source_url, title, source_author')
+      .eq('user_id', userId);
+    if (error) throw error;
+    const adopted = new Set((data || []).map((r) => r.adopted_from).filter(Boolean));
+    const owned = new Set((data || []).map(popularDedupeKey).filter((k) => k !== '|'));
+    return recipes.filter((r) => !adopted.has(r.id) && !owned.has(popularDedupeKey(r)));
+  } catch (error) {
+    console.error(`⚠️ [${requestId}] Popular shelf owned-filter failed:`, error.message);
+    return recipes;
+  }
+}
 
 // Recipe Controller Functions
 const recipeController = {
@@ -482,6 +512,8 @@ const recipeController = {
    * saved a copy, computed across the whole saved_recipes table by
    * public.popular_saved_recipes() (migration 085). Deliberately NOT personalised
    * — everyone sees the same list, including recipes they already own.
+   * The exception is ?shelf=1 (Home's shelf): the top POPULAR_SHELF_SIZE rows
+   * this caller has not saved, still in leaderboard order.
    *
    * Distinct from getCommunityPool above, which ranks inside a 400-row window
    * and is filtered client-side to what this user does NOT have; that one feeds
@@ -510,29 +542,26 @@ const recipeController = {
         else limitedTo = POPULAR_LIMIT;
       }
 
-      if (popularCache.recipes && popularCache.expiresAt > Date.now()) {
-        const recipes = popularCache.recipes.slice(0, limit);
-        return res.json({
-          success: true,
-          recipes,
-          count: recipes.length,
-          cached: true,
-          ...(limitedTo ? { limitedTo } : {}),
-          requestId
-        });
+      const cached = Boolean(popularCache.recipes && popularCache.expiresAt > Date.now());
+      if (!cached) {
+        const supabase = getServiceClient();
+        const { data, error } = await supabase
+          .rpc('popular_saved_recipes', { limit_n: POPULAR_FETCH });
+
+        if (error) throw error;
+
+        popularCache = { recipes: data || [], expiresAt: Date.now() + POPULAR_TTL_MS };
+        console.log(`🔥 [${requestId}] Popular Now rebuilt: ${popularCache.recipes.length} recipes`);
       }
 
-      const supabase = getServiceClient();
-      const { data, error } = await supabase
-        .rpc('popular_saved_recipes', { limit_n: POPULAR_FETCH });
-
-      if (error) throw error;
-
-      popularCache = { recipes: data || [], expiresAt: Date.now() + POPULAR_TTL_MS };
-      console.log(`🔥 [${requestId}] Popular Now rebuilt: ${popularCache.recipes.length} recipes`);
+      if (req.query.shelf === '1') {
+        const unowned = await withoutOwnedPopular(popularCache.recipes, userId, requestId);
+        const recipes = unowned.slice(0, POPULAR_SHELF_SIZE);
+        return res.json({ success: true, recipes, count: recipes.length, cached, shelf: true, requestId });
+      }
 
       const recipes = popularCache.recipes.slice(0, limit);
-      res.json({ success: true, recipes, count: recipes.length, cached: false, ...(limitedTo ? { limitedTo } : {}), requestId });
+      res.json({ success: true, recipes, count: recipes.length, cached, ...(limitedTo ? { limitedTo } : {}), requestId });
 
     } catch (error) {
       console.error(`❌ [${requestId}] Popular recipes error:`, error.message);

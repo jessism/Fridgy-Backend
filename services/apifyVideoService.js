@@ -14,7 +14,7 @@ class ApifyVideoService {
   constructor() {
     this.apiToken = process.env.APIFY_API_TOKEN;
     // Try different actor IDs in order of preference
-    this.actorId = 'logiover/youtube-video-downloader';  // 4K/8K MP4 downloader
+    this.actorId = 'johnvc~youtube-download-api';  // MP4 (H.264) downloader
     this.baseUrl = 'https://api.apify.com/v2';
 
     if (!this.apiToken) {
@@ -79,9 +79,10 @@ class ApifyVideoService {
     const response = await axios.post(
       `${this.baseUrl}/acts/${this.actorId}/runs`,
       {
-        url: youtubeUrl,
+        videoUrls: [youtubeUrl],
         quality: '720p',  // Balance between quality and cost
-        format: 'mp4'
+        format: 'video',
+        videoCodec: 'h264'  // H.264 in an MP4 container
       },
       {
         headers: { 'Authorization': `Bearer ${this.apiToken}` },
@@ -100,7 +101,7 @@ class ApifyVideoService {
    * Poll Apify actor run until completion
    * @private
    */
-  async waitForCompletion(runId, maxWaitMs = 120000) {
+  async waitForCompletion(runId, maxWaitMs = 300000) {
     const startTime = Date.now();
     const pollInterval = 5000; // 5 seconds
     let attempts = 0;
@@ -136,8 +137,8 @@ class ApifyVideoService {
             }
           );
 
-          if (items.data && items.data[0]?.videoUrl) {
-            return { videoUrl: items.data[0].videoUrl };
+          if (items.data && items.data[0]?.fileUrl) {
+            return { videoUrl: items.data[0].fileUrl };
           }
 
           throw new Error('No video URL in dataset result');
